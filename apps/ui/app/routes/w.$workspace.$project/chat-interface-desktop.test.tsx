@@ -7,7 +7,8 @@ import { KeyboardProvider } from '@taucad/ui/components/keyboard';
 import type * as ProjectWorkspaceContext from '#routes/w.$workspace.$project/project-workspace-context.js';
 
 const viewport = vi.hoisted(() => ({ mode: 'desktop' }));
-const workspaceUi = vi.hoisted(() => ({ manualOpen: false, assistantEntryOpen: false }));
+const workspaceUi = vi.hoisted(() => ({ assistantEntryOpen: false }));
+const setChatOpen = vi.hoisted(() => vi.fn());
 vi.mock('#hooks/use-cad-viewport.js', () => ({ useCadViewport: () => viewport.mode }));
 const send = vi.fn();
 const setWorkbenchOpen = vi.hoisted(() => vi.fn());
@@ -33,11 +34,12 @@ vi.mock('@xstate/react', () => ({
 vi.mock('#hooks/use-project.js', () => ({ useProject: () => ({ editorRef: { send } }) }));
 vi.mock('#routes/w.$workspace.$project/project-workspace-context.js', async (importOriginal) => ({
   ...(await importOriginal<typeof ProjectWorkspaceContext>()),
-  useProjectWorkspace: () => ({ setChatOpen: vi.fn(), setWorkbenchOpen, ...workspaceUi }),
+  useProjectWorkspace: () => ({ setChatOpen, setWorkbenchOpen, ...workspaceUi }),
 }));
-vi.mock('#routes/w.$workspace.$project/chat-history.js', () => ({
-  ChatHistory: ({ className }: { readonly className?: string }) => (
-    <div className={className} data-testid='chat-lane'>
+/* The right lane (inspector with the assistant under it) has its own suites; here it only has to take its place. */
+vi.mock('#routes/w.$workspace.$project/inspector-lane.js', () => ({
+  InspectorLane: ({ isVisible }: { readonly isVisible: boolean }) => (
+    <div data-testid='chat-lane' data-hosts-tools={isVisible}>
       <input aria-label='Assistant message' />
       <button type='button'>Assistant composer action</button>
     </div>
@@ -143,7 +145,6 @@ describe('ChatInterfaceDesktop', () => {
   beforeEach(() => {
     setLanguage('en');
     viewport.mode = 'desktop';
-    workspaceUi.manualOpen = false;
     workspaceUi.assistantEntryOpen = false;
     resizeCallbacks.clear();
     desktopLayout.chatOpen = true;
@@ -170,7 +171,7 @@ describe('ChatInterfaceDesktop', () => {
     renderDesktop();
     const viewer = screen.getByTestId('viewer-lane');
     expect(screen.getAllByRole('dialog')).toHaveLength(1);
-    expect(screen.getByRole('dialog', { name: 'Agente' })).toContainElement(screen.getByTestId('chat-lane'));
+    expect(screen.getByRole('dialog', { name: 'Ispettore' })).toContainElement(screen.getByTestId('chat-lane'));
     expect(screen.queryByTestId('workbench-lane')).not.toBeInTheDocument();
     desktopLayout.compactAuxiliary = 'workbench';
     resizeTo(compactWorkspaceWidth - 1);
@@ -182,31 +183,31 @@ describe('ChatInterfaceDesktop', () => {
     expect(screen.getByTestId('viewer-lane')).toBe(viewer);
   });
 
-  it('should reserve both outer auxiliary lanes for the manual inspector without replacing the viewer', () => {
+  it('should keep Misure, the model and the inspector together: no mode closes a lane', () => {
     renderDesktop();
     const viewer = screen.getByTestId('viewer-lane');
-    const chat = screen.getByTestId('chat-lane');
+    const lane = screen.getByTestId('chat-lane');
     const pieces = screen.getByTestId('workbench-lane');
+    expect(paneOf('chat-lane')).toHaveAttribute('data-visible', 'true');
+    expect(paneOf('workbench-lane')).toHaveAttribute('data-visible', 'true');
+    // The visible inspector hosts the viewer's tools; nothing else decides whether they are on.
+    expect(lane).toHaveAttribute('data-hosts-tools', 'true');
     expect(screen.getByRole('textbox', { name: 'Assistant message' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Piece inspector action' })).toBeInTheDocument();
-    workspaceUi.manualOpen = true;
+    // Only the width makes them share: below the compact boundary one auxiliary stays, the viewer never moves.
     resizeTo(compactWorkspaceWidth - 1);
-    expect(paneOf('chat-lane')).toHaveAttribute('data-visible', 'false');
     expect(paneOf('workbench-lane')).toHaveAttribute('data-visible', 'false');
-    expect(chat.closest('[data-slot=chat-lane-content]')).toHaveAttribute('inert');
     expect(pieces.closest('[data-slot=workbench-lane-content]')).toHaveAttribute('inert');
-    expect(screen.queryByRole('textbox', { name: 'Assistant message' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Assistant composer action' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Piece inspector action' })).not.toBeInTheDocument();
+    expect(screen.getByTestId('chat-lane')).toBe(lane);
     expect(screen.getByTestId('viewer-lane')).toBe(viewer);
-    workspaceUi.manualOpen = false;
-    resizeTo(compactWorkspaceWidth);
-    expect(screen.getByTestId('chat-lane')).toBe(chat);
-    expect(screen.getByTestId('workbench-lane')).toBe(pieces);
-    expect(chat.closest('[data-slot=chat-lane-content]')).not.toHaveAttribute('inert');
-    expect(pieces.closest('[data-slot=workbench-lane-content]')).not.toHaveAttribute('inert');
-    expect(screen.getByRole('textbox', { name: 'Assistant message' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Piece inspector action' })).toBeInTheDocument();
+  });
+
+  it('shows and hides the inspector lane with ⌃C, by what is on screen', async () => {
+    const user = userEvent.setup();
+    renderDesktop();
+    await screen.findByTestId('viewer-lane');
+    await user.keyboard('{Control>}c{/Control}');
+    expect(setChatOpen).toHaveBeenCalledExactlyOnceWith(false);
   });
 
   it('should open the entry assistant locally even when the saved lanes are closed', () => {

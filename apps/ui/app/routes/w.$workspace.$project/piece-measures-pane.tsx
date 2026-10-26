@@ -51,18 +51,24 @@ export function ModelSummaryRow(): React.JSX.Element {
   );
 }
 
-const PieceGroup = memo(function PieceGroup({
+/**
+ * One piece's measures. In the list it is a row that opens with the selection; in the inspector it is the selected
+ * piece's editable measures only, under the inspector's own title.
+ */
+export const PieceGroup = memo(function PieceGroup({
   group,
   source,
   entryPath,
   manifest,
   filterTerm,
+  variant = 'list',
 }: {
   readonly group: PieceMeasureGroup;
   readonly source: ParametersSource;
   readonly entryPath: string;
   readonly manifest: ParameterManifest | undefined;
   readonly filterTerm: string;
+  readonly variant?: 'list' | 'inspector';
 }): React.JSX.Element | undefined {
   const { modelInteractionRef } = useProject();
   const unitId = createSourceModelInteractionUnitId(entryPath);
@@ -162,14 +168,35 @@ const PieceGroup = memo(function PieceGroup({
     [manifest, values, group.keys, source, entryPath, t],
   );
   useEffect(() => {
-    if (!isSelected) {
+    if (!isSelected || variant === 'inspector') {
       return;
     }
     const frame = requestAnimationFrame(() => element.current?.scrollIntoView({ block: 'nearest' }));
     return () => {
       cancelAnimationFrame(frame);
     };
-  }, [isSelected]);
+  }, [isSelected, variant]);
+  if (variant === 'inspector') {
+    return group.keys.length > 0 && manifest && edit ? (
+      <div data-slot='inspector-piece-measures'>
+        <Parameters
+          parameters={values}
+          defaultParameters={defaults}
+          jsonSchema={groupSchema}
+          parameterManifest={manifest}
+          parameterGroup={entry?.groups[entry.activeGroup]}
+          parameterEdit={edit}
+          units={units}
+          presentation='embedded'
+          presentationOptions={presentationOptions}
+          enableSearch={false}
+          isAllExpanded
+          filterTerm=''
+          onParametersChange={changeParameters}
+        />
+      </div>
+    ) : undefined;
+  }
   const query = filterTerm.trim().toLocaleLowerCase();
   const nameMatches = name.toLocaleLowerCase().includes(query);
   const fieldsMatch = JSON.stringify(groupSchema?.properties ?? {})
@@ -368,4 +395,48 @@ export function PieceMeasuresPane({ source }: { readonly source: ParametersSourc
       </div>
     </div>
   );
+}
+
+/**
+ * The selected piece's own editable measures, for the inspector: the same authority and editor as the list, without
+ * its row. Nothing when the model writes no measures for the piece.
+ *
+ * @param props - The piece's entry and component.
+ * @returns The measures, or undefined.
+ */
+export function InspectorPieceMeasures({
+  source,
+  entryPath,
+  pieceId,
+  frame,
+}: {
+  readonly source: ParametersSource;
+  readonly entryPath: string;
+  readonly pieceId: string;
+  /** The section around the measures, drawn only when the piece has some. */
+  readonly frame: (measures: React.ReactNode) => React.JSX.Element;
+}): React.JSX.Element | undefined {
+  const { modelInteractionRef } = useProject();
+  const unitId = createSourceModelInteractionUnitId(entryPath);
+  const componentManifest = useSelector(modelInteractionRef, (state) => state.context.unitsById[unitId]?.manifest);
+  const { manifest } = source.useEntry(entryPath);
+  const group = useMemo(
+    () =>
+      groupPieceMeasures(componentManifest, manifest?.defaults ?? {}).find(
+        (candidate) => candidate.node?.id === pieceId,
+      ),
+    [componentManifest, manifest, pieceId],
+  );
+  return group && group.keys.length > 0
+    ? frame(
+        <PieceGroup
+          group={group}
+          source={source}
+          entryPath={entryPath}
+          manifest={manifest}
+          filterTerm=''
+          variant='inspector'
+        />,
+      )
+    : undefined;
 }

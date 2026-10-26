@@ -88,14 +88,14 @@ afterEach(() => state.actor?.stop());
 describe('selected piece chips', () => {
   it('should show current selection in view and composer, then clear both from the chip', async () => {
     render(<Harness />);
-    expect(screen.queryByText(/Stai guardando/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Parla di/)).not.toBeInTheDocument();
     act(() =>
       state.actor?.send({ type: 'selectComponent', unitId: 'file:main.ts', componentId: node.id, source: 'viewer' }),
     );
-    expect(screen.getByText('Stai guardando: Rametto sinistro')).toBeVisible();
+    expect(screen.getByText('Parla di: Rametto sinistro')).toBeVisible();
     expect(screen.getByText('Rametto sinistro')).toBeVisible();
     await userEvent.click(screen.getAllByRole('button', { name: 'Deseleziona il pezzo' })[0]!);
-    expect(screen.queryByText(/Stai guardando/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Parla di/)).not.toBeInTheDocument();
     expect(state.actor?.getSnapshot().context.unitsById['file:main.ts']?.selectedComponentIds).toEqual([]);
   });
   it('should open the agent and retain the structured reference until its composer mounts', async () => {

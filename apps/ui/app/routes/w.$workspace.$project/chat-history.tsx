@@ -3,11 +3,12 @@ import { forwardRef, memo, useCallback, useEffect, useMemo, useRef, useState } f
 import { Virtuoso } from 'react-virtuoso';
 import type { ScrollerProps, VirtuosoHandle } from 'react-virtuoso';
 import { useLocation } from 'react-router';
-import { XIcon } from 'lucide-react';
+import { ChevronDown, XIcon } from 'lucide-react';
+import { PaneButton } from '@taucad/workbench-panes/components/pane-button';
 import { ChatMessagePlanning } from '#routes/w.$workspace.$project/chat-message-planning.js';
 import { ChatMessage } from '#routes/w.$workspace.$project/chat-message.js';
 import { TurnModelSummary } from '#components/chat/turn-summary-card.js';
-import { AgentSuggestions } from '#components/chat/agent-suggestions.js';
+import { AssistantComposerProvider, AssistantContextChips } from '#components/chat/assistant-suggestions.js';
 import type { TurnGroup as TurnGroupData } from '#routes/w.$workspace.$project/chat-turn-groups.js';
 import { ScrollDownButton } from '#routes/w.$workspace.$project/scroll-down-button.js';
 import {
@@ -60,7 +61,6 @@ const TurnGroup = memo(function ({
         <ChatMessage key={id} messageId={id} />
       ))}
       {messageIds[0] ? <TurnModelSummary turnId={messageIds[0]} /> : null}
-      {isLast ? <AgentSuggestions /> : null}
       {isLast ? <ChatError className='mx-4' /> : null}
     </div>
   );
@@ -108,13 +108,26 @@ type ChatHistoryProps = {
   readonly className?: string;
   readonly isExpanded?: boolean;
   readonly setIsExpanded?: (value: boolean | ((current: boolean) => boolean)) => void;
+  /**
+   * `lane`: the conversation is a lane of its own (phone, tablet sheet). `dock`: it opens under the project's inspector,
+   * and its header folds it back into the composer strip instead of hiding the lane.
+   */
+  readonly variant?: 'lane' | 'dock';
 };
 
-export const ChatHistory = memo(function ({ isExpanded = true, setIsExpanded, ...props }: ChatHistoryProps) {
+export const ChatHistory = memo(function ({
+  isExpanded = true,
+  setIsExpanded,
+  variant = 'lane',
+  ...props
+}: ChatHistoryProps) {
   const toggleChatHistory = useCallback(() => {
     setIsExpanded?.((current) => !current);
   }, [setIsExpanded]);
-  const { formattedKeyCombination } = useKeybinding(toggleChatKeyCombination, toggleChatHistory);
+  // In the dock ⌃C belongs to the lane (inspector and assistant together); the dock folds with ⌃J.
+  const { formattedKeyCombination } = useKeybinding(toggleChatKeyCombination, toggleChatHistory, {
+    enabled: variant !== 'dock',
+  });
   const [isArchiveOpen] = useSearchParameter(searchParameterName.archivedChats, flagParameter);
   const { projectId } = useProject();
 
@@ -129,6 +142,7 @@ export const ChatHistory = memo(function ({ isExpanded = true, setIsExpanded, ..
       {...props}
       isExpanded={isExpanded}
       setIsExpanded={setIsExpanded}
+      variant={variant}
       formattedKeyCombination={formattedKeyCombination}
     />
   ) : null;
@@ -138,6 +152,7 @@ const ExpandedChatHistory = memo(function ({
   className,
   isExpanded,
   setIsExpanded,
+  variant,
   formattedKeyCombination,
 }: ChatHistoryProps & { readonly formattedKeyCombination: string }) {
   const { t } = useTranslation();
@@ -243,53 +258,68 @@ const ExpandedChatHistory = memo(function ({
   return (
     <ChatAttachmentDirectoriesContext.Provider value={attachmentDirectories}>
       <ChatQuestionsProvider>
-        <FloatingPanel isOpen={isExpanded} side='right' className={className} onOpenChange={setIsExpanded}>
-          <FloatingPanelContent
-            // `ph-no-capture`: session replay never records chat transcripts.
-            className={cn('ph-no-capture min-h-0 overflow-hidden [container-type:size]', !isExpanded && 'hidden')}
-            errorFallback={(errorProps) => (
-              <FloatingPanelErrorContent
-                {...errorProps}
-                title={t('project.agent.unavailableTitle')}
-                description={t('project.agent.unavailableText')}
-              />
-            )}
-          >
-            {/* Chat-restore time-travel: wire the store seams + surface a fork marker. */}
-            {/* The one header row: name, rename in place, chat menu, close. */}
-            <FloatingPanelContentHeader className='h-11 gap-1 border-b bg-background px-3'>
-              <ChatTitleBar
-                closeButton={
-                  <FloatingPanelClose
-                    icon={XIcon}
-                    tooltipContent={(isOpen) => (
-                      <div className='flex items-center gap-2'>
-                        {isOpen ? 'Close' : 'Open'} Chat
-                        <KeyShortcut variant='tooltip'>{formattedKeyCombination}</KeyShortcut>
-                      </div>
-                    )}
-                  />
-                }
-              />
-            </FloatingPanelContentHeader>
+        <AssistantComposerProvider focusComposer={focusComposer}>
+          <FloatingPanel isOpen={isExpanded} side='right' className={className} onOpenChange={setIsExpanded}>
+            <FloatingPanelContent
+              // `ph-no-capture`: session replay never records chat transcripts.
+              className={cn('ph-no-capture min-h-0 overflow-hidden [container-type:size]', !isExpanded && 'hidden')}
+              errorFallback={(errorProps) => (
+                <FloatingPanelErrorContent
+                  {...errorProps}
+                  title={t('project.agent.unavailableTitle')}
+                  description={t('project.agent.unavailableText')}
+                />
+              )}
+            >
+              {/* Chat-restore time-travel: wire the store seams + surface a fork marker. */}
+              {/* The one header row: name, rename in place, chat menu, close. */}
+              <FloatingPanelContentHeader className='h-11 gap-1 border-b bg-background px-3'>
+                <ChatTitleBar
+                  trailing={
+                    variant === 'dock' ? (
+                      <PaneButton
+                        aria-label={t('inspector.assistant.collapse')}
+                        tooltip={t('inspector.assistant.collapse')}
+                        tooltipSide='left'
+                        onClick={() => {
+                          setIsExpanded?.(false);
+                        }}
+                      >
+                        <ChevronDown aria-hidden className='size-3.5' />
+                      </PaneButton>
+                    ) : undefined
+                  }
+                  closeButton={
+                    <FloatingPanelClose
+                      icon={XIcon}
+                      tooltipContent={(isOpen) => (
+                        <div className='flex items-center gap-2'>
+                          {isOpen ? 'Close' : 'Open'} Chat
+                          <KeyShortcut variant='tooltip'>{formattedKeyCombination}</KeyShortcut>
+                        </div>
+                      )}
+                    />
+                  }
+                />
+              </FloatingPanelContentHeader>
 
-            {/* Main chat content area */}
-            <AtReferenceProvider treeService={treeService} chats={chats} knownTokens={knownTokens}>
-              <Virtuoso
-                ref={virtuosoRef}
-                data={groups}
-                initialTopMostItemIndex={initialChatTurn}
-                itemContent={renderItem}
-                computeItemKey={computeItemKey}
-                scrollerRef={followLatestOutput.scrollerRef}
-                followOutput={followLatestOutput.followOutput}
-                totalListHeightChanged={followLatestOutput.totalListHeightChanged}
-                className='mt-1 min-h-0 min-w-0 flex-1'
-                atBottomStateChange={handleAtBottomStateChange}
-                components={virtuosoComponents}
-              />
-            </AtReferenceProvider>
-            {/*
+              {/* Main chat content area */}
+              <AtReferenceProvider treeService={treeService} chats={chats} knownTokens={knownTokens}>
+                <Virtuoso
+                  ref={virtuosoRef}
+                  data={groups}
+                  initialTopMostItemIndex={initialChatTurn}
+                  itemContent={renderItem}
+                  computeItemKey={computeItemKey}
+                  scrollerRef={followLatestOutput.scrollerRef}
+                  followOutput={followLatestOutput.followOutput}
+                  totalListHeightChanged={followLatestOutput.totalListHeightChanged}
+                  className='mt-1 min-h-0 min-w-0 flex-1'
+                  atBottomStateChange={handleAtBottomStateChange}
+                  components={virtuosoComponents}
+                />
+              </AtReferenceProvider>
+              {/*
           A refusal on an empty chat has to land somewhere (I12, W19-b).
 
           `ChatError` rides the last `TurnGroup`, and a submit that fails before
@@ -298,35 +328,37 @@ const ExpandedChatHistory = memo(function ({
           all: their text still in the composer, no row, no banner. One banner
           at a time: while there are turns, the group above owns it.
         */}
-            {groups.length === 0 ? <ChatError className='mx-4 mb-1 shrink-0' /> : null}
-            {/* Chat input area. The agent's task list and its questions share one
+              {groups.length === 0 ? <ChatError className='mx-4 mb-1 shrink-0' /> : null}
+              {/* Chat input area. The agent's task list and its questions share one
               tray directly above the composer; the task list is keyed by chat so
               its fold never carries across chats (D8, agent questions D8). */}
-            <div
-              role='region'
-              aria-label={t('project.agent.composer')}
-              className='relative mx-auto mb-3 w-[calc(100%_-_1.5rem)] max-w-xl shrink-0'
-            >
-              <ScrollDownButton
-                hasContent={messageIds.length > 0}
-                isVisible={!atBottom}
-                onScrollToBottom={scrollToBottom}
-              />
-              <ChatMessagePlanning key={activeChatId} className='mb-3 px-3' />
-              <div className='mx-2 -mb-3 flex flex-col rounded-t-2xl border border-b-0 border-border/60 bg-muted/20 pb-3 empty:hidden'>
-                <ChatMessageQueue key={`${activeChatId}:messages`} />
-                <ChatQuestionQueue key={`${activeChatId}:questions`} onDismissFocus={focusComposer} />
+              <div
+                role='region'
+                aria-label={t('project.agent.composer')}
+                className='relative mx-auto mb-3 w-[calc(100%_-_1.5rem)] max-w-xl shrink-0'
+              >
+                <ScrollDownButton
+                  hasContent={messageIds.length > 0}
+                  isVisible={!atBottom}
+                  onScrollToBottom={scrollToBottom}
+                />
+                <ChatMessagePlanning key={activeChatId} className='mb-3 px-3' />
+                <AssistantContextChips className='mb-2 px-1' />
+                <div className='mx-2 -mb-3 flex flex-col rounded-t-2xl border border-b-0 border-border/60 bg-muted/20 pb-3 empty:hidden'>
+                  <ChatMessageQueue key={`${activeChatId}:messages`} />
+                  <ChatQuestionQueue key={`${activeChatId}:questions`} onDismissFocus={focusComposer} />
+                </div>
+                <ChatTextarea
+                  ref={chatTextareaRef}
+                  enableMobileCollapse
+                  mode='main'
+                  enableAutoFocus={false}
+                  onSubmit={onSubmit}
+                />
               </div>
-              <ChatTextarea
-                ref={chatTextareaRef}
-                enableMobileCollapse
-                mode='main'
-                enableAutoFocus={false}
-                onSubmit={onSubmit}
-              />
-            </div>
-          </FloatingPanelContent>
-        </FloatingPanel>
+            </FloatingPanelContent>
+          </FloatingPanel>
+        </AssistantComposerProvider>
       </ChatQuestionsProvider>
     </ChatAttachmentDirectoriesContext.Provider>
   );

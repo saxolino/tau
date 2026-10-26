@@ -50,6 +50,8 @@ export type ManualFaceWitness = Readonly<{
 }>;
 
 export type ManualFaceFailure = 'faceInvalid' | 'faceStale' | 'faceCommitFailed';
+/** A hole drilled into the piece from the picked point of the face, along its inward normal, in millimetres. */
+export type ManualFaceHole = Readonly<{ diameter: number; depth: number }>;
 export type ManualFaceDraft = Readonly<{
   name: string;
   faceIndex: number;
@@ -57,7 +59,12 @@ export type ManualFaceDraft = Readonly<{
   witness: ManualFaceWitness;
   isCurrent: (current: ManualFaceWitness) => boolean;
   apply: (distanceMillimetres: number, current: ManualFaceWitness) => Promise<ManualFaceFailure | undefined>;
+  /** Append the existing `hole` operation, placed where the face was picked; its geometry is the kernel's own. */
+  applyHole: (hole: ManualFaceHole, current: ManualFaceWitness) => Promise<ManualFaceFailure | undefined>;
 }>;
+
+/** The drill starts this far outside the face so the cut always opens the surface, never leaves a skin. */
+const holeLeadMillimetres = 0.2;
 
 /** Admit exact planar metadata only; a face id is an occurrence, never a native index. */
 export function createManualFaceDraft(witness: ManualFaceWitness, pick: PlanarFacePick): ManualFaceDraft | undefined {
@@ -99,12 +106,45 @@ export function createManualFaceDraft(witness: ManualFaceWitness, pick: PlanarFa
     current.runtimeDocument === witness.runtimeDocument &&
     current.renderStamp === witness.renderStamp &&
     current.artifactKey === witness.artifactKey;
+  const commitOperation = async (operation: unknown): Promise<ManualFaceFailure | undefined> => {
+    const next = manualDocumentSchema.safeParse({ ...document, operations: [...document.operations, operation] });
+    if (!next.success) {
+      return 'faceInvalid';
+    }
+    submitted = true;
+    try {
+      return (await witness.commit(next.data)) ? undefined : 'faceCommitFailed';
+    } catch {
+      return 'faceCommitFailed';
+    }
+  };
   return {
     name: body.data.manualTargetName,
     faceIndex: face.index,
     selection,
     witness,
     isCurrent,
+    applyHole: async ({ diameter, depth }, current) => {
+      if (submitted || !isCurrent(current)) {
+        return 'faceStale';
+      }
+      if (!Number.isFinite(diameter) || diameter <= 0 || !Number.isFinite(depth) || depth <= 0) {
+        return 'faceInvalid';
+      }
+      return commitOperation({
+        id: randomUuid(),
+        type: 'hole',
+        target: { name: body.data.manualTargetName },
+        center: [
+          point[0] + normal[0] * holeLeadMillimetres,
+          point[1] + normal[1] * holeLeadMillimetres,
+          point[2] + normal[2] * holeLeadMillimetres,
+        ],
+        axis: [-normal[0], -normal[1], -normal[2]],
+        diameter,
+        depth: depth + holeLeadMillimetres,
+      });
+    },
     apply: async (distance, current) => {
       if (submitted || !isCurrent(current)) {
         return 'faceStale';

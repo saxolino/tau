@@ -22,6 +22,7 @@ import type { WorkbenchLaneNode } from '@taucad/workbench';
 import { searchParameterName } from '#constants/search-parameter.constants.js';
 import { flagParameter } from '#utils/search-parameter.codecs.js';
 import { rememberAgentLaneOpen } from '#hooks/use-agent-lane-open.js';
+import type { FaceDirection } from '#lib/inspector-selection.js';
 
 const ProjectExportDialog = lazy(async () => {
   const module = await import('#routes/w.$workspace.$project/project-export-dialog.js');
@@ -55,6 +56,17 @@ export type WorkbenchPanelId =
   | 'console';
 export type WorkbenchUtilityPanelId = Exclude<WorkbenchPanelId, 'files'>;
 
+/**
+ * A face or some edges of a piece picked with the inspector's tools. The piece itself is the shared model selection;
+ * this narrows it so the inspector's title and the assistant's suggestions speak of the face or the edges.
+ */
+export type InspectorSubSelection =
+  | Readonly<{ kind: 'face'; componentId: string; direction: FaceDirection }>
+  | Readonly<{ kind: 'edge'; componentId: string; edgeCount: number }>;
+
+/** Scale a piece by a factor about its centre; resolves whether the operation was saved. */
+export type PieceScaler = (componentId: string, factor: number) => Promise<boolean>;
+
 type ProjectWorkspaceContextValue = {
   /** Survives Dockview header replacement during reviewed layout recovery. */
   registerRecordRecoveryFocus: React.RefCallback<HTMLButtonElement>;
@@ -62,14 +74,28 @@ type ProjectWorkspaceContextValue = {
   openPanel: (panelId: WorkbenchPanelId) => void;
   setWorkbenchOpen: (open: boolean) => void;
   setChatOpen: (open: boolean) => void;
+  /** The right lane (inspector and assistant) opens with the project until a lane is toggled. */
   assistantEntryOpen: boolean;
-  manualOpen: boolean;
-  setManualOpen: (open: boolean) => void;
+  /** The assistant shows the whole conversation; otherwise it is the composer strip under the inspector. */
+  assistantExpanded: boolean;
+  setAssistantExpanded: (expanded: boolean) => void;
+  /** Where the active viewer mounts its manual tools: the inspector, while it is on screen. */
+  inspectorSlot: HTMLElement | undefined;
+  setInspectorSlot: (slot: HTMLElement | undefined) => void;
+  /** Where the active viewer mounts the history of manual operations: the inspector's foot. */
+  inspectorHistorySlot: HTMLElement | undefined;
+  setInspectorHistorySlot: (slot: HTMLElement | undefined) => void;
+  inspectorSubSelection: InspectorSubSelection | undefined;
+  setInspectorSubSelection: (selection: InspectorSubSelection | undefined) => void;
+  /**
+   * Scale one piece in proportion through the manual history (the inspector's size cells), when the active viewer
+   * can edit it; `false` when the operation was not saved.
+   */
+  scalePiece: PieceScaler | undefined;
+  setScalePiece: (scaler: PieceScaler | undefined) => void;
   manualAvailable: boolean;
   manualViewId: string | undefined;
   registerManualViewer: (viewId: string, available: boolean, active: boolean) => () => void;
-  manualDraftLayout: 'profile' | 'operation' | undefined;
-  setManualDraftLayout: (layout: 'profile' | 'operation' | undefined) => void;
   connectWorkbench: (openPanel: (panelId: WorkbenchPanelId) => void) => () => void;
   registerLayoutController: (controller: WorkbenchLayoutController) => () => void;
   layoutController: WorkbenchLayoutController;
@@ -187,7 +213,14 @@ export function ProjectWorkspaceProvider({
   const { editorRef, mainEntryPath } = useProject();
   const [exportOpen, setExportOpen] = useState(false);
   const [assistantEntryOpen, setAssistantEntryOpen] = useState(true);
-  const [manualOpen, setManualOpenState] = useState(false);
+  const [assistantExpanded, setAssistantExpanded] = useState(false);
+  const [inspectorSlot, setInspectorSlot] = useState<HTMLElement>();
+  const [inspectorHistorySlot, setInspectorHistorySlot] = useState<HTMLElement>();
+  const [inspectorSubSelection, setInspectorSubSelection] = useState<InspectorSubSelection>();
+  const [scalePiece, setScalePieceState] = useState<{ scale: PieceScaler }>();
+  const setScalePiece = useCallback((scaler: PieceScaler | undefined) => {
+    setScalePieceState(scaler ? { scale: scaler } : undefined);
+  }, []);
   const [manualViewers, setManualViewers] = useState<
     ReadonlyMap<string, Readonly<{ available: boolean; active: boolean }>>
   >(new Map());
@@ -207,11 +240,6 @@ export function ProjectWorkspaceProvider({
   }, []);
   const manualViewId = [...manualViewers].find(([, viewer]) => viewer.active)?.[0] ?? manualViewers.keys().next().value;
   const manualAvailable = manualViewId !== undefined && manualViewers.get(manualViewId)?.available === true;
-  const [manualDraftLayout, setManualDraftLayout] = useState<'profile' | 'operation'>();
-  const setManualOpen = useCallback((open: boolean) => {
-    setAssistantEntryOpen(false);
-    setManualOpenState(open);
-  }, []);
   const providerActiveRef = useRef(true);
   const recordRecoveryFocusRef = useRef<HTMLButtonElement>(null);
   const pendingRecordRecoveryFocus = useRef(false);
@@ -326,9 +354,6 @@ export function ProjectWorkspaceProvider({
   const setChatOpen = useCallback(
     (open: boolean) => {
       setAssistantEntryOpen(false);
-      if (open) {
-        setManualOpenState(false);
-      }
       // The home's agent lane follows the last choice made on any project page.
       rememberAgentLaneOpen(open);
       editorRef.send({
@@ -373,9 +398,6 @@ export function ProjectWorkspaceProvider({
   const setWorkbenchOpen = useCallback(
     (open: boolean) => {
       setAssistantEntryOpen(false);
-      if (open) {
-        setManualOpenState(false);
-      }
       if (!open) {
         pendingFilesRef.current = undefined;
       }
@@ -563,13 +585,19 @@ export function ProjectWorkspaceProvider({
       setWorkbenchOpen,
       setChatOpen,
       assistantEntryOpen,
-      manualOpen: manualOpen && manualAvailable,
-      setManualOpen,
+      assistantExpanded,
+      setAssistantExpanded,
+      inspectorSlot,
+      setInspectorSlot,
+      inspectorHistorySlot,
+      setInspectorHistorySlot,
+      inspectorSubSelection,
+      setInspectorSubSelection,
+      scalePiece: scalePiece?.scale,
+      setScalePiece,
       manualAvailable,
       manualViewId,
       registerManualViewer,
-      manualDraftLayout,
-      setManualDraftLayout,
       connectWorkbench,
       registerLayoutController,
       layoutController,
@@ -583,12 +611,15 @@ export function ProjectWorkspaceProvider({
       registerLayoutController,
       setChatOpen,
       assistantEntryOpen,
-      manualOpen,
-      setManualOpen,
+      assistantExpanded,
+      inspectorSlot,
+      inspectorHistorySlot,
+      inspectorSubSelection,
+      scalePiece,
+      setScalePiece,
       manualAvailable,
       manualViewId,
       registerManualViewer,
-      manualDraftLayout,
       setWorkbenchOpen,
       registerRecordRecoveryFocus,
       restoreRecordRecoveryFocus,

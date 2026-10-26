@@ -28,6 +28,7 @@ export function useManualDirectTool({
   artifactKey,
   ready,
   open,
+  onSelectPiece,
 }: Readonly<{
   edits: ManualEdits;
   manifest: GeometryComponentManifest | undefined;
@@ -36,6 +37,8 @@ export function useManualDirectTool({
   artifactKey: string | undefined;
   ready: boolean;
   open: boolean;
+  /** A picked piece (or the piece of a picked edge) becomes the shared selection the measures and the assistant read. */
+  onSelectPiece?: (componentId: string) => void;
 }>): ManualDirectToolResult {
   const { t } = useTranslation();
   const [mode, setMode] = useState<DirectEditMode | undefined>(open ? 'translate' : undefined);
@@ -61,6 +64,8 @@ export function useManualDirectTool({
   const current = useRef(witness);
   const selected = draft?.isCurrent(witness) ? draft : undefined;
   const selectedRef = useRef(draft);
+  const selectPieceRef = useRef(onSelectPiece);
+  const [isDragging, setIsDragging] = useState(false);
   const [previousOpen, setPreviousOpen] = useState(open);
   if (previousOpen !== open) {
     setPreviousOpen(open);
@@ -83,7 +88,8 @@ export function useManualDirectTool({
   useLayoutEffect(() => {
     current.current = witness;
     selectedRef.current = selected;
-  }, [witness, selected]);
+    selectPieceRef.current = onSelectPiece;
+  }, [witness, selected, onSelectPiece]);
   const changeMode = useCallback((next: DirectEditMode | undefined) => {
     const witness = { ...current.current, mode: next };
     const retained = retargetManualDirectDraft(selectedRef.current, witness);
@@ -94,7 +100,38 @@ export function useManualDirectTool({
     setFailure(undefined);
   }, []);
   const cancel = useCallback(() => {
+    selectedRef.current = undefined;
     setDraft(undefined);
+    setPreview(undefined);
+    setFailure(undefined);
+  }, []);
+  /**
+   * Follow a piece chosen elsewhere (the measures list, a chip, the agent's summary): a body tool puts its handles on
+   * it, so there is one selection on the page. Edge tools keep their own picked edges.
+   */
+  const selectPiece = useCallback((componentId: string | undefined) => {
+    const witness = current.current;
+    if (!witness.mode || witness.mode === 'fillet' || witness.mode === 'chamfer') {
+      return;
+    }
+    if (componentId === undefined) {
+      if (selectedRef.current) {
+        selectedRef.current = undefined;
+        setDraft(undefined);
+        setPreview(undefined);
+      }
+      return;
+    }
+    if (selectedRef.current?.selection.componentId === componentId && selectedRef.current.isCurrent(witness)) {
+      return;
+    }
+    const next = createManualDirectDraft(witness, {
+      componentId,
+      point: [0, 0, 0],
+      artifactKey: witness.artifactKey ?? '',
+    });
+    selectedRef.current = next;
+    setDraft(next);
     setPreview(undefined);
     setFailure(undefined);
   }, []);
@@ -132,28 +169,33 @@ export function useManualDirectTool({
                 setFailure('directInvalid');
                 return;
               }
+              selectedRef.current = next;
               setDraft(next);
               setPreview(undefined);
               setFailure(undefined);
+              selectPieceRef.current?.(pick.componentId);
             },
             onPreview: (change) => {
               if (selected && selectedRef.current === selected && selected.isCurrent(current.current)) {
                 setPreview(change);
+                setIsDragging(true);
               }
             },
             onCommit: (change) => {
+              setIsDragging(false);
               void apply(selected, change);
             },
             onCancel: () => {
-              if (selected && selectedRef.current === selected) {
-                selectedRef.current = undefined;
-                setDraft(undefined);
-                setPreview(undefined);
-              }
+              setIsDragging(false);
+              // An Esc during a move drag discards the gesture and keeps the piece selected.
+              setPreview(undefined);
             },
+            ...((mode === 'fillet' || mode === 'chamfer') && selected?.edges.length && size > 0
+              ? { edgeSize: size / 1000 }
+              : {}),
           }
         : undefined,
-    [mode, available, selected, apply],
+    [mode, available, selected, apply, size],
   );
   const applyEdges = useCallback(() => {
     if (mode === 'fillet' || mode === 'chamfer') {
@@ -184,9 +226,13 @@ export function useManualDirectTool({
     () => ({
       mode,
       available: ready && capable && !edits.loading && !edits.saving && !edits.error,
-      selected: selected ? { name: selected.name, edgeCount: selected.edges.length } : undefined,
+      selected: selected
+        ? { name: selected.name, edgeCount: selected.edges.length, componentId: selected.selection.componentId }
+        : undefined,
       size,
       preview: previewLabel,
+      isDragging,
+      onSelectPiece: selectPiece,
       error: failure ? t(`manualEdit.${failure}`) : undefined,
       onModeChange: changeMode,
       onSizeChange: setSize,
@@ -203,6 +249,8 @@ export function useManualDirectTool({
       selected,
       size,
       previewLabel,
+      isDragging,
+      selectPiece,
       failure,
       t,
       changeMode,

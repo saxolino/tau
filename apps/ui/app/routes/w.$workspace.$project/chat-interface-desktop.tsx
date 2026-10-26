@@ -7,8 +7,9 @@ import { LayoutPriority } from 'allotment';
 import { useKeybinding } from '@taucad/ui/components/keyboard';
 import { Allotment } from '#components/panes/allotment.js';
 import { useSelector } from '@xstate/react';
-import { ChatHistory } from '#routes/w.$workspace.$project/chat-history.js';
-import { ChatHistoryGate, ChatInterfaceSessionGate } from '#routes/w.$workspace.$project/focused-chat-gate.js';
+import { ChatInterfaceSessionGate } from '#routes/w.$workspace.$project/focused-chat-gate.js';
+import { InspectorLane } from '#routes/w.$workspace.$project/inspector-lane.js';
+import { toggleChatKeyCombination } from '#routes/w.$workspace.$project/agent-lane-toggle-button.js';
 import { ViewerDockview } from '#routes/w.$workspace.$project/chat-viewer-dockview.js';
 import { WorkbenchDockview } from '#routes/w.$workspace.$project/chat-workbench-dockview.js';
 import { toggleWorkbenchKeyCombination } from '#routes/w.$workspace.$project/workbench-toggle.js';
@@ -26,8 +27,8 @@ import {
 import { panelMinSizeChat, panelMinSizeViewer, panelMinSizeWorkbench } from '#constants/editor.constants.js';
 
 /**
- * Below this workspace width the model shares its space with only one auxiliary.
- * Manual editing reserves its inspector inside the viewer, so it always replaces both outer auxiliaries.
+ * Below this workspace width the model shares its space with only one auxiliary: Misure on the left, or the inspector
+ * and the assistant on the right. Nothing else closes a lane; there is one work mode.
  */
 export const compactWorkspaceWidth = 1360;
 
@@ -35,7 +36,7 @@ export const ChatInterfaceDesktop = memo(function (): React.JSX.Element {
   const { editorRef } = useProject();
   const { t } = useTranslation();
   const isTablet = useCadViewport() === 'tablet';
-  const { setChatOpen, setWorkbenchOpen, manualOpen, assistantEntryOpen } = useProjectWorkspace();
+  const { setChatOpen, setWorkbenchOpen, assistantEntryOpen } = useProjectWorkspace();
   const containerRef = useRef<HTMLDivElement>(null);
   const [isCompact, setIsCompact] = useState<boolean>();
   const isClient = isCompact !== undefined;
@@ -47,10 +48,8 @@ export const ChatInterfaceDesktop = memo(function (): React.JSX.Element {
       ? 'chat'
       : resolveCompactAuxiliary(desktopLayout)
     : undefined;
-  const chatVisible =
-    !manualOpen && (assistantEntryOpen || desktopLayout.chatOpen) && (!singleLane || compactAuxiliary === 'chat');
-  const workbenchVisible =
-    !manualOpen && desktopLayout.workbenchOpen && (!singleLane || compactAuxiliary === 'workbench');
+  const chatVisible = (assistantEntryOpen || desktopLayout.chatOpen) && (!singleLane || compactAuxiliary === 'chat');
+  const workbenchVisible = desktopLayout.workbenchOpen && (!singleLane || compactAuxiliary === 'workbench');
   const isChatPaneVisible = chatVisible && !isTablet;
   const isWorkbenchPaneVisible = workbenchVisible && !isTablet;
   const isAuxiliaryVisible = chatVisible || workbenchVisible;
@@ -61,6 +60,14 @@ export const ChatInterfaceDesktop = memo(function (): React.JSX.Element {
     toggleWorkbenchKeyCombination,
     () => {
       setWorkbenchOpen(!workbenchVisible);
+    },
+    { enabled: isClient && isEditorReady },
+  );
+  // ⌃C shows or hides the right lane: the inspector with the assistant under it.
+  useKeybinding(
+    toggleChatKeyCombination,
+    () => {
+      setChatOpen(!chatVisible);
     },
     { enabled: isClient && isEditorReady },
   );
@@ -183,22 +190,13 @@ export const ChatInterfaceDesktop = memo(function (): React.JSX.Element {
                         inert={!isChatPaneVisible}
                         aria-hidden={!isChatPaneVisible}
                       >
-                        {isTablet ? null : (
-                          <ChatHistoryGate>
-                            <ChatHistory
-                              isExpanded
-                              setIsExpanded={(value) => {
-                                setChatOpen(typeof value === 'function' ? value(chatVisible) : value);
-                              }}
-                            />
-                          </ChatHistoryGate>
-                        )}
+                        {isTablet ? null : <InspectorLane isVisible={isChatPaneVisible} />}
                       </div>
                     </Allotment.Pane>
                   </Allotment>
-                  {isTablet && !manualOpen && compactAuxiliary !== undefined ? (
+                  {isTablet && compactAuxiliary !== undefined ? (
                     <TabletLane
-                      label={t(chatVisible ? 'home.agentLane.label' : 'project.lanes.measures')}
+                      label={t(chatVisible ? 'inspector.label' : 'project.lanes.measures')}
                       side={chatVisible ? 'right' : 'left'}
                       onClose={() => {
                         (chatVisible ? setChatOpen : setWorkbenchOpen)(false);
@@ -206,9 +204,7 @@ export const ChatInterfaceDesktop = memo(function (): React.JSX.Element {
                     >
                       <div className='size-full' inert={!isAuxiliaryVisible} aria-hidden={!isAuxiliaryVisible}>
                         {chatVisible ? (
-                          <ChatHistoryGate>
-                            <ChatHistory />
-                          </ChatHistoryGate>
+                          <InspectorLane isInSheet isVisible={isAuxiliaryVisible} />
                         ) : (
                           <WorkbenchDockview />
                         )}

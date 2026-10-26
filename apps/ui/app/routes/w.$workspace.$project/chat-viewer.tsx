@@ -9,12 +9,17 @@ import { useManualFaceTool } from '#hooks/use-manual-face-tool.js';
 import { useManualDirectTool } from '#hooks/use-manual-direct-tool.js';
 import { matchesManualSidecarRevision } from '#services/manual-face-draft.js';
 import { useTranslation } from '#i18n/translate.js';
-import { useCadViewport } from '#hooks/use-cad-viewport.js';
 import { useProjectWorkspace } from '#routes/w.$workspace.$project/project-workspace-context.js';
 import { cn } from '@taucad/ui/utils/cn';
 import { useManualInspectorDraft } from '#routes/w.$workspace.$project/manual-inspector-draft.js';
 import { ManualEditPanel } from '#routes/w.$workspace.$project/manual-edit-panel.js';
 import { memo, useEffect, useCallback, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { createPortal } from 'react-dom';
+import { manualDocumentSchema } from '@taucad/smlib/manual-operations';
+import { randomUuid } from '@taucad/utils/id';
+import { useSelectedPiece } from '#hooks/use-selected-piece.js';
+import { faceDirection } from '#lib/inspector-selection.js';
+import { GestureQuota } from '#routes/w.$workspace.$project/gesture-quota.js';
 import type { FileEntry } from '@taucad/types';
 import { asKnownArtifact } from '@taucad/runtime';
 import type { Evaluation, Rendering, RuntimeDocument, ViewSubscription } from '@taucad/runtime';
@@ -525,22 +530,13 @@ const ViewerContent = memo(function ({
 }): React.JSX.Element {
   const { projectRef, entriesRecord, viewRecords, modelInteractionRef } = useProject();
   const { t } = useTranslation();
-  const isPhone = useCadViewport() === 'phone';
   const workspace = useProjectWorkspace({ enableNoContext: true });
   const [localManualOpen, setLocalManualOpen] = useState(false);
   const isManualOwner = workspace?.manualViewId === viewId;
-  const isManualEditOpen = workspace ? workspace.manualOpen && isManualOwner : localManualOpen;
-  const setIsManualEditOpen = workspace?.setManualOpen ?? setLocalManualOpen;
+  // One work mode: the tools are on whenever the inspector is on screen to hold them, for the viewer that owns them.
+  const inspectorSlot = isManualOwner ? workspace.inspectorSlot : undefined;
+  const isManualEditOpen = workspace ? inspectorSlot !== undefined : localManualOpen;
   const registerManualViewer = workspace?.registerManualViewer;
-  const setManualDraftLayout = workspace?.setManualDraftLayout;
-  const reportDraftLayout = useCallback(
-    (layout: 'profile' | 'operation' | undefined) => {
-      if (isManualOwner) {
-        setManualDraftLayout?.(layout);
-      }
-    },
-    [isManualOwner, setManualDraftLayout],
-  );
   const subscribePanelActive = useCallback(
     (listener: () => void) => {
       if (!registerManualViewer) {
@@ -563,7 +559,6 @@ const ViewerContent = memo(function ({
   const { draftLayout, isToolOpen, onDraftLayoutChange } = useManualInspectorDraft({
     isOpen: isManualEditOpen,
     isActive: isActiveViewer,
-    onDraftLayoutChange: reportDraftLayout,
   });
   const manualManifest = useSelector(
     modelInteractionRef,
@@ -796,6 +791,14 @@ const ViewerContent = memo(function ({
     presentedSourceFile === entryPath &&
     settledPresentedKey === rendering.hash &&
     matchesManualSidecarRevision(manualEdits.contentDigest, rendering.sourceRevision, entryPath);
+  const manualUnitId = deriveModelInteractionUnitId({ sourceFile: entryPath });
+  // A piece picked by a tool is the page's one selection: the measures, the chip and the agent follow it.
+  const selectManualPiece = useCallback(
+    (componentId: string) => {
+      modelInteractionRef.send({ type: 'selectComponent', unitId: manualUnitId, componentId, source: 'viewer' });
+    },
+    [modelInteractionRef, manualUnitId],
+  );
   const faceTool = useManualFaceTool({
     edits: manualEdits,
     manifest: manualManifest,
@@ -804,6 +807,7 @@ const ViewerContent = memo(function ({
     artifactKey: presentedKey,
     ready: faceReady,
     open: isToolOpen,
+    onSelectPiece: selectManualPiece,
   });
   const directTool = useManualDirectTool({
     edits: manualEdits,
@@ -813,7 +817,111 @@ const ViewerContent = memo(function ({
     artifactKey: presentedKey,
     ready: faceReady,
     open: isToolOpen,
+    onSelectPiece: selectManualPiece,
   });
+  // A piece chosen elsewhere (the measures list, a chip, the agent's summary) gets the body handles; a cleared
+  // selection drops the face or the edges the tools held.
+  const sharedPiece = useSelectedPiece(entryPath);
+  const sharedPieceId = sharedPiece?.node.id;
+  const selectDirectPiece = directTool.controls.onSelectPiece;
+  const clearFace = faceTool.controls.onClear;
+  const cancelDirect = directTool.controls.onCancel;
+  const directMode = directTool.controls.mode;
+  const directPieceId = directTool.controls.selected?.componentId;
+  const facePieceId = faceTool.controls.selected?.componentId;
+  useEffect(() => {
+    if (!isToolOpen || !faceReady) {
+      return;
+    }
+    if (sharedPieceId === undefined) {
+      if (facePieceId !== undefined) {
+        clearFace?.();
+      }
+      if (directPieceId !== undefined) {
+        cancelDirect();
+      }
+      return;
+    }
+    if (directMode === 'translate' || directMode === 'rotate' || directMode === 'scale') {
+      if (directPieceId !== sharedPieceId) {
+        selectDirectPiece?.(sharedPieceId);
+      }
+    } else if (facePieceId !== undefined && facePieceId !== sharedPieceId) {
+      clearFace?.();
+    } else if (
+      (directMode === 'fillet' || directMode === 'chamfer') &&
+      directPieceId !== undefined &&
+      directPieceId !== sharedPieceId
+    ) {
+      cancelDirect();
+    }
+  }, [
+    isToolOpen,
+    faceReady,
+    sharedPieceId,
+    directMode,
+    directPieceId,
+    facePieceId,
+    selectDirectPiece,
+    clearFace,
+    cancelDirect,
+  ]);
+  // The face or the edges narrow the inspector's title and the assistant's suggestions.
+  const setInspectorSubSelection = isManualOwner ? workspace.setInspectorSubSelection : undefined;
+  const faceNormal = faceTool.controls.selected?.normal;
+  const subDirection = faceNormal ? faceDirection(faceNormal) : undefined;
+  const edgeCount = directTool.controls.selected?.edgeCount ?? 0;
+  const isEdgeMode = directMode === 'fillet' || directMode === 'chamfer';
+  useEffect(() => {
+    if (!setInspectorSubSelection) {
+      return;
+    }
+    setInspectorSubSelection(
+      facePieceId !== undefined && subDirection !== undefined
+        ? { kind: 'face', componentId: facePieceId, direction: subDirection }
+        : isEdgeMode && directPieceId !== undefined && edgeCount > 0
+          ? { kind: 'edge', componentId: directPieceId, edgeCount }
+          : undefined,
+    );
+  }, [setInspectorSubSelection, facePieceId, subDirection, isEdgeMode, directPieceId, edgeCount]);
+  useEffect(() => () => setInspectorSubSelection?.(undefined), [setInspectorSubSelection]);
+  // The inspector's size cells scale a piece in proportion through the same manual history.
+  const setScalePiece = isManualOwner ? workspace.setScalePiece : undefined;
+  const manualDocument = manualEdits.document;
+  const commitManual = manualEdits.commit;
+  useEffect(() => {
+    if (!setScalePiece) {
+      return;
+    }
+    if (!faceReady || !manualDocument) {
+      setScalePiece(undefined);
+      return;
+    }
+    setScalePiece(async (componentId, factor) => {
+      const extras = manualManifest?.nodesById[componentId]?.extras;
+      const name = extras?.['manualTargetName'];
+      const bounds = extras?.['manualBounds'] as { min?: number[]; max?: number[] } | undefined;
+      if (typeof name !== 'string' || !bounds?.min || !bounds.max || !(factor > 0) || !Number.isFinite(factor)) {
+        return false;
+      }
+      const origin = [0, 1, 2].map((axis) => ((bounds.min![axis] ?? 0) + (bounds.max![axis] ?? 0)) / 2) as [
+        number,
+        number,
+        number,
+      ];
+      const next = manualDocumentSchema.safeParse({
+        ...manualDocument,
+        operations: [
+          ...manualDocument.operations,
+          { id: randomUuid(), type: 'scale', target: { name }, origin, factor },
+        ],
+      });
+      return next.success ? commitManual(next.data) : false;
+    });
+    return () => {
+      setScalePiece(undefined);
+    };
+  }, [setScalePiece, faceReady, manualDocument, commitManual, manualManifest]);
   const viewerActionMenuData = partMenu.openMenuData;
   const viewerPart =
     viewerActionMenuData?.node.kind === 'part' && viewerActionMenuData.node.primitiveRefs?.length
@@ -929,6 +1037,46 @@ const ViewerContent = memo(function ({
     }
   }, [closePartMenu, isGeometryUnitClosed]);
 
+  const manualPanel = (onClose: (() => void) | undefined): React.JSX.Element => (
+    <ManualEditPanel
+      key={entryPath}
+      onDraftLayoutChange={onDraftLayoutChange}
+      document={manualEdits.document}
+      targets={manualTargets}
+      onCommit={manualEdits.commit}
+      onUndo={manualEdits.undo}
+      onRedo={manualEdits.redo}
+      canUndo={manualEdits.canUndo}
+      canRedo={manualEdits.canRedo}
+      isLoading={manualEdits.loading}
+      isSaving={manualEdits.saving}
+      error={manualEdits.error}
+      faceControls={faceTool.controls}
+      directControls={directTool.controls}
+      onShowProfiles={
+        hasManualDrawing && offeredViewId !== 'drawing'
+          ? () => {
+              showManualProjection('drawing');
+            }
+          : undefined
+      }
+      onShowModel={
+        hasManualModel && offeredViewId === 'drawing'
+          ? () => {
+              showManualProjection('model');
+            }
+          : undefined
+      }
+      onClose={onClose}
+      historySlot={isManualOwner ? workspace.inspectorHistorySlot : undefined}
+    />
+  );
+  const gestureQuota =
+    faceTool.controls.isDragging && faceTool.controls.action !== 'hole'
+      ? faceTool.controls.distance
+      : directTool.controls.isDragging && directTool.controls.preview
+        ? directTool.controls.preview
+        : undefined;
   return (
     <div className='@container/manual-viewer relative h-full min-h-0 min-w-0'>
       <div className='flex h-full min-h-0 min-w-0'>
@@ -1042,13 +1190,13 @@ const ViewerContent = memo(function ({
                           {cadRef ? (
                             <ViewerProjectionPicker viewId={viewId} entryPath={entryPath} cadActor={cadRef} />
                           ) : null}
-                          {kernelId === 'smlib' && (isPhone || !workspace) ? (
+                          {kernelId === 'smlib' && !workspace ? (
                             <Button
                               size='sm'
                               variant={isManualEditOpen ? 'secondary' : 'ghost'}
                               aria-pressed={isManualEditOpen}
                               onClick={() => {
-                                setIsManualEditOpen(!isManualEditOpen);
+                                setLocalManualOpen(!isManualEditOpen);
                               }}
                             >
                               {t('project.topBar.modify')}
@@ -1068,6 +1216,7 @@ const ViewerContent = memo(function ({
           }
         >
           <SelectedPieceChip entryPath={entryPath} location='viewer' />
+          {gestureQuota === undefined ? null : <GestureQuota value={gestureQuota} />}
           {!artifact && !overlayFailureMessage ? <GeometryStatus isEmpty={emptyModel} /> : null}
           {/* Reopen-renderer overlay — shown when the geometry unit was closed */}
           {isGeometryUnitClosed && (
@@ -1085,48 +1234,21 @@ const ViewerContent = memo(function ({
             </div>
           )}
         </ViewerStage>
-        {profile === 'editor' && kernelId === 'smlib' ? (
+        {profile === 'editor' && kernelId === 'smlib' && workspace && inspectorSlot
+          ? createPortal(manualPanel(undefined), inspectorSlot)
+          : null}
+        {profile === 'editor' && kernelId === 'smlib' && !workspace ? (
           <div
             hidden={!isManualEditOpen}
             inert={!isManualEditOpen}
             className={cn(
-              'absolute inset-y-0 right-0 z-20 h-full max-w-full min-h-0 shrink-0 border-l bg-sidebar @4xl/manual-viewer:static',
+              'absolute inset-y-0 right-0 z-20 h-full max-w-full min-h-0 shrink-0 overflow-y-auto border-l bg-sidebar @4xl/manual-viewer:static',
               draftLayout === 'profile' ? 'w-full @4xl/manual-viewer:w-140' : 'w-96',
             )}
           >
-            <ManualEditPanel
-              key={entryPath}
-              onDraftLayoutChange={onDraftLayoutChange}
-              document={manualEdits.document}
-              targets={manualTargets}
-              onCommit={manualEdits.commit}
-              onUndo={manualEdits.undo}
-              onRedo={manualEdits.redo}
-              canUndo={manualEdits.canUndo}
-              canRedo={manualEdits.canRedo}
-              isLoading={manualEdits.loading}
-              isSaving={manualEdits.saving}
-              error={manualEdits.error}
-              faceControls={faceTool.controls}
-              directControls={directTool.controls}
-              onShowProfiles={
-                hasManualDrawing && offeredViewId !== 'drawing'
-                  ? () => {
-                      showManualProjection('drawing');
-                    }
-                  : undefined
-              }
-              onShowModel={
-                hasManualModel && offeredViewId === 'drawing'
-                  ? () => {
-                      showManualProjection('model');
-                    }
-                  : undefined
-              }
-              onClose={() => {
-                setIsManualEditOpen(false);
-              }}
-            />
+            {manualPanel(() => {
+              setLocalManualOpen(false);
+            })}
           </div>
         ) : null}
       </div>

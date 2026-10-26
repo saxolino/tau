@@ -842,3 +842,34 @@ rendile personalizzabili»), modifiche a file di Tau (Apache-2.0 §4(b)):
 - **Sinopia.** Modelli senza progetto collegati da soli e una volta sola (`sinopia-cad.ts`,
   `use-sinopia-cad-sync.ts`, `send-to-sinopia-dialog.tsx`, `project-save-status.tsx`); copertine «Da Sinopia»
   (`sinopia-references.ts`); il progetto Sinopia del modello prende l'anteprima come copertina se non ne ha una.
+
+## 26 ottobre 2026 — una sola modalità: ispettore contestuale e assistente sempre presente
+
+Blocchi C1, C2, C5 e D4 del piano di Claude (`PIANO-CLAUDE-2026-10-26.md`), dalla valutazione Fable del 26 ottobre
+(§2.1, §2.3, §2.5, §2.8). Modifiche a file di Tau (Apache-2.0 §4(b)):
+
+- **Una sola modalità.** Via l'interruttore Assistente/Modifica e le corsie che si chiudevano da sole
+  (`project-workspace-context.tsx`, `chat-interface-desktop.tsx`, `project-top-bar.tsx`). La corsia destra è
+  `inspector-lane.tsx`: l'ispettore della selezione (modello, pezzo, faccia, spigoli) con l'ingombro L × P × A letto dal
+  solido e modificabile in proporzione, gli strumenti del visore montati lì con un portale (`chat-viewer.tsx`), le misure
+  del pezzo (`piece-measures-pane.tsx`, `chat-parameters.tsx`) e la cronologia; sotto, l'assistente sempre presente
+  (`components/chat/assistant-dock.tsx`), che si apre nella conversazione con ⌃J (`chat-history.tsx` variante `dock`,
+  `chat-title-bar.tsx`). Su tablet la corsia è un foglio richiudibile.
+- **Strumenti per la selezione.** `manual-edit-panel.tsx`: filtro Pezzo · Faccia · Spigolo sempre visibile, strumento
+  principale e secondari con icona, «Altri strumenti» nel menu, Applica (Invio) e Annulla (Esc) unici, cronologia che
+  dice cosa, quanto e su quale pezzo (`lib/inspector-selection.ts`). La selezione è una sola: un pezzo preso con uno
+  strumento diventa la selezione del modello e viceversa (`use-manual-direct-tool.ts`, `use-manual-face-tool.ts`).
+- **Selezione visibile e anteprima.** Nel visore (`packages/viewer`): velo e contorno titanio sulla faccia scelta,
+  spigoli in titanio, fantasma dell'estrusione di faccia (prisma), del foro (cilindro) e della portata di raccordo e
+  smusso (tubo) prima di Applica (`manual-preview-geometry.ts`, `planar-face-controls.tsx`, `direct-edit-controls.tsx`,
+  `planar-face-tool.ts`, `direct-edit-tool.ts`, `gltf-mesh.tsx`, `overlay-colors.constants.ts`); la distanza trascinata
+  resta in anteprima fino a Invio, con la quota accanto al cursore (`gesture-quota.tsx`). Foro posizionato con un clic
+  sulla faccia (`manual-face-draft.ts`, operazione `hole` esistente).
+- **Assistente che conosce la selezione.** «Parla di: …» con faccia o spigoli (`selected-piece-chip.tsx`), suggerimenti
+  dalla geometria che riempiono il compositore senza inviare (`assistant-suggestions.tsx`, al posto di
+  `agent-suggestions.tsx`, rimosso con il suo test), stato vuoto con tre partenze (`chat-history-empty.tsx`,
+  `use-home-image-intake.ts`).
+- **Versioni parlanti.** Ogni versione dice la misura cambiata con pezzo e valori prima → dopo e le operazioni manuali
+  aggiunte, tolte o modificate (`revision-history.ts`, `chat-revisions.tsx`).
+- **Tema.** Token `--titanium` e `--titanium-foreground` (`packages/ui/src/styles/tokens.css`, registrati in
+  `docs/policy/color-policy.md`); occhielli in mono maiuscolo (`components/ui/eyebrow.tsx`).

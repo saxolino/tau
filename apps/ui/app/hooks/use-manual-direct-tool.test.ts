@@ -6,7 +6,10 @@ import type { ManualEdits } from '#hooks/use-manual-edits.js';
 import { useManualDirectTool } from '#hooks/use-manual-direct-tool.js';
 
 vi.mock('#i18n/translate.js', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
-function fixture(mode: 'translate' | 'fillet' | 'default' = 'translate') {
+function fixture(
+  mode: 'translate' | 'fillet' | 'default' = 'translate',
+  onSelectPiece?: (componentId: string) => void,
+) {
   const commit = vi.fn<(next: ManualDocument) => Promise<boolean>>(async () => true);
   const edits: ManualEdits = {
     document: { version: 1, operations: [] },
@@ -78,6 +81,7 @@ function fixture(mode: 'translate' | 'fillet' | 'default' = 'translate') {
     artifactKey: 'mesh-a',
     ready: true,
     open: true,
+    onSelectPiece,
   };
   const hook = renderHook<ReturnType<typeof useManualDirectTool>, { ready: boolean; open?: boolean }>(
     ({ ready, open = true }: { ready: boolean; open?: boolean }) => useManualDirectTool({ ...options, ready, open }),
@@ -101,6 +105,45 @@ function fixture(mode: 'translate' | 'fillet' | 'default' = 'translate') {
 afterEach(cleanup);
 
 describe('useManualDirectTool', () => {
+  it('should preview the fillet reach on the picked edges at the typed size, without writing', () => {
+    const { result, commit } = fixture('fillet');
+    expect(result.current.tool?.edgeSize).toBeCloseTo(0.001);
+    act(() => {
+      result.current.controls.onSizeChange(0.5);
+    });
+    expect(result.current.tool?.edgeSize).toBeCloseTo(0.0005);
+    act(() => {
+      result.current.controls.onCancel();
+    });
+    // No edge left: no ghost.
+    expect(result.current.tool?.edgeSize).toBeUndefined();
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('should put the body handles on a piece chosen elsewhere and drop them when the selection clears', () => {
+    const { result } = fixture('default');
+    act(() => {
+      result.current.controls.onCancel();
+    });
+    expect(result.current.tool?.selection).toBeUndefined();
+    act(() => {
+      result.current.controls.onSelectPiece?.('body');
+    });
+    expect(result.current.tool?.selection?.componentId).toBe('body');
+    expect(result.current.controls.selected?.componentId).toBe('body');
+    act(() => {
+      result.current.controls.onSelectPiece?.(undefined);
+    });
+    expect(result.current.tool?.selection).toBeUndefined();
+  });
+
+  it('should make a picked piece, or the piece of a picked edge, the shared selection', () => {
+    const onSelectPiece = vi.fn<(componentId: string) => void>();
+    fixture('default', onSelectPiece);
+    fixture('fillet', onSelectPiece);
+    expect(onSelectPiece.mock.calls).toEqual([['body'], ['body']]);
+  });
+
   it('should select a body immediately on opening and retain it through rotate and scale', async () => {
     const { result, commit } = fixture('default');
     const move = result.current.tool!;
