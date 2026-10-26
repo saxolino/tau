@@ -1148,11 +1148,21 @@ const graphicsMachineDefinition = setup({
           }),
         },
         gltfAnalysisReady: {
-          context: ({ context, event }) => ({
-            gltfPresentation: gltfRequestMatches(context, event)
-              ? withGltfPresentationPhase(context.gltfPresentation, 'preparing')
-              : context.gltfPresentation,
-          }),
+          context: ({ context, event }) => {
+            const presentation = context.gltfPresentation;
+            // Deferred section analysis can finish after this exact scene has already committed.
+            // It enriches the displayed model; only an uncommitted candidate awaits presentation.
+            const alreadyPresented =
+              presentation.phase === 'presented' &&
+              presentation.presentedRevision === event.revision &&
+              presentation.presentedKey === event.key;
+            return {
+              gltfPresentation:
+                gltfRequestMatches(context, event) && !alreadyPresented
+                  ? withGltfPresentationPhase(presentation, 'preparing')
+                  : presentation,
+            };
+          },
         },
         gltfPresentationCommitted: ({ context, event }, enq) => {
           if (!gltfRequestMatches(context, event)) {
