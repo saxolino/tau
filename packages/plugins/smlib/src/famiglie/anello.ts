@@ -388,10 +388,10 @@ function costruisciConEsiti(lib: Lib, p: ParametriAnello): RisultatoCostruzione 
         name: 'Pietra',
         shape: normalizzaForma(lib, pietra),
         ruolo: 'pietra',
-        materiale: 'pietra',
-        color: '#e8f1fb',
+        materiale: 'diamante',
+        color: aspettoMateriale('diamante').color,
         metalness: 0,
-        roughness: 0.05,
+        roughness: aspettoMateriale('diamante').roughness,
       });
     }
   } catch (error) {
