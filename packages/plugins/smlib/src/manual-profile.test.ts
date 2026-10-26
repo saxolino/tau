@@ -12,12 +12,7 @@ import {
   serializeManualDocument,
 } from '@taucad/smlib/manual-operations';
 import type { ManualPointProfile, ManualProfile } from '@taucad/smlib/manual-operations';
-import {
-  applyManualOperations,
-  buildManualProfile,
-  buildManualProfileWire,
-  manualBodySignature,
-} from '#manual-evaluator.js';
+import { applyManualOperations, buildManualProfile, buildManualProfileWire } from '#manual-evaluator.js';
 import { isDrawingShape, normalizeRenderShapes, renderDrawing, sampleDrawing } from '#utils/render-output.js';
 
 let library: typeof Smlib;
@@ -50,9 +45,13 @@ describe('editable native profile geometry', () => {
     const original = library.Plane.XY.at(rectangle.origin)
       .mul(library.Polygon(rectangle.points.map(({ x, y }) => [x, y, 0])))
       .extrude(2);
-    expect(await manualBodySignature(library, buildManualProfile(library, rectangle).extrude(2))).toBe(
-      await manualBodySignature(library, original),
-    );
+    // SMLib 0.5 serializes B-rep bytes in an order that depends on allocation history, so two identical
+    // builds hash differently; compare the geometry itself instead of the SMB digest.
+    const rebuilt = buildManualProfile(library, rectangle).extrude(2);
+    expect(rebuilt.volume).toBeCloseTo(original.volume, 9);
+    expect(rebuilt.area).toBeCloseTo(original.area, 9);
+    expect(rebuilt.faces().length).toBe(original.faces().length);
+    expect(rebuilt.edges().length).toBe(original.edges().length);
   });
 
   it('should retain an open sketch as a native drawing through save and fresh replay', async () => {

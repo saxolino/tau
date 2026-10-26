@@ -22,6 +22,7 @@ sys.path.insert(0, str(PYTHON_ROOT))
 import numpy
 import smlibpy
 import smlibpy.parts
+from smlibpy.mesh import _tessellate
 from smlibpy import Box, Circle, Cylinder, Line, Mesh, Part, Polyline, Rectangle, Sphere, Torus, load, tessellate
 
 import worker
@@ -223,11 +224,13 @@ class GeometryTest(unittest.TestCase):
 
     def test_face_runs(self) -> None:
         box = Box(1, 1, 1)
-        mesh = tessellate(box, 0.1, 15)
+        mesh = _tessellate(box, 0.1, 15, True)
         owners = worker._face_runs(box, mesh)
         self.assertEqual(sorted(set(owners.tolist())), list(range(6)))
         face = box.faces()[0]
         self.assertIsNone(worker._face_runs(face, tessellate(face, 0.1, 15)))
+        # A mesh without the kernel's polygons (the public tessellate since 0.5) is one group.
+        self.assertIsNone(worker._face_runs(box, tessellate(box, 0.1, 15)))
         # Polygon owners that do not cover the triangles mean one group, not a misassigned face.
         self.assertIsNone(worker._face_runs(box, types.SimpleNamespace(_poly=mesh._poly, triangles=mesh.triangles[:-1])))
 
@@ -236,9 +239,18 @@ class GeometryTest(unittest.TestCase):
         mesh, owners, triangles = worker._surface(torus, 0.05, 15)
         self.assertEqual(worker._open_edges([mesh]), 0)
         self.assertEqual(len(owners), len(triangles))
-        with patch.object(worker, "_open_edges", side_effect=[3, 3, 3]):
-            mesh, _, _ = worker._surface(torus, 0.05, 15)
+        # smlibpy 0.5 closes the moved torus's seam, so force the safety net: an open body mesh, closed face meshes.
+        with patch.object(worker, "_open_edges", side_effect=[3, 0, 3]):
+            mesh, owners, triangles = worker._surface(torus, 0.05, 15)
         self.assertGreater(len(mesh.triangles), 0)
+        self.assertEqual(len(owners), len(triangles))
+        self.assertEqual(sorted(set(owners.tolist())), list(range(len(torus.faces()))))
+        with patch.object(worker, "_open_edges", side_effect=[3, 3, 3]):  # face meshes that close no better are not used
+            body, _, _ = worker._surface(torus, 0.05, 15)
+        self.assertGreater(len(body.triangles), 0)
+        face_mesh, face_owners, _ = worker._surface(Box(1, 1, 1).faces()[0], 0.1, 15)
+        self.assertIsNone(face_owners)
+        self.assertGreater(len(face_mesh.triangles), 0)
         sphere = tessellate(Sphere(2), 0.1, 15)
         self.assertEqual(worker._surface(sphere, 0.1, 15)[1], None)
         _, sketch_owners, _ = worker._surface(Rectangle(2, 1), 0.1, 15)
@@ -252,7 +264,7 @@ class GeometryTest(unittest.TestCase):
         empty = worker._face_arrays(Mesh(numpy.zeros((0, 3)), numpy.zeros((0, 3), dtype=int)), None)
         self.assertEqual((len(empty["vertices"]), len(empty["triangles"]), empty["faceGroups"]), (0, 0, []))
         box = Box(1, 1, 1)
-        mesh = tessellate(box, 0.1, 15)
+        mesh = _tessellate(box, 0.1, 15, True)
         grouped = worker._face_arrays(mesh, worker._face_runs(box, mesh))
         self.assertEqual(len(grouped["faceGroups"]), 6)
         self.assertEqual(len(grouped["vertices"]), 24)

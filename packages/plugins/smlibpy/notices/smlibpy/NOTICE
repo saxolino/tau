@@ -1,7 +1,7 @@
-smlibpy 0.3.5
+smlibpy 0.5.0
 
-The pinned smlibpy-0.3.5 wheels carry their own licence files in
-smlibpy-0.3.5.dist-info/licenses/, which every sealed closure keeps:
+The pinned smlibpy-0.5.0 wheels carry their own licence files in
+smlibpy-0.5.0.dist-info/licenses/, which every sealed closure keeps:
 
 - LICENSE: smlibpy, MIT License, Copyright (c) 2026 AWV Informatik AG.
 - NOTICE: the attribution for USD BRep (SMLib, SM_API, SmPyLib) and Lato.

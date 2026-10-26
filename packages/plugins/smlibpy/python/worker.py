@@ -353,23 +353,23 @@ def _bounding_diagonal(configs: list[dict[str, Any]]) -> float:
 
 
 def _face_runs(item: Any, mesh: Any) -> Any:
-    """Each triangle's face index in `item.faces()` order, from the kernel's own polygon owners; `None` for one group."""
+    """Each triangle's face index in `item.faces()` order, from the kernel's own polygon owners; `None` for one group.
 
-    import numpy
+    `mesh` must be a tessellation that kept the kernel's polygons (`smlibpy.mesh._tessellate(..., keep=True)`): since
+    smlibpy 0.5 the public `tessellate` no longer holds them. Without them (or when they do not cover the triangles)
+    the mesh is one group.
+    """
+
     from smlibpy import Face
-    from smlibpy._kernel import ext
+    from smlibpy.mesh import _triangle_faces
 
     if isinstance(item, Face):
         return None
-    owners = numpy.asarray(ext.poly_face_indices(mesh._poly.poly, item._brep), dtype=numpy.int64)
-    polygons = numpy.asarray(mesh._poly.poly.to_numpy_arrays(face_varying_normals=False)["faces"], dtype=numpy.int64)
-    sizes = []
-    index = 0
-    while index < len(polygons):
-        sizes.append(int(polygons[index]))
-        index += sizes[-1] + 1
-    owner = numpy.repeat(owners, numpy.maximum(numpy.array(sizes, dtype=numpy.int64) - 2, 0))
-    return owner if len(owner) == len(mesh.triangles) else None
+    try:
+        owner = _triangle_faces(item, mesh)
+    except Exception:  # polygons that do not cover the triangles: one group, not a misassigned face
+        return None
+    return owner if len(owner) == len(mesh.triangles) and len(owner) > 0 else None
 
 
 def _open_edges(meshes: list[Any]) -> int:
@@ -392,18 +392,35 @@ def _open_edges(meshes: list[Any]) -> int:
 def _surface(item: Any, linear_tolerance: float, angular_tolerance: float) -> tuple[Any, Any, Any]:
     """Tessellate one body, face or mesh in one pass, so faces share their boundary samples and close.
 
-    smlibpy 0.3.5 leaves the seam of a moved torus open in a whole-body mesh although the face alone meshes closed (the
-    SMLib kernel's smlibwasm shows the same): for a solid whose body mesh is open, per-face meshes are kept when they
+    smlibpy 0.3.5 left the seam of a moved torus open in a whole-body mesh although the face alone meshed closed
+    (smlibpy 0.5 closes it): as a safety net, for a solid whose body mesh is open, per-face meshes are kept when they
     close better.
     """
 
-    import numpy
-    from smlibpy import Mesh, Part, tessellate
-    from smlibpy.mesh import merge
+    from smlibpy import Face, Mesh, Part, tessellate
+    from smlibpy.mesh import _tessellate, merge
 
     if isinstance(item, Mesh):
         return item, None, item.triangles
-    mesh = tessellate(item, linear_tolerance, angular_tolerance)
+    # The kernel's polygons are kept just long enough to read each triangle's face: smlibpy 0.5 drops them otherwise.
+    keep = not isinstance(item, Face)
+    if keep:
+        mesh = _tessellate(item, linear_tolerance, angular_tolerance, True)
+    else:
+        mesh = tessellate(item, linear_tolerance, angular_tolerance)
+    try:
+        return _surface_of(item, mesh, linear_tolerance, angular_tolerance)
+    finally:
+        mesh.dispose()
+
+
+def _surface_of(item: Any, mesh: Any, linear_tolerance: float, angular_tolerance: float) -> tuple[Any, Any, Any]:
+    """The body mesh of `_surface`, or its per-face meshes where those close better, with each triangle's face."""
+
+    import numpy
+    from smlibpy import Part, tessellate
+    from smlibpy.mesh import merge
+
     if isinstance(item, Part) and len(mesh.triangles) > 0 and _open_edges([mesh]) > 0:
         faces = [tessellate(face, linear_tolerance, angular_tolerance) for face in item.faces()]
         if _open_edges(faces) < _open_edges([mesh]):

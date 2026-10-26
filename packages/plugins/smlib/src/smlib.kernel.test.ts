@@ -2049,15 +2049,15 @@ describe('manual replay version compatibility', () => {
     // Frozen canonical payloads from the 1.3.0 replay algorithm at 05def99a7.
     // Keep these independent of the current replay helpers and their field ordering.
     const sourcePayload =
-      '{"entryPath":"main.ts","files":[{"path":"main.ts","sha256":"1af1218e2b97a5fbe8b492d283ff4b2d560f58dee1b1441f35bb3d9cf8fd6a2e"}],"kernelVersion":"1.3.0","libraryVersion":"0.3.4","parameters":{"size":10},"unresolvedPaths":[],"version":1}';
+      '{"entryPath":"main.ts","files":[{"path":"main.ts","sha256":"1af1218e2b97a5fbe8b492d283ff4b2d560f58dee1b1441f35bb3d9cf8fd6a2e"}],"kernelVersion":"1.3.0","libraryVersion":"0.5.0","parameters":{"size":10},"unresolvedPaths":[],"version":1}';
     const oldSource = createHash('sha256').update(sourcePayload).digest('hex');
     expect(createHash('sha256').update(code).digest('hex')).toBe(
       '1af1218e2b97a5fbe8b492d283ff4b2d560f58dee1b1441f35bb3d9cf8fd6a2e',
     );
-    expect(oldSource).toBe('801f9d03793e69f74abf3557afcd055a9f1d322764023a1f117207807649cb34');
+    expect(oldSource).toBe('03e0d443f8ee06500443684db52c136dfe23c6a3e488175f3978e0177e594d58');
     const witnessPayload = `{"operations":[],"source":"${oldSource}","targetName":"piece","version":1}`;
     const oldWitness = createHash('sha256').update(witnessPayload).digest('hex');
-    expect(oldWitness).toBe('30e359254831ad5106fecf2647fb9872949ebac3c5eae128e91aa3a95dbdd8e4');
+    expect(oldWitness).toBe('7c6ee3d18b17624d78b0e49627050b8b11981962b8046e8cf49f7ed28d65a2db');
     const definition = await resolveSmlibDefinition();
     expect(definition.version).toBe('1.5.0');
     const initial = createClient({ 'main.ts': code });

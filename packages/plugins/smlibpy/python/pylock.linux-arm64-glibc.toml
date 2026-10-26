@@ -29,11 +29,11 @@ hashes = { sha256 = "0aadf13b60048d501e05fa699efaf7734e2494f3498a4c2a5521d822640
 
 [[packages]]
 name = "smlibpy"
-version = "0.3.5"
+version = "0.5.0"
 index = "https://pypi.org/simple"
 
 [[packages.wheels]]
-name = "smlibpy-0.3.5-cp313-cp313-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl"
-url = "https://files.pythonhosted.org/packages/e9/cb/aeb41cd6c9ba2f78fc78bab729348fcb53ef4d638aae1f8b5a11a57bf3eb/smlibpy-0.3.5-cp313-cp313-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl"
-size = 8025067
-hashes = { sha256 = "695ca595f42d86d3e9788201e79af36b371dc5cf9f08fa07c1fbf453ee02fcb3" }
+name = "smlibpy-0.5.0-cp313-cp313-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl"
+url = "https://files.pythonhosted.org/packages/79/26/b132a8627043b8245e1227e6ddbe065f652c087a7cf340bbf54c9960a09f/smlibpy-0.5.0-cp313-cp313-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl"
+size = 9812515
+hashes = { sha256 = "72af0ee9e1d2f559e2504e80df748eb9af117c69f79fc85af96de9a591c2490b" }
