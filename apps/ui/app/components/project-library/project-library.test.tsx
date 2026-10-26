@@ -835,7 +835,9 @@ describe('ProjectLibrary', () => {
     );
 
     expect(
-      screen.getByText('tau.json uses a format this version of Tau does not support. Update Tau to open it.'),
+      screen.getByText(
+        'tau.json uses a format this version of SinopiaCAD does not support. Update SinopiaCAD to open it.',
+      ),
     ).toBeInTheDocument();
     expect(
       screen.getByText('$schema "https://tau.new/schemas/tau-schema-v2.json" is not supported by this version of Tau.'),

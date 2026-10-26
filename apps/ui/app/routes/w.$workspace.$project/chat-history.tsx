@@ -91,7 +91,7 @@ const ChatScroller = forwardRef<HTMLDivElement, ScrollerProps & { className?: st
 
 const ChatHistoryHeader = (): undefined => undefined;
 const ChatHistoryEmptyPlaceholder = (): React.JSX.Element => (
-  <div className='mx-auto flex h-full w-[calc(100%_-_1rem)] max-w-xl px-3 py-6'>
+  <div className='mx-auto flex h-full w-[calc(100%_-_1rem)] max-w-xl px-5 py-6'>
     <ChatHistoryEmpty />
   </div>
 );
@@ -257,7 +257,7 @@ const ExpandedChatHistory = memo(function ({
           >
             {/* Chat-restore time-travel: wire the store seams + surface a fork marker. */}
             {/* The one header row: name, rename in place, chat menu, close. */}
-            <FloatingPanelContentHeader className='gap-1'>
+            <FloatingPanelContentHeader className='h-11 gap-1 border-b bg-background px-3'>
               <ChatTitleBar
                 closeButton={
                   <FloatingPanelClose
@@ -305,7 +305,7 @@ const ExpandedChatHistory = memo(function ({
             <div
               role='region'
               aria-label={t('project.agent.composer')}
-              className='relative mx-auto mb-2 w-[calc(100%_-_1rem)] max-w-xl shrink-0'
+              className='relative mx-auto mb-3 w-[calc(100%_-_1.5rem)] max-w-xl shrink-0'
             >
               <ScrollDownButton
                 hasContent={messageIds.length > 0}

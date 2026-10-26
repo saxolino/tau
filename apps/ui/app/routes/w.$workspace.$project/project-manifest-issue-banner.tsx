@@ -47,8 +47,8 @@ export function ProjectManifestIssueBanner(): React.JSX.Element | undefined {
         <div className='font-medium'>tau.json needs attention</div>
         <div className='text-muted-foreground'>
           {canRepair
-            ? 'Tau won’t change it until it is repaired. Repair rewrites it from the project details open here.'
-            : 'Fix the syntax error in tau.json. Tau won’t change it until then.'}
+            ? 'SinopiaCAD won’t change it until it is repaired. Repair rewrites it from the project details open here.'
+            : 'Fix the syntax error in tau.json. SinopiaCAD won’t change it until then.'}
         </div>
         <ul className='mt-1 space-y-0.5 font-mono text-xs text-muted-foreground'>
           {lines.slice(0, maxIssueLines).map((line) => (

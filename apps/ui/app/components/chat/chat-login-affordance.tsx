@@ -60,7 +60,7 @@ export function ChatLoginAffordance({ login }: { readonly login: AgentHostLogin 
             : `Sign in to ${name} with one of: ${login.methods.map((method) => method.name).join(' · ')}.`}
         </p>
       ) : undefined}
-      <p className='text-xs text-muted-foreground'>{`Tau never handles ${name}'s credentials; it stays signed in wherever it runs.`}</p>
+      <p className='text-xs text-muted-foreground'>{`SinopiaCAD never handles ${name}'s credentials; it stays signed in wherever it runs.`}</p>
     </section>
   );
 }

@@ -62,6 +62,14 @@ type ProjectWorkspaceContextValue = {
   openPanel: (panelId: WorkbenchPanelId) => void;
   setWorkbenchOpen: (open: boolean) => void;
   setChatOpen: (open: boolean) => void;
+  assistantEntryOpen: boolean;
+  manualOpen: boolean;
+  setManualOpen: (open: boolean) => void;
+  manualAvailable: boolean;
+  manualViewId: string | undefined;
+  registerManualViewer: (viewId: string, available: boolean, active: boolean) => () => void;
+  manualDraftLayout: 'profile' | 'operation' | undefined;
+  setManualDraftLayout: (layout: 'profile' | 'operation' | undefined) => void;
   connectWorkbench: (openPanel: (panelId: WorkbenchPanelId) => void) => () => void;
   registerLayoutController: (controller: WorkbenchLayoutController) => () => void;
   layoutController: WorkbenchLayoutController;
@@ -178,6 +186,32 @@ export function ProjectWorkspaceProvider({
 }): React.JSX.Element {
   const { editorRef, mainEntryPath } = useProject();
   const [exportOpen, setExportOpen] = useState(false);
+  const [assistantEntryOpen, setAssistantEntryOpen] = useState(true);
+  const [manualOpen, setManualOpenState] = useState(false);
+  const [manualViewers, setManualViewers] = useState<
+    ReadonlyMap<string, Readonly<{ available: boolean; active: boolean }>>
+  >(new Map());
+  const registerManualViewer = useCallback((viewId: string, available: boolean, active: boolean) => {
+    const registration = { available, active };
+    setManualViewers((current) => new Map(current).set(viewId, registration));
+    return () => {
+      setManualViewers((current) => {
+        if (current.get(viewId) !== registration) {
+          return current;
+        }
+        const next = new Map(current);
+        next.delete(viewId);
+        return next;
+      });
+    };
+  }, []);
+  const manualViewId = [...manualViewers].find(([, viewer]) => viewer.active)?.[0] ?? manualViewers.keys().next().value;
+  const manualAvailable = manualViewId !== undefined && manualViewers.get(manualViewId)?.available === true;
+  const [manualDraftLayout, setManualDraftLayout] = useState<'profile' | 'operation'>();
+  const setManualOpen = useCallback((open: boolean) => {
+    setAssistantEntryOpen(false);
+    setManualOpenState(open);
+  }, []);
   const providerActiveRef = useRef(true);
   const recordRecoveryFocusRef = useRef<HTMLButtonElement>(null);
   const pendingRecordRecoveryFocus = useRef(false);
@@ -291,6 +325,10 @@ export function ProjectWorkspaceProvider({
 
   const setChatOpen = useCallback(
     (open: boolean) => {
+      setAssistantEntryOpen(false);
+      if (open) {
+        setManualOpenState(false);
+      }
       // The home's agent lane follows the last choice made on any project page.
       rememberAgentLaneOpen(open);
       editorRef.send({
@@ -316,6 +354,7 @@ export function ProjectWorkspaceProvider({
   );
   useEffect(() => {
     if (isEditorReady && isArchiveOpen) {
+      // oxlint-disable-next-line react/set-state-in-effect -- Router archive navigation synchronizes the editor lane and its transient manual mode.
       setChatOpen(true);
     }
   }, [isArchiveOpen, isEditorReady, setChatOpen]);
@@ -326,12 +365,17 @@ export function ProjectWorkspaceProvider({
   useEffect(() => {
     if (isEditorReady && shouldOpenChat && openedForNavigationRef.current !== navigationKey) {
       openedForNavigationRef.current = navigationKey;
+      // oxlint-disable-next-line react/set-state-in-effect -- A new router entry explicitly asks the editor to reveal its conversation.
       setChatOpen(true);
     }
   }, [isEditorReady, navigationKey, setChatOpen, shouldOpenChat]);
 
   const setWorkbenchOpen = useCallback(
     (open: boolean) => {
+      setAssistantEntryOpen(false);
+      if (open) {
+        setManualOpenState(false);
+      }
       if (!open) {
         pendingFilesRef.current = undefined;
       }
@@ -518,6 +562,14 @@ export function ProjectWorkspaceProvider({
       openPanel,
       setWorkbenchOpen,
       setChatOpen,
+      assistantEntryOpen,
+      manualOpen: manualOpen && manualAvailable,
+      setManualOpen,
+      manualAvailable,
+      manualViewId,
+      registerManualViewer,
+      manualDraftLayout,
+      setManualDraftLayout,
       connectWorkbench,
       registerLayoutController,
       layoutController,
@@ -530,6 +582,13 @@ export function ProjectWorkspaceProvider({
       openPanel,
       registerLayoutController,
       setChatOpen,
+      assistantEntryOpen,
+      manualOpen,
+      setManualOpen,
+      manualAvailable,
+      manualViewId,
+      registerManualViewer,
+      manualDraftLayout,
       setWorkbenchOpen,
       registerRecordRecoveryFocus,
       restoreRecordRecoveryFocus,

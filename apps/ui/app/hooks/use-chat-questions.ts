@@ -157,7 +157,7 @@ export function useChatQuestions(chatId: string, deliver: (text: string) => Prom
       return {
         asks: [],
         answers: {},
-        recordFailure: 'Questions could not be read. Update Tau or restore the question record.',
+        recordFailure: 'Questions could not be read. Update SinopiaCAD or restore the question record.',
       };
     }
   }, [questionsContent, legacyQuestionsContent, answersContent, legacyAnswersContent]);

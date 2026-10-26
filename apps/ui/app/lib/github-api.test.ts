@@ -172,7 +172,7 @@ describe('GitHubApiClient', () => {
 
       expect(error).toBeInstanceOf(GitHubTreeTruncatedError);
       expect((error as Error).message).toBe(
-        'This repository has too many files for GitHub to list, so Tau cannot preview its files.',
+        'This repository has too many files for GitHub to list, so SinopiaCAD cannot preview its files.',
       );
     });
   });

@@ -27,7 +27,7 @@ const privacyModes: PrivacyMode[] = [
   {
     id: 'share',
     name: 'Share Data',
-    description: 'Improve Tau for everyone',
+    description: 'Improve SinopiaCAD for everyone',
   },
   {
     id: 'private',

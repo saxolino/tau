@@ -137,7 +137,7 @@ describe('RevisionOutcomes', () => {
     expect(errors).toEqual([
       {
         title: 'Nothing was saved for that change',
-        description: 'Tau could not save this project’s earlier edits first. Try sending that again.',
+        description: 'SinopiaCAD could not save this project’s earlier edits first. Try sending that again.',
       },
     ]);
     expect(`${errors[0]?.title ?? ''} ${errors[0]?.description ?? ''}`).not.toMatch(/checkout/iu);

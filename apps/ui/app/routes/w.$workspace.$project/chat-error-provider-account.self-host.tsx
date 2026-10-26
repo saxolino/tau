@@ -76,7 +76,7 @@ export const ChatErrorProviderAccount = memo(function ({
       icon={Wallet}
       className={className}
       title={title}
-      description={`This server's ${name} key is out of credit, so Tau could not run this turn. Add credit ${billing === undefined ? `with ${name}` : `on ${billing.host}`}, then try again.`}
+      description={`This server's ${name} key is out of credit, so SinopiaCAD could not run this turn. Add credit ${billing === undefined ? `with ${name}` : `on ${billing.host}`}, then try again.`}
       actions={
         <>
           {billing === undefined ? null : (

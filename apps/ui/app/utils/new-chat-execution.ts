@@ -46,7 +46,7 @@ export const tauModelRefusal = (modelId: string, readiness: TauModelReadiness): 
   readiness === 'not-offered'
     ? `${modelId} is no longer offered. Pick a different model.`
     : readiness === 'catalog-unavailable'
-      ? "Tau can't reach its model list, so it can't start a Tau model. Check your connection, or pick another agent."
+      ? "SinopiaCAD can't reach its model list, so it can't start a SinopiaCAD model. Check your connection, or pick another agent."
       : undefined;
 
 /**

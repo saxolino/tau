@@ -1,7 +1,7 @@
 import { Link } from 'react-router';
 import { useState } from 'react';
 import { useSelector } from '@xstate/react';
-import { ChevronRight, Download, History, Send } from 'lucide-react';
+import { ChevronRight, Download, History, Send, SlidersHorizontal } from 'lucide-react';
 import { Button } from '@taucad/ui/components/button';
 import { KeyShortcut } from '@taucad/ui/components/key-shortcut';
 import { Separator } from '@taucad/ui/components/separator';
@@ -65,7 +65,14 @@ function ProjectName(): React.JSX.Element {
  */
 export function ProjectTopBar(): React.JSX.Element {
   const { t } = useTranslation();
-  const { openPanel, registerRecordRecoveryFocus, restoreRecordRecoveryFocus } = useProjectWorkspace();
+  const {
+    openPanel,
+    registerRecordRecoveryFocus,
+    restoreRecordRecoveryFocus,
+    manualOpen,
+    setManualOpen,
+    manualAvailable,
+  } = useProjectWorkspace();
   const [isSendOpen, setSendOpen] = useState(false);
   const link = useSinopiaCadLink();
   const linking = useSinopiaCadLinking();
@@ -77,7 +84,7 @@ export function ProjectTopBar(): React.JSX.Element {
       data-slot='project-top-bar'
       className={
         // The window's own controls float over the bar's start while the sidebar is closed; the bar leaves them room.
-        '@container/topbar flex h-9 shrink-0 items-center gap-1 border-b bg-sidebar pr-1 pl-1 md:group-data-[sidebar-open=false]/app-shell:pl-(--titlebar-controls-width)'
+        '@container/topbar flex h-12 shrink-0 items-center gap-2 bg-sidebar pr-3 pl-1 md:group-data-[sidebar-open=false]/app-shell:pl-(--titlebar-controls-width)'
       }
     >
       <WorkbenchLaneToggle place='viewer' fold={topBarFold} />
@@ -87,9 +94,11 @@ export function ProjectTopBar(): React.JSX.Element {
           <li className='shrink-0'>
             <Link
               to='/projects'
-              className='rounded-sm px-1.5 py-1 text-muted-foreground outline-none hover:text-foreground focus-visible:focus-outline'
+              aria-label={t('project.topBar.projects')}
+              title={t('project.topBar.projects')}
+              className='rounded-sm px-1.5 py-1 font-medium text-foreground outline-none hover:text-foreground focus-visible:focus-outline'
             >
-              {t('project.topBar.projects')}
+              SinopiaCAD
             </Link>
           </li>
           <li aria-hidden className='shrink-0 text-muted-foreground'>
@@ -142,6 +151,7 @@ export function ProjectTopBar(): React.JSX.Element {
           <span className={topBarFold.labelClassName}>{t('project.topBar.export')}</span>
         </PaneButton>
         <Button
+          variant='ghost'
           size='xs'
           aria-label={t('project.topBar.sendToSinopia')}
           onClick={() => {
@@ -155,7 +165,26 @@ export function ProjectTopBar(): React.JSX.Element {
           <SendToSinopiaDialog isOpen={isSendOpen} onOpenChange={setSendOpen} link={link} linking={linking} />
         ) : null}
         <Separator orientation='vertical' className='mx-1 data-[orientation=vertical]:h-4' />
-        <ChatLaneToggle place='viewer' fold={topBarFold} />
+        <div
+          role='group'
+          aria-label={t('project.topBar.designTools')}
+          className='flex items-center gap-1 rounded-lg border bg-background p-0.5'
+        >
+          <ChatLaneToggle place='viewer' fold={{ className: '', labelClassName: 'inline' }} />
+          <Button
+            variant={manualOpen ? 'secondary' : 'ghost'}
+            size='xs'
+            disabled={!manualAvailable}
+            aria-pressed={manualOpen}
+            aria-label={t('project.topBar.modify')}
+            onClick={() => {
+              setManualOpen(!manualOpen);
+            }}
+          >
+            <SlidersHorizontal aria-hidden className='size-3.5' />
+            {t('project.topBar.modify')}
+          </Button>
+        </div>
       </div>
     </section>
   );

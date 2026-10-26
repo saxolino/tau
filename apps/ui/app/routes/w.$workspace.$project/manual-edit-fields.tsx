@@ -25,7 +25,7 @@ export function ManualNumberField({
   const scrubStart = useRef<number | undefined>(undefined);
   return (
     <div className='grid min-w-0 grid-cols-[minmax(0,2fr)_minmax(0,3fr)] items-center gap-2'>
-      <label htmlFor={id} className='text-xs text-muted-foreground'>
+      <label htmlFor={id} className='text-sm text-muted-foreground'>
         {label}
       </label>
       <SliderInput
@@ -80,7 +80,7 @@ export function ManualChoice({
 }>): React.JSX.Element {
   return (
     <div className='grid min-w-0 grid-cols-[minmax(0,2fr)_minmax(0,3fr)] items-center gap-2'>
-      <span className='text-xs text-muted-foreground'>{label}</span>
+      <span className='text-sm text-muted-foreground'>{label}</span>
       <Select size='sm' value={value} onValueChange={onChange}>
         <SelectTrigger aria-label={label} className='w-full min-w-0'>
           <SelectValue />
@@ -111,7 +111,7 @@ export function ManualVectorFields({
 }>): React.JSX.Element {
   return (
     <fieldset className='min-w-0 space-y-1'>
-      <legend className='mb-1 text-xs font-medium'>{label}</legend>
+      <legend className='mb-2 text-sm font-medium'>{label}</legend>
       {(['X', 'Y', 'Z'] as const).map((axis, index) => (
         <ManualNumberField
           key={axis}

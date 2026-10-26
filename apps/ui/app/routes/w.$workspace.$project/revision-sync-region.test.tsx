@@ -1652,7 +1652,7 @@ describe('RevisionSyncRegion backup line', () => {
 
     const backup = screen.getByRole('status', { name: 'Backup status' });
     expect(backup).toHaveTextContent(
-      'Tau has to repair this project’s copy on Tau Cloud before it can back it up again. Nothing on this device is lost.',
+      'SinopiaCAD has to repair this project’s copy on Tau Cloud before it can back it up again. Nothing on this device is lost.',
     );
     expect(backup).not.toHaveTextContent('GIT_REPOSITORY_INCOMPLETE');
     expect(within(backup).queryByRole('button')).toBeNull();

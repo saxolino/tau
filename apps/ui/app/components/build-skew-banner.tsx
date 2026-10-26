@@ -2,6 +2,7 @@ import { useSyncExternalStore } from 'react';
 import { AlertCircle } from 'lucide-react';
 import { isBuildSuperseded, subscribeBuildSkew } from '#filesystem/build-skew.js';
 import { Button } from '@taucad/ui/components/button';
+import { useTranslation } from '#i18n/translate.js';
 
 const serverSnapshot = (): boolean => false;
 
@@ -15,6 +16,7 @@ const reload = (): void => {
  * durable state, so reloading is the only way to make it useful again.
  */
 export function BuildSkewBanner(): React.JSX.Element | undefined {
+  const { t } = useTranslation();
   const superseded = useSyncExternalStore(subscribeBuildSkew, isBuildSuperseded, serverSnapshot);
   if (!superseded) {
     return undefined;
@@ -25,9 +27,9 @@ export function BuildSkewBanner(): React.JSX.Element | undefined {
       className='fixed inset-x-4 bottom-4 z-50 mx-auto flex max-w-md items-center gap-3 rounded-md border border-warning/40 bg-background p-3 shadow-lg'
     >
       <AlertCircle className='size-4 shrink-0 text-warning' />
-      <div className='min-w-0 flex-1 text-sm'>A newer version of Tau is running — reload to use it.</div>
+      <div className='min-w-0 flex-1 text-sm'>{t('shell.update.superseded')}</div>
       <Button size='sm' variant='outline' onClick={reload}>
-        Reload
+        {t('shell.update.reload')}
       </Button>
     </div>
   );

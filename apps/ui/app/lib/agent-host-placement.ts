@@ -435,7 +435,7 @@ export const redeemLoopbackHandOff = async (
     throw new AgentHostPlacementError(
       'RUNG5_NO_ADMISSION',
       5,
-      `${origin} is not a daemon on this computer, so Tau will not sign in to it.`,
+      `${origin} is not a daemon on this computer, so SinopiaCAD will not sign in to it.`,
     );
   }
   const request = options.fetch ?? globalThis.fetch;
@@ -574,7 +574,7 @@ export const listAgentHostPlacements = async (
   const [origin, paired, desktopAgents, loopbackTargets] = await Promise.all([
     (options.discoverOrigin ?? discoverOriginAgentHost)(),
     (options.listHosts ?? listRemoteHosts)().catch((error: unknown) => {
-      directoryOutage = error instanceof Error ? error.message : 'Tau could not reach your paired computers.';
+      directoryOutage = error instanceof Error ? error.message : 'SinopiaCAD could not reach your paired computers.';
       return [];
     }),
     /* Asked for beside the other two rather than read off the launch bootstrap:
@@ -751,7 +751,7 @@ const desktopAgentPort = async (options: OpenAgentHostChannelOptions): Promise<M
     throw new AgentHostPlacementError(
       'DESKTOP_ROOT_NOT_GRANTED',
       'in-process',
-      'The desktop agent host is only available inside the Tau desktop app, on a project stored on disk.',
+      'The desktop agent host is only available inside the SinopiaCAD desktop app, on a project stored on disk.',
     );
   }
   const refusal = async (): Promise<never> => {
@@ -761,7 +761,7 @@ const desktopAgentPort = async (options: OpenAgentHostChannelOptions): Promise<M
     throw new AgentHostPlacementError(
       'DESKTOP_ROOT_NOT_GRANTED',
       'in-process',
-      `Tau has no permission to work in ${workspaceRoot}. Reopen the folder from the desktop app and try again.`,
+      `SinopiaCAD has no permission to work in ${workspaceRoot}. Reopen the folder from the desktop app and try again.`,
     );
   };
   return Promise.race([
@@ -813,7 +813,7 @@ const relayedAgentUrl = async (deviceId: string, options: OpenAgentHostChannelOp
       2,
       error instanceof RemoteHostApiError || error instanceof Error
         ? error.message
-        : 'Tau could not open a session on that computer.',
+        : 'SinopiaCAD could not open a session on that computer.',
     );
   }
   if (!session.agentUrl) {

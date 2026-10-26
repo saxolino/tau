@@ -30,7 +30,7 @@ export function ChatEditorTooLargeWarning({
         <div className='flex flex-col items-center gap-4'>
           <p className='text-sm'>
             The file is {formatBytes(size)} which exceeds the {formatBytes(limit)} editor limit. Opening very large
-            files in the editor can make Tau unresponsive.
+            files in the editor can make SinopiaCAD unresponsive.
           </p>
           <Button variant='outline' onClick={onOpenAnyway}>
             Open Anyway

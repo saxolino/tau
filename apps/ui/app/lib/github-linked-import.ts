@@ -137,7 +137,7 @@ export async function prepareLinkedGithubImport({
         trigger: 'save',
         createdAt: Date.now(),
       },
-      summary: { generated: 'Set up this repository as a Tau project' },
+      summary: { generated: 'Set up this repository as a SinopiaCAD project' },
     },
     ...(signal === undefined ? {} : { signal }),
   });

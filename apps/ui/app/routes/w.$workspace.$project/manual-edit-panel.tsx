@@ -1,9 +1,19 @@
 import { randomUuid } from '@taucad/utils/id';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { ArrowDown, ArrowUp, ChevronDown, MoreHorizontal, Redo2, Undo2, X } from 'lucide-react';
 import { isManualProfileClosed, manualDocumentSchema } from '@taucad/smlib/manual-operations';
 import type { ManualDocument, ManualOperation } from '@taucad/smlib/manual-operations';
 import { Button } from '@taucad/ui/components/button';
 import { Input } from '@taucad/ui/components/input';
+import { ToggleGroup, ToggleGroupItem } from '@taucad/ui/components/toggle-group';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@taucad/ui/components/tooltip';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@taucad/ui/components/dropdown-menu';
 import { useTranslation } from '#i18n/translate.js';
 import type { Translate } from '#i18n/translate.js';
 import type { DirectEditTool } from '@taucad/viewer/cad/direct-edit-tool';
@@ -322,6 +332,22 @@ function OperationFields({
         const closed = isManualProfileClosed(operation.profile);
         return (
           <>
+            <ManualProfileEditor
+              profile={operation.profile}
+              onChange={(profile) => {
+                if (operation.type === 'extrude' && !isManualProfileClosed(profile)) {
+                  onChange({
+                    id: operation.id,
+                    type: 'sketch',
+                    enabled: operation.enabled,
+                    name: operation.name ?? defaultName,
+                    profile,
+                  });
+                } else {
+                  onChange({ ...operation, profile });
+                }
+              }}
+            />
             <ManualChoice
               label={t('manualEdit.mode')}
               value={operation.type === 'sketch' ? 'sketch' : operation.mode}
@@ -357,7 +383,7 @@ function OperationFields({
               }}
             />
             {operation.type === 'sketch' || operation.mode === 'new' ? (
-              <label className='block space-y-1 text-xs'>
+              <label className='block space-y-2 text-sm'>
                 {t('manualEdit.name')}
                 <Input
                   value={operation.name ?? ''}
@@ -378,46 +404,38 @@ function OperationFields({
                 }}
               />
             ) : null}
-            <ManualChoice
-              label={t('manualEdit.plane')}
-              value={operation.profile.plane}
-              choices={manualPlanes}
-              onChange={(plane) => {
-                if (plane === 'xy' || plane === 'xz' || plane === 'yz') {
-                  onChange({ ...operation, profile: { ...operation.profile, plane } });
-                }
-              }}
-            />
-            <ManualVectorFields
-              label={t('manualEdit.origin')}
-              value={operation.profile.origin}
-              onChange={(origin) => {
-                onChange({ ...operation, profile: { ...operation.profile, origin } });
-              }}
-            />
-            <ManualProfileEditor
-              profile={operation.profile}
-              onChange={(profile) => {
-                if (operation.type === 'extrude' && !isManualProfileClosed(profile)) {
-                  onChange({
-                    id: operation.id,
-                    type: 'sketch',
-                    enabled: operation.enabled,
-                    name: operation.name ?? defaultName,
-                    profile,
-                  });
-                } else {
-                  onChange({ ...operation, profile });
-                }
-              }}
-            />
+            <details className='group border-t border-border pt-3'>
+              <summary className='text-sm font-medium'>
+                {t('manualEdit.placement')}{' '}
+                <span className='font-normal text-muted-foreground'>· {operation.profile.plane.toUpperCase()}</span>
+              </summary>
+              <div className='space-y-3 pt-3'>
+                <ManualChoice
+                  label={t('manualEdit.plane')}
+                  value={operation.profile.plane}
+                  choices={manualPlanes}
+                  onChange={(plane) => {
+                    if (plane === 'xy' || plane === 'xz' || plane === 'yz') {
+                      onChange({ ...operation, profile: { ...operation.profile, plane } });
+                    }
+                  }}
+                />
+                <ManualVectorFields
+                  label={t('manualEdit.origin')}
+                  value={operation.profile.origin}
+                  onChange={(origin) => {
+                    onChange({ ...operation, profile: { ...operation.profile, origin } });
+                  }}
+                />
+              </div>
+            </details>
           </>
         );
       }
     }
   };
   return (
-    <div className='space-y-3'>
+    <div className='space-y-4'>
       {hasPickedEdges ? (
         <p className='text-xs text-muted-foreground'>
           {operation.target.name} · {t('manualEdit.guardedEdges')}
@@ -465,6 +483,7 @@ export function ManualEditPanel({
   directControls,
   onShowProfiles,
   onShowModel,
+  onDraftLayoutChange,
 }: Readonly<{
   document: ManualDocument | undefined;
   targets: readonly string[];
@@ -481,10 +500,11 @@ export function ManualEditPanel({
   directControls?: ManualDirectControls;
   onShowProfiles?: () => void;
   onShowModel?: () => void;
+  onDraftLayoutChange?: (layout: 'profile' | 'operation' | undefined) => void;
 }>): React.JSX.Element {
   const { t } = useTranslation();
   const [draft, setDraft] = useState<Draft>();
-  const [showAllTools, setShowAllTools] = useState(false);
+  const [view, setView] = useState<'tools' | 'history'>('tools');
   const [localError, setLocalError] = useState<string>();
   const [hasSaved, setHasSaved] = useState(false);
   const [isCommitting, setIsCommitting] = useState(false);
@@ -492,15 +512,22 @@ export function ManualEditPanel({
   const stale = draft !== undefined && document !== draft.base;
   const choices = operationTargets(document, draft, targets);
   const edgeMode = directControls?.mode === 'fillet' || directControls?.mode === 'chamfer';
-  const visibleTools = toolTypes.filter((type) => {
-    if (showAllTools || !directControls || type === 'extrude') {
-      return true;
-    }
-    if (faceControls?.enabled) {
-      return false;
-    }
-    return edgeMode ? type === 'fillet' || type === 'chamfer' : type !== 'fillet' && type !== 'chamfer';
-  });
+  const draftLayout = draft
+    ? draft.operation.type === 'sketch' || draft.operation.type === 'extrude'
+      ? 'profile'
+      : 'operation'
+    : undefined;
+  useEffect(() => {
+    onDraftLayoutChange?.(draftLayout);
+  }, [draftLayout, onDraftLayoutChange]);
+  const selection = faceControls?.enabled ? 'face' : edgeMode ? 'edge' : directControls?.mode ? 'body' : '';
+  const visibleTools: readonly Tool[] = directControls
+    ? selection === 'face'
+      ? []
+      : edgeMode
+        ? ['fillet', 'chamfer']
+        : ['translate', 'rotate', 'scale']
+    : toolTypes;
   const startDraft = (operation: ManualOperation, isNew: boolean): void => {
     if (!document) {
       return;
@@ -508,6 +535,7 @@ export function ManualEditPanel({
     faceControls?.onEnableChange(false);
     directControls?.onModeChange(undefined);
     setDraft({ base: document, operation, commit: onCommit, isNew });
+    setView('tools');
     setLocalError(undefined);
     setHasSaved(false);
   };
@@ -551,314 +579,117 @@ export function ManualEditPanel({
       void saveDocument({ version: 1, operations });
     }
   };
+  const activateTool = (type: Tool): void => {
+    if (!document) {
+      return;
+    }
+    if (directControls && isDirectMode(type)) {
+      faceControls?.onEnableChange(false);
+      directControls.onModeChange(type);
+      return;
+    }
+    const name = nextManualProfileName({ document, targets, defaultName: t('manualEdit.newName') });
+    startDraft(
+      newOperation(type, directControls?.selected?.name ?? faceControls?.selected?.name ?? choices[0] ?? '', name),
+      true,
+    );
+  };
+  const selectedName = faceControls?.enabled
+    ? faceControls.selected
+      ? t('manualEdit.faceSelected', { name: faceControls.selected.name, number: faceControls.selected.faceIndex + 1 })
+      : undefined
+    : directControls?.selected?.name;
   return (
     <aside
       aria-label={t('manualEdit.title')}
       data-testid='manual-edit-panel'
       className='flex h-full min-h-0 w-full flex-col border-l border-border bg-background text-foreground'
+      onKeyDown={(event) => {
+        event.stopPropagation();
+      }}
     >
-      <div className='flex items-center justify-between gap-2 border-b border-border p-3'>
-        <h2 className='text-sm font-medium'>{t('manualEdit.title')}</h2>
-        {onClose ? (
-          <Button size='xs' variant='ghost' onClick={onClose}>
-            {t('manualEdit.close')}
-          </Button>
-        ) : null}
-      </div>
-      <div
-        className='flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-3'
-        onKeyDown={(event) => {
-          event.stopPropagation();
-        }}
-      >
-        <p className='text-xs text-muted-foreground'>{t('manualEdit.intro')}</p>
-        {onShowProfiles !== undefined || onShowModel !== undefined ? (
-          <div className='flex flex-wrap gap-1'>
-            {onShowProfiles ? (
-              <Button
-                size='xs'
-                variant='outline'
-                disabled={busy || Boolean(draft)}
-                onClick={() => {
-                  onShowProfiles();
-                }}
-              >
-                {t('manualEdit.showProfiles')}
-              </Button>
-            ) : null}
-            {onShowModel ? (
-              <Button
-                size='xs'
-                variant='outline'
-                disabled={busy || Boolean(draft)}
-                onClick={() => {
-                  onShowModel();
-                }}
-              >
-                {t('manualEdit.showModel')}
-              </Button>
-            ) : null}
-          </div>
-        ) : null}
-        <div className='flex flex-wrap gap-1'>
-          <Button
-            size='xs'
-            variant='outline'
-            disabled={!canUndo || busy || Boolean(draft)}
-            onClick={() => {
-              void onUndo();
-            }}
-          >
-            {t('manualEdit.undo')}
-          </Button>
-          <Button
-            size='xs'
-            variant='outline'
-            disabled={!canRedo || busy || Boolean(draft)}
-            onClick={() => {
-              void onRedo();
-            }}
-          >
-            {t('manualEdit.redo')}
-          </Button>
+      <div className='flex shrink-0 items-center justify-between gap-3 border-b border-border px-4 py-3'>
+        <h2 className='text-sm font-semibold'>{t('manualEdit.title')}</h2>
+        <div className='flex items-center gap-1'>
+          {(
+            [
+              { label: t('manualEdit.undo'), icon: Undo2, disabled: !canUndo, action: onUndo },
+              { label: t('manualEdit.redo'), icon: Redo2, disabled: !canRedo, action: onRedo },
+            ] as const
+          ).map(({ label, icon: Icon, disabled, action }) => (
+            <Tooltip key={label}>
+              <TooltipTrigger asChild>
+                <Button
+                  size='icon-sm'
+                  variant='ghost'
+                  aria-label={label}
+                  disabled={disabled || busy || Boolean(draft)}
+                  onClick={() => {
+                    void action();
+                  }}
+                >
+                  <Icon />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{label}</TooltipContent>
+            </Tooltip>
+          ))}
+          {onClose ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button size='icon-sm' variant='ghost' aria-label={t('manualEdit.close')} onClick={onClose}>
+                  <X />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{t('manualEdit.close')}</TooltipContent>
+            </Tooltip>
+          ) : null}
         </div>
+      </div>
+      {draft ? null : (
+        <div className='shrink-0 border-b border-border px-4 py-2'>
+          <ToggleGroup
+            type='single'
+            value={view}
+            aria-label={t('manualEdit.inspectorView')}
+            onValueChange={(next) => {
+              if (next === 'tools' || next === 'history') {
+                setView(next);
+              }
+            }}
+          >
+            <ToggleGroupItem value='tools'>{t('manualEdit.tools')}</ToggleGroupItem>
+            <ToggleGroupItem value='history'>
+              {t('manualEdit.history')}{' '}
+              <span className='text-muted-foreground tabular-nums'>{document?.operations.length ?? 0}</span>
+            </ToggleGroupItem>
+          </ToggleGroup>
+        </div>
+      )}
+      <div className='min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain p-4'>
         {isLoading ? (
-          <p role='status' className='text-xs'>
+          <p role='status' className='text-sm text-muted-foreground'>
             {t('manualEdit.loading')}
           </p>
         ) : null}
         {(error ?? localError) ? (
-          <p role='alert' className='text-xs text-destructive'>
+          <p role='alert' className='text-sm text-destructive'>
             {localError ?? error}
           </p>
         ) : null}
         {hasSaved ? (
-          <p role='status' className='text-xs'>
+          <p role='status' className='text-sm text-muted-foreground'>
             {t('manualEdit.saved')}
           </p>
         ) : null}
-        {choices.length === 0 ? <p className='text-xs text-muted-foreground'>{t('manualEdit.noTargets')}</p> : null}
-        {directControls && faceControls ? (
-          <section aria-label={t('manualEdit.selection')} className='space-y-2'>
-            <h3 className='text-xs font-medium'>{t('manualEdit.selection')}</h3>
-            <div className='flex flex-wrap gap-1'>
-              {(['body', 'face', 'edge'] as const).map((filter) => {
-                const edgeMode = directControls.mode === 'fillet' || directControls.mode === 'chamfer';
-                const active =
-                  filter === 'face'
-                    ? faceControls.enabled
-                    : filter === 'edge'
-                      ? edgeMode
-                      : Boolean(directControls.mode) && !edgeMode;
-                return (
-                  <Button
-                    key={filter}
-                    size='xs'
-                    variant={active ? 'secondary' : 'outline'}
-                    aria-pressed={active}
-                    disabled={busy || Boolean(draft) || !document}
-                    onClick={() => {
-                      if (active) {
-                        return;
-                      }
-                      if (filter === 'face') {
-                        directControls.onModeChange(undefined);
-                        faceControls.onEnableChange(true);
-                      } else {
-                        faceControls.onEnableChange(false);
-                        directControls.onModeChange(filter === 'edge' ? 'fillet' : 'translate');
-                      }
-                    }}
-                  >
-                    {t(`manualEdit.${filter}Filter`)}
-                  </Button>
-                );
-              })}
-            </div>
-            <p className='text-xs text-muted-foreground'>{t('manualEdit.selectionHelp')}</p>
-            {(faceControls.enabled ? faceControls.available : directControls.available) ? null : (
-              <p role='status' className='text-xs text-muted-foreground'>
-                {t('manualEdit.selectionUnavailable')}
-              </p>
-            )}
-          </section>
-        ) : null}
-        <section aria-label={t('manualEdit.tools')} className='grid grid-cols-2 gap-1'>
-          {faceControls && (showAllTools || faceControls.enabled || !directControls) ? (
-            <Button
-              size='sm'
-              variant={faceControls.enabled ? 'secondary' : 'outline'}
-              aria-pressed={faceControls.enabled}
-              disabled={busy || Boolean(draft) || !document || !faceControls.available}
-              onClick={() => {
-                directControls?.onModeChange(undefined);
-                faceControls.onEnableChange(true);
-              }}
-            >
-              {t('manualEdit.faceExtrude')}
-            </Button>
-          ) : null}
-          {visibleTools.map((type) => (
-            <Button
-              key={type}
-              size='sm'
-              variant={directControls?.mode === type ? 'secondary' : 'outline'}
-              aria-pressed={isDirectMode(type) && directControls ? directControls.mode === type : undefined}
-              disabled={busy || Boolean(draft) || !document || (type !== 'extrude' && choices.length === 0)}
-              onClick={() => {
-                if (directControls && isDirectMode(type)) {
-                  faceControls?.onEnableChange(false);
-                  directControls.onModeChange(type);
-                  return;
-                }
-                const name = nextManualProfileName({ document, targets, defaultName: t('manualEdit.newName') });
-                startDraft(
-                  newOperation(
-                    type,
-                    directControls?.selected?.name ?? faceControls?.selected?.name ?? choices[0] ?? '',
-                    name,
-                  ),
-                  true,
-                );
-              }}
-            >
-              {t(`manualEdit.${type}`)}
-            </Button>
-          ))}
-        </section>
-        {directControls ? (
-          <Button
-            size='xs'
-            variant='ghost'
-            aria-pressed={showAllTools}
-            onClick={() => {
-              setShowAllTools(!showAllTools);
-            }}
-          >
-            {t(showAllTools ? 'manualEdit.contextTools' : 'manualEdit.allTools')}
-          </Button>
-        ) : null}
-        {directControls?.mode && !draft ? (
-          <section aria-label={t('manualEdit.directTool')} className='space-y-3 border-t border-border pt-3'>
-            <p className='text-xs text-muted-foreground'>
-              {t(
-                directControls.available
-                  ? directControls.mode === 'fillet' || directControls.mode === 'chamfer'
-                    ? 'manualEdit.edgeSelectHelp'
-                    : directControls.selected
-                      ? 'manualEdit.directDragHelp'
-                      : 'manualEdit.directSelectHelp'
-                  : 'manualEdit.directUnavailable',
-              )}
-            </p>
-            {directControls.error ? (
-              <p role='alert' className='text-xs text-destructive'>
-                {directControls.error}
-              </p>
-            ) : null}
-            {directControls.selected ? (
-              <p className='text-xs'>
-                {directControls.selected.name}
-                {directControls.mode === 'fillet' || directControls.mode === 'chamfer'
-                  ? ` · ${t('manualEdit.edgeCount', { count: directControls.selected.edgeCount })}`
-                  : ''}
-              </p>
-            ) : null}
-            {directControls.preview ? (
-              <p role='status' className='text-xs tabular-nums'>
-                {directControls.preview}
-              </p>
-            ) : null}
-            {directControls.mode === 'fillet' || directControls.mode === 'chamfer' ? (
-              <>
-                <ManualNumberField
-                  label={t(directControls.mode === 'fillet' ? 'manualEdit.edgeRadius' : 'manualEdit.size')}
-                  value={directControls.size}
-                  onChange={directControls.onSizeChange}
-                  min={0.001}
-                />
-                <Button
-                  size='sm'
-                  disabled={
-                    busy ||
-                    !directControls.available ||
-                    !directControls.selected?.edgeCount ||
-                    !Number.isFinite(directControls.size) ||
-                    directControls.size <= 0
-                  }
-                  onClick={directControls.onApply}
-                >
-                  {t('manualEdit.apply')}
-                </Button>
-              </>
-            ) : null}
-            <div className='flex flex-wrap gap-2'>
-              <Button
-                size='xs'
-                variant='outline'
-                disabled={busy || choices.length === 0}
-                onClick={() => {
-                  const type = directControls.mode;
-                  if (type) {
-                    startDraft(newOperation(type, directControls.selected?.name ?? choices[0] ?? '', ''), true);
-                  }
-                }}
-              >
-                {t('manualEdit.numericDraft')}
-              </Button>
-              <Button size='xs' variant='ghost' disabled={busy} onClick={directControls.onCancel}>
-                {t('manualEdit.clearSelection')}
-              </Button>
-            </div>
-          </section>
-        ) : null}
-        {faceControls?.enabled && !draft ? (
-          <section aria-label={t('manualEdit.faceExtrude')} className='space-y-3 border-t border-border pt-3'>
-            <p className='text-xs text-muted-foreground'>
-              {t(faceControls.selected ? 'manualEdit.faceDragHelp' : 'manualEdit.faceSelectHelp')}
-            </p>
-            {faceControls.error ? (
-              <p role='alert' className='text-xs text-destructive'>
-                {faceControls.error}
-              </p>
-            ) : null}
-            {faceControls.selected ? (
-              <>
-                <p className='text-xs'>
-                  {t('manualEdit.faceSelected', {
-                    name: faceControls.selected.name,
-                    number: faceControls.selected.faceIndex + 1,
-                  })}
-                </p>
-                <ManualNumberField
-                  label={t('manualEdit.faceDistance')}
-                  value={faceControls.distance}
-                  onChange={faceControls.onDistanceChange}
-                />
-                <p className='text-xs text-muted-foreground'>{t('manualEdit.faceDistanceHelp')}</p>
-                <div className='flex flex-wrap gap-2'>
-                  <Button
-                    size='sm'
-                    disabled={busy || !Number.isFinite(faceControls.distance) || faceControls.distance === 0}
-                    onClick={faceControls.onApply}
-                  >
-                    {t('manualEdit.apply')}
-                  </Button>
-                  <Button size='sm' variant='outline' disabled={busy} onClick={faceControls.onCancel}>
-                    {t('manualEdit.cancel')}
-                  </Button>
-                </div>
-              </>
-            ) : null}
-          </section>
-        ) : null}
         {draft ? (
-          <section aria-label={t('manualEdit.draft')} className='space-y-3 border-t border-border pt-3'>
-            <h3 className='text-sm font-medium'>
-              {t(`manualEdit.${draft.operation.type}`)} · {t('manualEdit.draft')}
-            </h3>
+          <section aria-label={t('manualEdit.draft')} className='space-y-4'>
+            <div className='flex items-baseline justify-between gap-2'>
+              <h3 className='text-base font-medium'>{t(`manualEdit.${draft.operation.type}`)}</h3>
+              <span className='text-xs text-muted-foreground'>{t('manualEdit.draft')}</span>
+            </div>
             {stale ? (
-              <p role='alert' className='text-xs text-destructive'>
+              <p role='alert' className='text-sm text-destructive'>
                 {t('manualEdit.stale')}
               </p>
             ) : null}
@@ -879,44 +710,22 @@ export function ManualEditPanel({
                 }}
               />
             </fieldset>
-            <div className='flex flex-wrap gap-1'>
-              <Button
-                size='sm'
-                disabled={busy || stale}
-                onClick={() => {
-                  void saveDraft();
-                }}
-              >
-                {t('manualEdit.apply')}
-              </Button>
-              <Button
-                size='sm'
-                variant='ghost'
-                disabled={busy}
-                onClick={() => {
-                  setDraft(undefined);
-                  setLocalError(undefined);
-                }}
-              >
-                {t('manualEdit.cancel')}
-              </Button>
-            </div>
           </section>
-        ) : null}
-        <section aria-label={t('manualEdit.history')} className='space-y-2 border-t border-border pt-3'>
-          <h3 className='text-xs font-medium'>{t('manualEdit.history')}</h3>
-          {!isLoading && document?.operations.length === 0 ? (
-            <p className='text-xs text-muted-foreground'>{t('manualEdit.empty')}</p>
-          ) : null}
-          <ol className='space-y-2'>
-            {document?.operations.map((operation, index) => (
-              <li key={operation.id} className='space-y-1 rounded-md border border-border p-2'>
-                <label className='flex items-center gap-2 text-xs'>
+        ) : view === 'history' ? (
+          <section aria-label={t('manualEdit.history')} className='space-y-3'>
+            <p className='text-xs text-muted-foreground'>{t('manualEdit.historyHelp')}</p>
+            {!isLoading && document?.operations.length === 0 ? (
+              <p className='text-sm text-muted-foreground'>{t('manualEdit.empty')}</p>
+            ) : null}
+            <ol className='divide-y divide-border'>
+              {document?.operations.map((operation, index) => (
+                <li key={operation.id} className='flex items-center gap-2 py-3'>
                   <input
                     type='checkbox'
+                    className='size-4 shrink-0'
                     checked={operation.enabled !== false}
                     aria-label={t('manualEdit.enable', { number: index + 1 })}
-                    disabled={busy || Boolean(draft)}
+                    disabled={busy}
                     onChange={(event) => {
                       mutateHistory(
                         document.operations.map((entry) =>
@@ -925,18 +734,19 @@ export function ManualEditPanel({
                       );
                     }}
                   />
-                  <span>
-                    {index + 1}. {t(`manualEdit.${operation.type}`)} ·{' '}
-                    {operation.type === 'sketch' || (operation.type === 'extrude' && operation.mode === 'new')
-                      ? operation.name
-                      : operation.target?.name}
-                  </span>
-                </label>
-                <div className='flex flex-wrap gap-1'>
+                  <span className='w-4 shrink-0 text-xs text-muted-foreground tabular-nums'>{index + 1}</span>
+                  <div className='min-w-0 flex-1'>
+                    <p className='text-sm font-medium'>{t(`manualEdit.${operation.type}`)}</p>
+                    <p className='truncate text-xs text-muted-foreground'>
+                      {operation.type === 'sketch' || (operation.type === 'extrude' && operation.mode === 'new')
+                        ? operation.name
+                        : operation.target?.name}
+                    </p>
+                  </div>
                   <Button
                     size='xs'
                     variant='ghost'
-                    disabled={busy || Boolean(draft)}
+                    disabled={busy}
                     aria-label={t('manualEdit.edit', { number: index + 1 })}
                     onClick={() => {
                       startDraft(operation, false);
@@ -944,46 +754,332 @@ export function ManualEditPanel({
                   >
                     {t('manualEdit.editShort')}
                   </Button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        size='icon-sm'
+                        variant='ghost'
+                        disabled={busy}
+                        aria-label={t('manualEdit.operationMenu', { number: index + 1 })}
+                      >
+                        <MoreHorizontal />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align='end'>
+                      {([-1, 1] as const).map((direction) => (
+                        <DropdownMenuItem
+                          key={direction}
+                          disabled={index + direction < 0 || index + direction >= document.operations.length}
+                          onSelect={() => {
+                            const next = [...document.operations];
+                            const other = next[index + direction]!;
+                            next[index + direction] = operation;
+                            next[index] = other;
+                            mutateHistory(next);
+                          }}
+                        >
+                          {direction === -1 ? <ArrowUp /> : <ArrowDown />}
+                          {t(direction === -1 ? 'manualEdit.earlier' : 'manualEdit.later')}
+                        </DropdownMenuItem>
+                      ))}
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        aria-label={t('manualEdit.remove', { number: index + 1 })}
+                        onSelect={() => {
+                          mutateHistory(document.operations.filter((entry) => entry.id !== operation.id));
+                        }}
+                      >
+                        {t('manualEdit.removeShort')}
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </li>
+              ))}
+            </ol>
+          </section>
+        ) : (
+          <>
+            {directControls && faceControls ? (
+              <section aria-label={t('manualEdit.selection')} className='space-y-3'>
+                <ToggleGroup
+                  type='single'
+                  value={selection}
+                  aria-label={t('manualEdit.selection')}
+                  variant='outline'
+                  disabled={busy || !document}
+                  onValueChange={(filter) => {
+                    if (!filter) {
+                      return;
+                    }
+                    if (filter === 'face') {
+                      directControls.onModeChange(undefined);
+                      faceControls.onEnableChange(true);
+                    } else {
+                      faceControls.onEnableChange(false);
+                      directControls.onModeChange(filter === 'edge' ? 'fillet' : 'translate');
+                    }
+                  }}
+                >
+                  {(['body', 'face', 'edge'] as const).map((filter) => (
+                    <ToggleGroupItem key={filter} value={filter}>
+                      {t(`manualEdit.${filter}Filter`)}
+                    </ToggleGroupItem>
+                  ))}
+                </ToggleGroup>
+                <div className='space-y-1'>
+                  <p className='text-sm font-medium break-words'>{selectedName ?? t('manualEdit.selectPiece')}</p>
+                  {edgeMode && directControls.selected ? (
+                    <p className='text-xs text-muted-foreground'>
+                      {t('manualEdit.edgeCount', { count: directControls.selected.edgeCount })}
+                    </p>
+                  ) : null}
+                </div>
+                {(faceControls.enabled ? faceControls.available : directControls.available) ? null : (
+                  <p role='status' className='text-xs text-muted-foreground'>
+                    {t('manualEdit.selectionUnavailable')}
+                  </p>
+                )}
+              </section>
+            ) : (
+              <p className='text-sm text-muted-foreground'>{t('manualEdit.intro')}</p>
+            )}
+            <section aria-label={t('manualEdit.tools')} className='space-y-2'>
+              <div className='flex flex-wrap gap-2'>
+                {faceControls && (faceControls.enabled || !directControls) ? (
                   <Button
-                    size='xs'
-                    variant='ghost'
-                    disabled={busy || Boolean(draft)}
-                    aria-label={t('manualEdit.remove', { number: index + 1 })}
+                    size='sm'
+                    variant='secondary'
+                    aria-pressed={faceControls.enabled}
+                    disabled={busy || !document || !faceControls.available}
                     onClick={() => {
-                      mutateHistory(document.operations.filter((entry) => entry.id !== operation.id));
+                      directControls?.onModeChange(undefined);
+                      faceControls.onEnableChange(true);
                     }}
                   >
-                    {t('manualEdit.removeShort')}
+                    {t('manualEdit.faceExtrude')}
                   </Button>
-                  {([-1, 1] as const).map((direction) => (
-                    <Button
-                      key={direction}
-                      size='xs'
-                      variant='ghost'
-                      aria-label={`${t(direction === -1 ? 'manualEdit.earlier' : 'manualEdit.later')} ${index + 1}`}
-                      disabled={
-                        busy ||
-                        Boolean(draft) ||
-                        index + direction < 0 ||
-                        index + direction >= document.operations.length
-                      }
-                      onClick={() => {
-                        const next = [...document.operations];
-                        const other = next[index + direction]!;
-                        next[index + direction] = operation;
-                        next[index] = other;
-                        mutateHistory(next);
+                ) : null}
+                {visibleTools.map((type) => (
+                  <Button
+                    key={type}
+                    size='sm'
+                    variant={directControls?.mode === type ? 'secondary' : 'outline'}
+                    aria-pressed={isDirectMode(type) && directControls ? directControls.mode === type : undefined}
+                    disabled={busy || !document || (type !== 'extrude' && choices.length === 0)}
+                    onClick={() => {
+                      activateTool(type);
+                    }}
+                  >
+                    {t(`manualEdit.${type}`)}
+                  </Button>
+                ))}
+              </div>
+              {directControls ? (
+                <Button
+                  size='sm'
+                  variant='outline'
+                  disabled={busy || !document}
+                  onClick={() => {
+                    activateTool('extrude');
+                  }}
+                >
+                  {t('manualEdit.drawProfile')}
+                </Button>
+              ) : null}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button size='sm' variant='ghost' disabled={busy || !document}>
+                    {t('manualEdit.allTools')}
+                    <ChevronDown />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align='start'>
+                  {(['sketch', ...toolTypes] as const)
+                    .filter((type) => !visibleTools.includes(type) && type !== 'extrude')
+                    .map((type) => (
+                      <DropdownMenuItem
+                        key={type}
+                        disabled={type !== 'sketch' && type !== 'extrude' && choices.length === 0}
+                        onSelect={() => {
+                          activateTool(type);
+                        }}
+                      >
+                        {t(`manualEdit.${type}`)}
+                      </DropdownMenuItem>
+                    ))}
+                  {faceControls && !faceControls.enabled ? (
+                    <DropdownMenuItem
+                      disabled={!faceControls.available}
+                      onSelect={() => {
+                        directControls?.onModeChange(undefined);
+                        faceControls.onEnableChange(true);
                       }}
                     >
-                      {direction === -1 ? '↑' : '↓'}
-                    </Button>
-                  ))}
+                      {t('manualEdit.faceExtrude')}
+                    </DropdownMenuItem>
+                  ) : null}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </section>
+            {directControls?.mode ? (
+              <section aria-label={t('manualEdit.directTool')} className='space-y-3 border-t border-border pt-4'>
+                <p className='text-sm text-muted-foreground'>
+                  {t(
+                    directControls.available
+                      ? edgeMode
+                        ? 'manualEdit.edgeSelectHelp'
+                        : directControls.selected
+                          ? 'manualEdit.directDragHelp'
+                          : 'manualEdit.directSelectHelp'
+                      : 'manualEdit.directUnavailable',
+                  )}
+                </p>
+                {directControls.error ? (
+                  <p role='alert' className='text-sm text-destructive'>
+                    {directControls.error}
+                  </p>
+                ) : null}
+                {directControls.preview ? (
+                  <p role='status' className='text-sm tabular-nums'>
+                    {directControls.preview}
+                  </p>
+                ) : null}
+                {edgeMode ? (
+                  <ManualNumberField
+                    label={t(directControls.mode === 'fillet' ? 'manualEdit.edgeRadius' : 'manualEdit.size')}
+                    value={directControls.size}
+                    onChange={directControls.onSizeChange}
+                    min={0.001}
+                  />
+                ) : null}
+                <div className='flex flex-wrap gap-2'>
+                  <Button
+                    size='sm'
+                    variant='outline'
+                    disabled={busy || choices.length === 0}
+                    onClick={() => {
+                      const type = directControls.mode;
+                      if (type) {
+                        startDraft(newOperation(type, directControls.selected?.name ?? choices[0] ?? '', ''), true);
+                      }
+                    }}
+                  >
+                    {t('manualEdit.numericDraft')}
+                  </Button>
+                  <Button size='sm' variant='ghost' disabled={busy} onClick={directControls.onCancel}>
+                    {t('manualEdit.clearSelection')}
+                  </Button>
                 </div>
-              </li>
-            ))}
-          </ol>
-        </section>
+              </section>
+            ) : null}
+            {faceControls?.enabled ? (
+              <section aria-label={t('manualEdit.faceExtrude')} className='space-y-3 border-t border-border pt-4'>
+                <p className='text-sm text-muted-foreground'>
+                  {t(faceControls.selected ? 'manualEdit.faceDragHelp' : 'manualEdit.faceSelectHelp')}
+                </p>
+                {faceControls.error ? (
+                  <p role='alert' className='text-sm text-destructive'>
+                    {faceControls.error}
+                  </p>
+                ) : null}
+                {faceControls.selected ? (
+                  <>
+                    <ManualNumberField
+                      label={t('manualEdit.faceDistance')}
+                      value={faceControls.distance}
+                      onChange={faceControls.onDistanceChange}
+                    />
+                    <p className='text-xs text-muted-foreground'>{t('manualEdit.faceDistanceHelp')}</p>
+                  </>
+                ) : null}
+              </section>
+            ) : null}
+            {choices.length === 0 ? <p className='text-xs text-muted-foreground'>{t('manualEdit.noTargets')}</p> : null}
+            {onShowProfiles !== undefined || onShowModel !== undefined ? (
+              <div className='flex flex-wrap gap-2 border-t border-border pt-4'>
+                {onShowProfiles ? (
+                  <Button
+                    size='sm'
+                    variant='ghost'
+                    disabled={busy}
+                    onClick={() => {
+                      onShowProfiles();
+                    }}
+                  >
+                    {t('manualEdit.showProfiles')}
+                  </Button>
+                ) : null}
+                {onShowModel ? (
+                  <Button
+                    size='sm'
+                    variant='ghost'
+                    disabled={busy}
+                    onClick={() => {
+                      onShowModel();
+                    }}
+                  >
+                    {t('manualEdit.showModel')}
+                  </Button>
+                ) : null}
+              </div>
+            ) : null}
+          </>
+        )}
       </div>
+      {draft ? (
+        <div className='flex shrink-0 items-center justify-end gap-2 border-t border-border bg-background px-4 py-3'>
+          <Button
+            size='sm'
+            variant='ghost'
+            disabled={busy}
+            onClick={() => {
+              setDraft(undefined);
+              setLocalError(undefined);
+            }}
+          >
+            {t('manualEdit.cancel')}
+          </Button>
+          <Button
+            size='sm'
+            disabled={busy || stale}
+            aria-busy={isCommitting}
+            onClick={() => {
+              void saveDraft();
+            }}
+          >
+            {t(isCommitting ? 'manualEdit.saving' : 'manualEdit.apply')}
+          </Button>
+        </div>
+      ) : view === 'tools' && edgeMode ? (
+        <div className='flex shrink-0 justify-end border-t border-border px-4 py-3'>
+          <Button
+            size='sm'
+            disabled={
+              busy ||
+              !directControls.available ||
+              !directControls.selected?.edgeCount ||
+              !Number.isFinite(directControls.size) ||
+              directControls.size <= 0
+            }
+            onClick={directControls.onApply}
+          >
+            {t('manualEdit.apply')}
+          </Button>
+        </div>
+      ) : view === 'tools' && faceControls?.enabled && faceControls.selected ? (
+        <div className='flex shrink-0 justify-end gap-2 border-t border-border px-4 py-3'>
+          <Button size='sm' variant='ghost' disabled={busy} onClick={faceControls.onCancel}>
+            {t('manualEdit.cancel')}
+          </Button>
+          <Button
+            size='sm'
+            disabled={busy || !Number.isFinite(faceControls.distance) || faceControls.distance === 0}
+            onClick={faceControls.onApply}
+          >
+            {t('manualEdit.apply')}
+          </Button>
+        </div>
+      ) : null}
     </aside>
   );
 }

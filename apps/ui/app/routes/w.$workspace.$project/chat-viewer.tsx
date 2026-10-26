@@ -8,8 +8,12 @@ import { useManualEdits } from '#hooks/use-manual-edits.js';
 import { useManualFaceTool } from '#hooks/use-manual-face-tool.js';
 import { useManualDirectTool } from '#hooks/use-manual-direct-tool.js';
 import { matchesManualSidecarRevision } from '#services/manual-face-draft.js';
-import { ManualEditPanel } from '#routes/w.$workspace.$project/manual-edit-panel.js';
 import { useTranslation } from '#i18n/translate.js';
+import { useCadViewport } from '#hooks/use-cad-viewport.js';
+import { useProjectWorkspace } from '#routes/w.$workspace.$project/project-workspace-context.js';
+import { cn } from '@taucad/ui/utils/cn';
+import { useManualInspectorDraft } from '#routes/w.$workspace.$project/manual-inspector-draft.js';
+import { ManualEditPanel } from '#routes/w.$workspace.$project/manual-edit-panel.js';
 import { memo, useEffect, useCallback, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { FileEntry } from '@taucad/types';
 import { asKnownArtifact } from '@taucad/runtime';
@@ -482,7 +486,7 @@ const ChatViewerContent = memo(function ({
     <CadProvider cadRef={cadActor}>
       <ExactMeasurementProvider measure={measureExact}>
         <GraphicsProvider graphicsRef={graphicsActor} seed={cameraSeed}>
-          <ViewerContent viewId={viewId} entryPath={entryPath} profile={profile} />
+          <ViewerContent viewId={viewId} entryPath={entryPath} profile={profile} panelApi={panelApi} />
         </GraphicsProvider>
       </ExactMeasurementProvider>
     </CadProvider>
@@ -512,14 +516,55 @@ const ViewerContent = memo(function ({
   viewId,
   entryPath,
   profile,
+  panelApi,
 }: {
   readonly viewId: string;
   readonly entryPath: string;
   readonly profile: 'editor' | 'shared';
+  readonly panelApi: ChatViewerProps['panelApi'];
 }): React.JSX.Element {
   const { projectRef, entriesRecord, viewRecords, modelInteractionRef } = useProject();
   const { t } = useTranslation();
-  const [isManualEditOpen, setIsManualEditOpen] = useState(false);
+  const isPhone = useCadViewport() === 'phone';
+  const workspace = useProjectWorkspace({ enableNoContext: true });
+  const [localManualOpen, setLocalManualOpen] = useState(false);
+  const isManualOwner = workspace?.manualViewId === viewId;
+  const isManualEditOpen = workspace ? workspace.manualOpen && isManualOwner : localManualOpen;
+  const setIsManualEditOpen = workspace?.setManualOpen ?? setLocalManualOpen;
+  const registerManualViewer = workspace?.registerManualViewer;
+  const setManualDraftLayout = workspace?.setManualDraftLayout;
+  const reportDraftLayout = useCallback(
+    (layout: 'profile' | 'operation' | undefined) => {
+      if (isManualOwner) {
+        setManualDraftLayout?.(layout);
+      }
+    },
+    [isManualOwner, setManualDraftLayout],
+  );
+  const subscribePanelActive = useCallback(
+    (listener: () => void) => {
+      if (!registerManualViewer) {
+        return () => undefined;
+      }
+      const subscription = panelApi.onDidActiveChange(() => {
+        listener();
+      });
+      return () => {
+        subscription.dispose();
+      };
+    },
+    [panelApi, registerManualViewer],
+  );
+  const readPanelActive = useCallback(
+    () => (registerManualViewer ? panelApi.isActive : true),
+    [panelApi, registerManualViewer],
+  );
+  const isActiveViewer = useSyncExternalStore(subscribePanelActive, readPanelActive, readPanelActive);
+  const { draftLayout, isToolOpen, onDraftLayoutChange } = useManualInspectorDraft({
+    isOpen: isManualEditOpen,
+    isActive: isActiveViewer,
+    onDraftLayoutChange: reportDraftLayout,
+  });
   const manualManifest = useSelector(
     modelInteractionRef,
     (state) => state.context.unitsById[deriveModelInteractionUnitId({ sourceFile: entryPath })]?.manifest,
@@ -543,6 +588,9 @@ const ViewerContent = memo(function ({
   const capabilities = useCadSelector(selectCadCapabilities, undefined);
   const kernelId = useCadSelector(selectCadActiveKernelId, undefined);
   const manualEdits = useManualEdits(entryPath, profile === 'editor' && kernelId === 'smlib');
+  useEffect(() => {
+    return registerManualViewer?.(viewId, profile === 'editor' && kernelId === 'smlib', isActiveViewer);
+  }, [profile, kernelId, registerManualViewer, viewId, isActiveViewer]);
   const isCadLoading = useCadSelector(selectIsCadLoading, false);
   const savedView = viewRecords.get(viewId);
   const selectedKernelView = savedView?.selectedKernelView;
@@ -749,7 +797,7 @@ const ViewerContent = memo(function ({
     renderStamp: rendering?.success ? `${rendering.evaluationId}:${rendering.requestId}:${rendering.hash}` : undefined,
     artifactKey: presentedKey,
     ready: faceReady,
-    open: isManualEditOpen,
+    open: isToolOpen,
   });
   const directTool = useManualDirectTool({
     edits: manualEdits,
@@ -758,7 +806,7 @@ const ViewerContent = memo(function ({
     renderStamp: rendering?.success ? `${rendering.evaluationId}:${rendering.requestId}:${rendering.hash}` : undefined,
     artifactKey: presentedKey,
     ready: faceReady,
-    open: isManualEditOpen,
+    open: isToolOpen,
   });
   const viewerActionMenuData = partMenu.openMenuData;
   const viewerPart =
@@ -876,8 +924,8 @@ const ViewerContent = memo(function ({
   }, [closePartMenu, isGeometryUnitClosed]);
 
   return (
-    <div className='@container/manual-viewer h-full min-h-0 min-w-0'>
-      <div className='flex h-full min-h-0 min-w-0 flex-col @2xl/manual-viewer:flex-row'>
+    <div className='@container/manual-viewer relative h-full min-h-0 min-w-0'>
+      <div className='flex h-full min-h-0 min-w-0'>
         <ViewerStage
           className='min-h-0 min-w-0 flex-1'
           graphicsRef={graphicsActor}
@@ -988,16 +1036,16 @@ const ViewerContent = memo(function ({
                           {cadRef ? (
                             <ViewerProjectionPicker viewId={viewId} entryPath={entryPath} cadActor={cadRef} />
                           ) : null}
-                          {kernelId === 'smlib' ? (
+                          {kernelId === 'smlib' && (isPhone || !workspace) ? (
                             <Button
                               size='sm'
                               variant={isManualEditOpen ? 'secondary' : 'ghost'}
                               aria-pressed={isManualEditOpen}
                               onClick={() => {
-                                setIsManualEditOpen((open) => !open);
+                                setIsManualEditOpen(!isManualEditOpen);
                               }}
                             >
-                              {t('manualEdit.title')}
+                              {t('project.topBar.modify')}
                             </Button>
                           ) : null}
                           {segment}
@@ -1034,10 +1082,15 @@ const ViewerContent = memo(function ({
         {profile === 'editor' && kernelId === 'smlib' ? (
           <div
             hidden={!isManualEditOpen}
-            className='h-1/2 min-h-0 shrink-0 @2xl/manual-viewer:h-full @2xl/manual-viewer:w-80'
+            inert={!isManualEditOpen}
+            className={cn(
+              'absolute inset-y-0 right-0 z-20 h-full max-w-full min-h-0 shrink-0 border-l bg-sidebar @4xl/manual-viewer:static',
+              draftLayout === 'profile' ? 'w-full @4xl/manual-viewer:w-140' : 'w-96',
+            )}
           >
             <ManualEditPanel
               key={entryPath}
+              onDraftLayoutChange={onDraftLayoutChange}
               document={manualEdits.document}
               targets={manualTargets}
               onCommit={manualEdits.commit}

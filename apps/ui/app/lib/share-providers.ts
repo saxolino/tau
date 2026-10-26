@@ -55,7 +55,7 @@ const gistApi = async (path: string, init?: RequestInit): Promise<unknown> => {
   if (response.status === 403 && z.object({ code: z.literal('GITHUB_GIST_USE_DISABLED') }).safeParse(body).success) {
     throw new ShareError(
       'SHARE_PROVIDER_UNAVAILABLE',
-      'Gist sharing is off in Tau. Enable it in Security settings before sharing.',
+      'Gist sharing is off in SinopiaCAD. Enable it in Security settings before sharing.',
     );
   }
   if (response.status === 403) {
@@ -92,10 +92,10 @@ export type GithubGistAuthorizationReturn = {
 const githubLinkFailures: Readonly<Record<string, string>> = {
   // eslint-disable-next-line @typescript-eslint/naming-convention -- Better Auth's error code.
   email_does_not_match:
-    'This GitHub account uses a different email address from your Tau account. Sign in to GitHub with an account that uses the same email, then try again.',
+    'This GitHub account uses a different email address from your SinopiaCAD account. Sign in to GitHub with an account that uses the same email, then try again.',
   // eslint-disable-next-line @typescript-eslint/naming-convention -- Better Auth's error code.
   account_already_linked_to_different_user:
-    'This GitHub account is already linked to another Tau account. Sign in to GitHub with a different account, then try again.',
+    'This GitHub account is already linked to another SinopiaCAD account. Sign in to GitHub with a different account, then try again.',
 };
 
 export const createGithubGistAuthorizationReturnUrl = ({

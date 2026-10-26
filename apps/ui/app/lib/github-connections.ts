@@ -76,21 +76,30 @@ const codeMessages: ReadonlyMap<string, string> = new Map([
     'GITHUB_APP_CREDENTIALS_INVALID',
     "This deployment's GitHub App credentials were rejected by GitHub. Ask its administrator to check them.",
   ],
-  ['GITHUB_COMPLETION_PENDING', 'Finish connecting in the GitHub window, then return to Tau.'],
+  ['GITHUB_COMPLETION_PENDING', 'Finish connecting in the GitHub window, then return to SinopiaCAD.'],
   ['GITHUB_COMPLETION_EXPIRED', 'The GitHub connection attempt expired. Connect GitHub again.'],
   ['GITHUB_COMPLETION_INVALID', 'This GitHub connection attempt is no longer valid. Connect GitHub again.'],
   ['GITHUB_COMPLETION_CANCELLED', 'The GitHub connection attempt was cancelled.'],
   [
     'GITHUB_COMPLETION_OWNER_MISMATCH',
-    'This GitHub connection was started from a different Tau account. Sign in to that account, or connect again.',
+    'This GitHub connection was started from a different SinopiaCAD account. Sign in to that account, or connect again.',
   ],
   ['GITHUB_COMPLETION_BUSY', 'GitHub is still finishing the connection. Try again in a moment.'],
-  ['GITHUB_COMPLETION_MODE_INVALID', 'Tau could not start the GitHub connection. Reload Tau and try again.'],
-  ['GITHUB_START_COLLISION', 'Tau could not start the GitHub connection. Try again.'],
-  ['RETURN_LOCATION_INVALID', 'Tau could not start the GitHub connection from this page. Reload Tau and try again.'],
-  ['ORIGIN_INVALID', 'Tau could not start the GitHub connection from this address. Open Tau from its usual address.'],
+  [
+    'GITHUB_COMPLETION_MODE_INVALID',
+    'SinopiaCAD could not start the GitHub connection. Reload SinopiaCAD and try again.',
+  ],
+  ['GITHUB_START_COLLISION', 'SinopiaCAD could not start the GitHub connection. Try again.'],
+  [
+    'RETURN_LOCATION_INVALID',
+    'SinopiaCAD could not start the GitHub connection from this page. Reload SinopiaCAD and try again.',
+  ],
+  [
+    'ORIGIN_INVALID',
+    'SinopiaCAD could not start the GitHub connection from this address. Open SinopiaCAD from its usual address.',
+  ],
   ['GITHUB_CONNECTION_NOT_FOUND', 'This GitHub account is no longer connected. Refresh and choose another account.'],
-  ['GITHUB_CONNECTION_WRITE_FAILED', 'Tau could not save the GitHub connection. Try again.'],
+  ['GITHUB_CONNECTION_WRITE_FAILED', 'SinopiaCAD could not save the GitHub connection. Try again.'],
   ['GITHUB_RECONNECT_REQUIRED', 'Your GitHub connection needs to be renewed. Connect GitHub again.'],
   ['GITHUB_REPOSITORY_WRITE_DISABLED', 'Enable writes for this repository before pushing.'],
   [
@@ -110,16 +119,16 @@ const codeMessages: ReadonlyMap<string, string> = new Map([
   ['GITHUB_ACCESS_REFUSED', "GitHub refused access. Check the Tau app's repository access on GitHub."],
   ['GITHUB_NOT_FOUND_OR_DENIED', notFoundMessage],
   ['GITHUB_UPSTREAM_FAILED', 'GitHub returned an error. Try again shortly.'],
-  ['GITHUB_UPSTREAM_UNAVAILABLE', "Tau couldn't reach GitHub. Try again shortly."],
+  ['GITHUB_UPSTREAM_UNAVAILABLE', "SinopiaCAD couldn't reach GitHub. Try again shortly."],
   ['GITHUB_TREE_TOO_LARGE', 'This branch has too many files to list. Import a smaller repository or branch.'],
-  ['GITHUB_TREE_UNSUPPORTED', "This branch tracks a submodule or symbolic link, which Tau can't import yet."],
+  ['GITHUB_TREE_UNSUPPORTED', "This branch tracks a submodule or symbolic link, which SinopiaCAD can't import yet."],
   ['GITHUB_MANIFEST_TOO_LARGE', "This repository's tau.json is larger than 1 MiB. Reduce it before importing."],
   ['GITHUB_HEAD_INVALID', 'The selected branch has no valid commit. Choose another branch.'],
   ['GITHUB_ID_INVALID', 'That GitHub item could not be found. Refresh and try again.'],
   ['PAGE_INVALID', 'That GitHub page could not be loaded. Refresh and try again.'],
   ['GIT_PROXY_REDIRECTED_CREDENTIAL', 'This repository moved on GitHub. Reconnect it to follow the move.'],
-  ['GIT_PROXY_UPSTREAM_FAILED', "Tau couldn't reach the Git host. Try again shortly."],
-  ['GIT_PROXY_PORT_REFUSED', 'Tau can only sync with Git hosts on the standard HTTPS port.'],
+  ['GIT_PROXY_UPSTREAM_FAILED', "SinopiaCAD couldn't reach the Git host. Try again shortly."],
+  ['GIT_PROXY_PORT_REFUSED', 'SinopiaCAD can only sync with Git hosts on the standard HTTPS port.'],
   ['GIT_PROXY_RATE_LIMITED', 'Too many Git requests in a short time. Try again in a minute.'],
 ]);
 
@@ -128,13 +137,13 @@ const codeMessage = (code: string | undefined): string | undefined =>
 
 const statusMessage = (status: number): string =>
   status === 401
-    ? 'Your Tau session ended. Sign in again, then retry.'
+    ? 'Your SinopiaCAD session ended. Sign in again, then retry.'
     : status === 404
       ? notFoundMessage
       : status === 429
         ? rateLimitedMessage
         : status >= 500
-          ? 'GitHub or Tau is unavailable right now. Try again shortly.'
+          ? 'GitHub or SinopiaCAD is unavailable right now. Try again shortly.'
           : 'The GitHub request failed. Try again.';
 
 /** A refused GitHub connection request; `message` is already the user-facing sentence. */
@@ -175,10 +184,10 @@ export const githubErrorMessage = (error: unknown): string => {
     return message;
   }
   if (error instanceof z.ZodError) {
-    return 'Tau received an unexpected answer from GitHub. Reload Tau and try again.';
+    return 'SinopiaCAD received an unexpected answer from GitHub. Reload SinopiaCAD and try again.';
   }
   if (error instanceof TypeError) {
-    return "Tau couldn't reach its server. Check your connection and try again.";
+    return "SinopiaCAD couldn't reach its server. Check your connection and try again.";
   }
   return 'The GitHub request failed. Try again.';
 };

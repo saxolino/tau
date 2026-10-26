@@ -1,6 +1,6 @@
 import { NavigationType, Outlet, useLocation, useNavigationType } from 'react-router';
 import { Fragment } from 'react/jsx-runtime';
-import { useCallback, useLayoutEffect, useMemo, useRef } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode, UIEvent } from 'react';
 import { LayoutPriority } from 'allotment';
 import { Allotment } from '#components/panes/allotment.js';
@@ -227,6 +227,9 @@ export function Page({ error }: { readonly error?: ReactNode }): React.JSX.Eleme
   const resolvedAuth = useResolvedAuth();
   const flags = useFeatureFlags();
   const desktopTarget = isDesktopTarget();
+  // A CAD session starts with the model, not the application catalogue. Keep
+  // this reversible choice local: leaving CAD restores the existing cookie.
+  const [cadNavigationOpen, setCadNavigationOpen] = useState(false);
 
   const {
     breadcrumbItems,
@@ -248,6 +251,7 @@ export function Page({ error }: { readonly error?: ReactNode }): React.JSX.Eleme
     enablePageHeaderMatches: handles.enablePageHeader,
   }));
   const { key: locationKey, pathname, hash } = useLocation();
+  const isCadWorkspace = /^\/w\/[^/]+\/[^/]+\/?$/u.test(pathname);
   const navigationType = useNavigationType();
   const pageScrollRef = useRef<HTMLDivElement>(null);
   const previousPathnameRef = useRef(pathname);
@@ -365,7 +369,11 @@ export function Page({ error }: { readonly error?: ReactNode }): React.JSX.Eleme
    */
   return (
     <CommandPaletteProvider>
-      <SidebarProvider className='h-dvh min-h-0 overflow-hidden'>
+      <SidebarProvider
+        className='h-dvh min-h-0 overflow-hidden'
+        isRouteOpen={isCadWorkspace ? cadNavigationOpen : undefined}
+        onOpenChange={isCadWorkspace ? setCadNavigationOpen : undefined}
+      >
         <ApplicationShell isDesktopTarget={desktopTarget}>
           <SidebarInset className={cn('size-full min-w-0', headerHeightClass)}>
             {reserveHeader ? (

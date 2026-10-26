@@ -522,26 +522,26 @@ describe('ChatError', () => {
   it.each([
     {
       code: 'SESSION_LOG_INTEGRITY',
-      title: 'Tau paused this turn',
-      copy: 'This chat hit a problem while Tau was tidying its history.',
+      title: 'SinopiaCAD paused this turn',
+      copy: 'This chat hit a problem while SinopiaCAD was tidying its history.',
       actions: ['Resume', 'Try again'],
     },
     {
       code: 'SUMMARY_REQUIRED',
-      title: 'Tau paused this turn',
-      copy: 'This chat hit a problem while Tau was tidying its history.',
+      title: 'SinopiaCAD paused this turn',
+      copy: 'This chat hit a problem while SinopiaCAD was tidying its history.',
       actions: ['Resume', 'Try again'],
     },
     {
       code: 'NO_EVICTABLE_HISTORY',
       title: 'This chat is too long to continue',
-      copy: 'Tau could not make room for the next step.',
+      copy: 'SinopiaCAD could not make room for the next step.',
       actions: ['Resume', 'Try again', 'New chat'],
     },
     {
       code: 'CIRCUIT_BREAKER_OPEN',
       title: 'This chat is too long to continue',
-      copy: 'Tau could not make room for the next step.',
+      copy: 'SinopiaCAD could not make room for the next step.',
       actions: ['Resume', 'Try again', 'New chat'],
     },
   ])(
@@ -593,7 +593,7 @@ describe('ChatError', () => {
     render(<ChatErrorBanner />);
 
     expect(screen.getByText('This chat is too long to continue')).toBeInTheDocument();
-    expect(screen.queryByText('Tau paused this turn')).not.toBeInTheDocument();
+    expect(screen.queryByText('SinopiaCAD paused this turn')).not.toBeInTheDocument();
     expect(screen.getAllByRole('button').map((button) => button.textContent)).toEqual(['New chat']);
   });
 
@@ -783,7 +783,7 @@ describe('ChatError', () => {
 
     expect(screen.getByText('SinopiaCAD stopped responding')).toBeInTheDocument();
     expect(screen.getByText('SinopiaCAD cannot tell whether this turn started.')).toBeInTheDocument();
-    expect(screen.queryByText('Tau paused this turn')).not.toBeInTheDocument();
+    expect(screen.queryByText('SinopiaCAD paused this turn')).not.toBeInTheDocument();
     expect(screen.queryByText('Everything up to here is saved.')).not.toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Try again' }));
@@ -924,7 +924,7 @@ describe('ChatError', () => {
     );
 
     render(<ChatErrorBanner />);
-    expect(screen.getByText('Unable to reach Tau')).toBeInTheDocument();
+    expect(screen.getByText('Unable to reach SinopiaCAD')).toBeInTheDocument();
   });
 
   it('should replay the server-category fallback when Try again is clicked', async () => {

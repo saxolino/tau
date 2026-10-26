@@ -39,7 +39,7 @@ export function ModelSummaryRow(): React.JSX.Element {
   const pieces = context.unitOrder.flatMap((id) => modelPieces(context.unitsById[id]?.manifest));
   const summary = modelMeasureSummary(pieces);
   return (
-    <p className='px-3 py-2 text-xs text-muted-foreground tabular-nums'>
+    <p className='px-3 py-3 text-xs text-muted-foreground tabular-nums'>
       {t('measures.counts', {
         pieces: t(summary.pieces === 1 ? 'measures.onePiece' : 'measures.manyPieces', { count: summary.pieces }),
         stones: t(summary.stones === 1 ? 'measures.oneStone' : 'measures.manyStones', { count: summary.stones }),
@@ -69,7 +69,7 @@ const PieceGroup = memo(function PieceGroup({
   const unit = useSelector(modelInteractionRef, (state) => getModelInteractionUnitState(state.context, unitId));
   const { entry } = source.useEntry(entryPath);
   const { t, language } = useTranslation();
-  const [isGeneralOpen, setIsGeneralOpen] = useState(true);
+  const [isGeneralOpen, setIsGeneralOpen] = useState(false);
   const element = useRef<HTMLDivElement>(null);
   const selected = unit.selectedComponentIds.at(-1);
   const isSelected = selected === group.node?.id && selected !== undefined;
@@ -126,12 +126,12 @@ const PieceGroup = memo(function PieceGroup({
         const assumption = parameterAssumption(schema, path);
         return locked ? (
           // A note, not an alarm: small, neutral, the lock in the selection's titanium (UI-UX-SinopiaCAD §3.2).
-          <span className='flex items-center gap-1 text-[11px] leading-[15px] text-muted-foreground'>
+          <span className='flex items-center gap-1 text-xs leading-4 text-muted-foreground'>
             <LockKeyhole aria-hidden='true' className='size-3 text-accent-foreground' />
             {t('measures.locked')}
           </span>
         ) : assumption === undefined ? null : (
-          <span title={assumption || undefined} className='text-[11px] leading-[15px] text-muted-foreground'>
+          <span title={assumption || undefined} className='text-xs leading-4 text-muted-foreground'>
             {t('measures.assumed')}
           </span>
         );
@@ -179,6 +179,7 @@ const PieceGroup = memo(function PieceGroup({
     <div
       ref={element}
       className={cn('border-b border-border', isSelected && 'bg-accent/30')}
+      data-slot='piece-measures-group'
       data-piece={group.node?.id}
     >
       <div className='flex min-h-11 items-center gap-1 pr-1'>
@@ -215,7 +216,7 @@ const PieceGroup = memo(function PieceGroup({
           <span className='min-w-0 flex-1 truncate text-left text-xs' title={name}>
             {name}
           </span>
-          <span className='shrink-0 font-mono text-[11px] leading-[15px] tabular-nums'>
+          <span className='shrink-0 text-xs leading-4 tabular-nums'>
             {pieceKeyValue({ group, defaults, values, language })}
           </span>
         </Button>
@@ -278,10 +279,10 @@ const PieceEntry = memo(function PieceEntry({
   const unitId = createSourceModelInteractionUnitId(entryPath);
   const componentManifest = useSelector(modelInteractionRef, (state) => state.context.unitsById[unitId]?.manifest);
   const { manifest, failure } = source.useEntry(entryPath);
-  const groups = useMemo(
-    () => groupPieceMeasures(componentManifest, manifest?.defaults ?? {}),
-    [componentManifest, manifest],
-  );
+  const groups = useMemo(() => {
+    const groups = groupPieceMeasures(componentManifest, manifest?.defaults ?? {});
+    return [...groups.filter((group) => group.node), ...groups.filter((group) => !group.node)];
+  }, [componentManifest, manifest]);
   if (failure) {
     return (
       <div role='alert' className='p-3 text-sm'>
@@ -340,7 +341,7 @@ export function PieceMeasuresPane({ source }: { readonly source: ParametersSourc
       }}
     >
       <ModelSummaryRow />
-      <div className='px-2 pb-2'>
+      <div className='px-3 pb-3'>
         <SearchInput
           aria-label={t('measures.search')}
           placeholder={t('measures.search')}

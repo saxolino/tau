@@ -5,6 +5,8 @@ export const projectMessages = defineMessages({
   it: {
     topBar: {
       label: 'Progetto',
+      designTools: 'Strumenti di progettazione',
+      modify: 'Modifica',
       breadcrumb: 'Percorso',
       projects: 'Progetti',
       nameFallback: 'Progetto',
@@ -20,12 +22,12 @@ export const projectMessages = defineMessages({
         'Presto: invierà il modello al tuo progetto su sinopialab.com come nuova versione. Per ora usa «Esporta».',
     },
     lanes: {
-      agent: 'Agente',
-      showAgent: 'Mostra l’agente',
-      hideAgent: 'Nascondi l’agente',
-      measures: 'Misure',
-      showMeasures: 'Mostra le misure',
-      hideMeasures: 'Nascondi le misure',
+      agent: 'Assistente',
+      showAgent: 'Mostra l’assistente',
+      hideAgent: 'Nascondi l’assistente',
+      measures: 'Pezzi e misure',
+      showMeasures: 'Mostra pezzi e misure',
+      hideMeasures: 'Nascondi pezzi e misure',
     },
     saveStatus: {
       loading: 'Apro il progetto…',
@@ -70,9 +72,11 @@ export const projectMessages = defineMessages({
       resume: 'Riprendi',
       history: 'Conversazione con l’agente',
       composer: 'Messaggio per l’agente',
-      emptyTitle: 'Dimmi cosa vuoi fare',
+      emptyTitle: 'Progettiamo il prossimo pezzo',
       emptyText:
         'Posso partire da un’immagine, da una descrizione o da un pezzo che hai già. Costruisco il CAD a pezzi, poi lo correggiamo insieme.',
+      contextHint: 'Seleziona un pezzo nel modello per parlarne qui.',
+      workMode: 'Lavora con l’assistente',
       unavailableTitle: 'Non riesco ad aprire la conversazione',
       unavailableText: 'Il modello è salvo; riprova tra poco.',
     },
@@ -92,6 +96,8 @@ export const projectMessages = defineMessages({
   en: {
     topBar: {
       label: 'Project',
+      designTools: 'Design tools',
+      modify: 'Modify',
       breadcrumb: 'Breadcrumb',
       projects: 'Projects',
       nameFallback: 'Project',
@@ -107,12 +113,12 @@ export const projectMessages = defineMessages({
         'Coming soon: it will send the model to your sinopialab.com project as a new version. For now use “Export”.',
     },
     lanes: {
-      agent: 'Agent',
-      showAgent: 'Show the agent',
-      hideAgent: 'Hide the agent',
-      measures: 'Measures',
-      showMeasures: 'Show the measures',
-      hideMeasures: 'Hide the measures',
+      agent: 'Assistant',
+      showAgent: 'Show the assistant',
+      hideAgent: 'Hide the assistant',
+      measures: 'Pieces and measures',
+      showMeasures: 'Show pieces and measures',
+      hideMeasures: 'Hide pieces and measures',
     },
     saveStatus: {
       loading: 'Opening the project…',
@@ -157,9 +163,11 @@ export const projectMessages = defineMessages({
       resume: 'Resume',
       history: 'Chat history',
       composer: 'Chat composer',
-      emptyTitle: 'Tell me what you want to make',
+      emptyTitle: 'Let’s design the next piece',
       emptyText:
         'I can start from an image, a description or a piece you already have. I build the CAD in pieces, then we adjust it together.',
+      contextHint: 'Select a piece in the model to discuss it here.',
+      workMode: 'Work with the assistant',
       unavailableTitle: 'I can’t open the conversation',
       unavailableText: 'Your model is safe; try again shortly.',
     },

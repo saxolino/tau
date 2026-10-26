@@ -7,6 +7,7 @@ import { KeyboardProvider } from '@taucad/ui/components/keyboard';
 import type * as ProjectWorkspaceContext from '#routes/w.$workspace.$project/project-workspace-context.js';
 
 const viewport = vi.hoisted(() => ({ mode: 'desktop' }));
+const workspaceUi = vi.hoisted(() => ({ manualOpen: false, assistantEntryOpen: false }));
 vi.mock('#hooks/use-cad-viewport.js', () => ({ useCadViewport: () => viewport.mode }));
 const send = vi.fn();
 const setWorkbenchOpen = vi.hoisted(() => vi.fn());
@@ -32,11 +33,14 @@ vi.mock('@xstate/react', () => ({
 vi.mock('#hooks/use-project.js', () => ({ useProject: () => ({ editorRef: { send } }) }));
 vi.mock('#routes/w.$workspace.$project/project-workspace-context.js', async (importOriginal) => ({
   ...(await importOriginal<typeof ProjectWorkspaceContext>()),
-  useProjectWorkspace: () => ({ setChatOpen: vi.fn(), setWorkbenchOpen }),
+  useProjectWorkspace: () => ({ setChatOpen: vi.fn(), setWorkbenchOpen, ...workspaceUi }),
 }));
 vi.mock('#routes/w.$workspace.$project/chat-history.js', () => ({
   ChatHistory: ({ className }: { readonly className?: string }) => (
-    <div className={className} data-testid='chat-lane' />
+    <div className={className} data-testid='chat-lane'>
+      <input aria-label='Assistant message' />
+      <button type='button'>Assistant composer action</button>
+    </div>
   ),
 }));
 vi.mock('#routes/w.$workspace.$project/focused-chat-gate.js', () => ({
@@ -53,7 +57,11 @@ vi.mock('#routes/w.$workspace.$project/chat-viewer-dockview.js', () => ({
   },
 }));
 vi.mock('#routes/w.$workspace.$project/chat-workbench-dockview.js', () => ({
-  WorkbenchDockview: () => <div data-testid='workbench-lane' />,
+  WorkbenchDockview: () => (
+    <div data-testid='workbench-lane'>
+      <button type='button'>Piece inspector action</button>
+    </div>
+  ),
 }));
 vi.mock('#routes/w.$workspace.$project/project-unavailable-overlay.js', () => ({
   ProjectUnavailableOverlay: () => null,
@@ -135,6 +143,8 @@ describe('ChatInterfaceDesktop', () => {
   beforeEach(() => {
     setLanguage('en');
     viewport.mode = 'desktop';
+    workspaceUi.manualOpen = false;
+    workspaceUi.assistantEntryOpen = false;
     resizeCallbacks.clear();
     desktopLayout.chatOpen = true;
     desktopLayout.workbenchOpen = true;
@@ -165,9 +175,49 @@ describe('ChatInterfaceDesktop', () => {
     desktopLayout.compactAuxiliary = 'workbench';
     resizeTo(compactWorkspaceWidth - 1);
     expect(screen.getAllByRole('dialog')).toHaveLength(1);
-    expect(screen.getByRole('dialog', { name: 'Misure' })).toContainElement(screen.getByTestId('workbench-lane'));
+    expect(screen.getByRole('dialog', { name: 'Pezzi e misure' })).toContainElement(
+      screen.getByTestId('workbench-lane'),
+    );
     expect(screen.queryByTestId('chat-lane')).not.toBeInTheDocument();
     expect(screen.getByTestId('viewer-lane')).toBe(viewer);
+  });
+
+  it('should reserve both outer auxiliary lanes for the manual inspector without replacing the viewer', () => {
+    renderDesktop();
+    const viewer = screen.getByTestId('viewer-lane');
+    const chat = screen.getByTestId('chat-lane');
+    const pieces = screen.getByTestId('workbench-lane');
+    expect(screen.getByRole('textbox', { name: 'Assistant message' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Piece inspector action' })).toBeInTheDocument();
+    workspaceUi.manualOpen = true;
+    resizeTo(compactWorkspaceWidth - 1);
+    expect(paneOf('chat-lane')).toHaveAttribute('data-visible', 'false');
+    expect(paneOf('workbench-lane')).toHaveAttribute('data-visible', 'false');
+    expect(chat.closest('[data-slot=chat-lane-content]')).toHaveAttribute('inert');
+    expect(pieces.closest('[data-slot=workbench-lane-content]')).toHaveAttribute('inert');
+    expect(screen.queryByRole('textbox', { name: 'Assistant message' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Assistant composer action' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Piece inspector action' })).not.toBeInTheDocument();
+    expect(screen.getByTestId('viewer-lane')).toBe(viewer);
+    workspaceUi.manualOpen = false;
+    resizeTo(compactWorkspaceWidth);
+    expect(screen.getByTestId('chat-lane')).toBe(chat);
+    expect(screen.getByTestId('workbench-lane')).toBe(pieces);
+    expect(chat.closest('[data-slot=chat-lane-content]')).not.toHaveAttribute('inert');
+    expect(pieces.closest('[data-slot=workbench-lane-content]')).not.toHaveAttribute('inert');
+    expect(screen.getByRole('textbox', { name: 'Assistant message' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Piece inspector action' })).toBeInTheDocument();
+  });
+
+  it('should open the entry assistant locally even when the saved lanes are closed', () => {
+    desktopLayout.chatOpen = false;
+    desktopLayout.workbenchOpen = false;
+    workspaceUi.assistantEntryOpen = true;
+    renderDesktop();
+    resizeTo(compactWorkspaceWidth - 1);
+    expect(paneOf('chat-lane')).toHaveAttribute('data-visible', 'true');
+    expect(paneOf('workbench-lane')).toHaveAttribute('data-visible', 'false');
+    expect(send).not.toHaveBeenCalled();
   });
 
   it('places Misure on the left, the model in the middle and the agent on the right', async () => {
@@ -195,8 +245,8 @@ describe('ChatInterfaceDesktop', () => {
     resizeTo(1400);
     renderViewer.mockClear();
 
-    resizeTo(1300);
-    resizeTo(1200);
+    resizeTo(1500);
+    resizeTo(1450);
     resizeTo(compactWorkspaceWidth);
     expect(renderViewer).not.toHaveBeenCalled();
 
@@ -208,13 +258,12 @@ describe('ChatInterfaceDesktop', () => {
     expect(renderViewer).not.toHaveBeenCalled();
   });
 
-  /* A 1280 px window with the 224 px sidebar leaves a 1056 px workspace: Misure (280), the viewer and the agent (320)
-   * all fit, the viewer above its 416 px minimum. */
-  it('uses the 1023/1024 workspace boundary and keeps all three pane children stable', async () => {
+  /* Below 1360 the viewport retains useful working space beside one auxiliary. */
+  it('uses the 1359/1360 workspace boundary and keeps all three pane children stable', async () => {
     renderDesktop();
     const viewer = await screen.findByTestId('viewer-lane');
-    expect(compactWorkspaceWidth).toBe(1024);
-    expect(compactWorkspaceWidth).toBeLessThanOrEqual(1280 - 224);
+    expect(compactWorkspaceWidth).toBe(1360);
+    expect(compactWorkspaceWidth).toBeGreaterThan(1280 - 224);
 
     resizeTo(compactWorkspaceWidth - 1);
     expect(paneOf('chat-lane')).toHaveAttribute('data-visible', 'true');
@@ -243,8 +292,8 @@ describe('ChatInterfaceDesktop', () => {
     /* The Misure lane drops at the compact width through the skeleton's own container query,
      * which jsdom does not evaluate: the class is the assertion, the width is checked in a browser. */
     const workbenchLane = skeleton.querySelector('[data-slot="workspace-skeleton-workbench"]');
-    expect(workbenchLane).toHaveClass('@min-[1024px]:flex', 'border-r');
-    expect(compactWorkspaceWidth).toBe(1024);
+    expect(workbenchLane).toHaveClass('@min-[1360px]:flex', 'border-r');
+    expect(compactWorkspaceWidth).toBe(1360);
     // The agent stands in on the right, after the viewer.
     expect(workbenchLane?.nextElementSibling?.nextElementSibling).toContainElement(screen.getByTestId('chat-skeleton'));
     /* The frame paints at once; its lanes wait out a blink, so a warm load never flashes them. */
@@ -324,7 +373,10 @@ describe('ChatInterfaceDesktop', () => {
     renderDesktop();
     await screen.findByTestId('viewer-lane');
 
-    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+    const workspaceButtons = screen
+      .queryAllByRole('button')
+      .filter((button) => !button.closest('[data-slot=chat-lane-content], [data-slot=workbench-lane-content]'));
+    expect(workspaceButtons).toHaveLength(0);
   });
 
   it('does not render a workspace-global Files toggle', async () => {

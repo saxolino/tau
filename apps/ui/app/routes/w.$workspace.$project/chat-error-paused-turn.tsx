@@ -46,7 +46,7 @@ export const ChatErrorPausedTurn = memo(function ({
   className,
   reason,
   resumable,
-  title = 'Tau paused this turn',
+  title = 'SinopiaCAD paused this turn',
   icon = CircleAlert,
   guidance,
   canSwitchModel = false,

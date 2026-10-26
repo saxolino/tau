@@ -77,6 +77,7 @@ export function AppViewerEnvironment({ children }: { readonly children: ReactNod
       labels,
       // SinopiaCAD: fullscreen is the browser's and the keyboard's, not a button in the bar (UI-UX-SinopiaCAD §3.3).
       showFullscreenControl: false,
+      showRenderFps: false,
     }),
     [
       labels,

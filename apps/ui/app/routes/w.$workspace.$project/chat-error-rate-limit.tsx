@@ -90,7 +90,7 @@ export const ChatErrorRateLimit = memo(function ({
   const reason =
     description ??
     (resumable
-      ? 'The model provider asked Tau to wait.'
+      ? 'The model provider asked SinopiaCAD to wait.'
       : 'Too many requests. Please wait a moment before trying again.');
 
   // A click resumes now, so the countdown must not resume a second time.

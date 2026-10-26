@@ -365,7 +365,7 @@ describe('opening a GitHub-bound project', () => {
         apiBaseUrl,
         origin: 'https://github.com',
         repositoryUrl,
-        unavailable: "Tau couldn't reach GitHub. Try again shortly.",
+        unavailable: "SinopiaCAD couldn't reach GitHub. Try again shortly.",
       },
     ]);
     /* The open's first request met the withdrawn credential. */

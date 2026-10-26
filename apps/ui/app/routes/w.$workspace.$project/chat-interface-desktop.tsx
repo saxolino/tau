@@ -26,25 +26,34 @@ import {
 import { panelMinSizeChat, panelMinSizeViewer, panelMinSizeWorkbench } from '#constants/editor.constants.js';
 
 /**
- * Below this workspace width only one side lane shows beside the viewer: Misure (280 px) and the agent (320 px) by
- * default leave the viewer its 416 px minimum, so a 1280 px window with the sidebar open keeps all three.
+ * Below this workspace width the model shares its space with only one auxiliary.
+ * Manual editing reserves its inspector inside the viewer, so it always replaces both outer auxiliaries.
  */
-export const compactWorkspaceWidth = 1024;
+export const compactWorkspaceWidth = 1360;
 
 export const ChatInterfaceDesktop = memo(function (): React.JSX.Element {
   const { editorRef } = useProject();
   const { t } = useTranslation();
   const isTablet = useCadViewport() === 'tablet';
-  const { setChatOpen, setWorkbenchOpen } = useProjectWorkspace();
+  const { setChatOpen, setWorkbenchOpen, manualOpen, assistantEntryOpen } = useProjectWorkspace();
   const containerRef = useRef<HTMLDivElement>(null);
   const [isCompact, setIsCompact] = useState<boolean>();
   const isClient = isCompact !== undefined;
   const isEditorReady = useSelector(editorRef, (state) => state.matches('ready'));
   const desktopLayout = useSelector(editorRef, (state) => state.context.panelState.desktopLayout);
   const singleLane = isTablet || (isCompact ?? false);
-  const compactAuxiliary = singleLane ? resolveCompactAuxiliary(desktopLayout) : undefined;
-  const chatVisible = desktopLayout.chatOpen && (!singleLane || compactAuxiliary === 'chat');
-  const workbenchVisible = desktopLayout.workbenchOpen && (!singleLane || compactAuxiliary === 'workbench');
+  const compactAuxiliary = singleLane
+    ? assistantEntryOpen
+      ? 'chat'
+      : resolveCompactAuxiliary(desktopLayout)
+    : undefined;
+  const chatVisible =
+    !manualOpen && (assistantEntryOpen || desktopLayout.chatOpen) && (!singleLane || compactAuxiliary === 'chat');
+  const workbenchVisible =
+    !manualOpen && desktopLayout.workbenchOpen && (!singleLane || compactAuxiliary === 'workbench');
+  const isChatPaneVisible = chatVisible && !isTablet;
+  const isWorkbenchPaneVisible = workbenchVisible && !isTablet;
+  const isAuxiliaryVisible = chatVisible || workbenchVisible;
   const lanes = useMemo(() => ({ chat: chatVisible, workbench: workbenchVisible }), [chatVisible, workbenchVisible]);
 
   // ⌃W shows or hides Misure; its two-place toggle advertises the binding (`WorkbenchLaneToggle`).
@@ -106,12 +115,12 @@ export const ChatInterfaceDesktop = memo(function (): React.JSX.Element {
   return (
     <ChatContextInsertionProvider>
       <WorkspaceLanesContext.Provider value={lanes}>
-        <div className='flex size-full flex-col overflow-hidden bg-background'>
+        <div className='flex size-full flex-col overflow-hidden bg-sidebar'>
           {/* SinopiaCAD: one bar across Misure, the model and the agent (UI-UX-SinopiaCAD §3.1). */}
           <ProjectTopBar />
           <div
             ref={containerRef}
-            className='relative min-h-0 flex-1 overflow-hidden'
+            className='relative m-2 mt-0 min-h-0 flex-1 overflow-hidden rounded-2xl border bg-background'
             data-project-workspace
             data-compact={isCompact}
           >
@@ -136,9 +145,16 @@ export const ChatInterfaceDesktop = memo(function (): React.JSX.Element {
                       minSize={panelMinSizeWorkbench}
                       preferredSize={desktopLayout.workbenchWidth}
                       priority={LayoutPriority.Low}
-                      visible={workbenchVisible && !isTablet}
+                      visible={isWorkbenchPaneVisible}
                     >
-                      <div className='size-full'>{isTablet ? null : <WorkbenchDockview />}</div>
+                      <div
+                        data-slot='workbench-lane-content'
+                        className='size-full'
+                        inert={!isWorkbenchPaneVisible}
+                        aria-hidden={!isWorkbenchPaneVisible}
+                      >
+                        {isTablet ? null : <WorkbenchDockview />}
+                      </div>
                     </Allotment.Pane>
 
                     <Allotment.Pane key='viewer' minSize={panelMinSizeViewer} priority={LayoutPriority.High}>
@@ -157,23 +173,30 @@ export const ChatInterfaceDesktop = memo(function (): React.JSX.Element {
                     <Allotment.Pane
                       key='chat'
                       minSize={panelMinSizeChat}
-                      preferredSize={desktopLayout.chatWidth}
+                      preferredSize={Math.max(360, desktopLayout.chatWidth)}
                       priority={LayoutPriority.Low}
-                      visible={chatVisible && !isTablet}
+                      visible={isChatPaneVisible}
                     >
-                      {isTablet ? null : (
-                        <ChatHistoryGate>
-                          <ChatHistory
-                            isExpanded={desktopLayout.chatOpen}
-                            setIsExpanded={(value) => {
-                              setChatOpen(typeof value === 'function' ? value(desktopLayout.chatOpen) : value);
-                            }}
-                          />
-                        </ChatHistoryGate>
-                      )}
+                      <div
+                        data-slot='chat-lane-content'
+                        className='size-full'
+                        inert={!isChatPaneVisible}
+                        aria-hidden={!isChatPaneVisible}
+                      >
+                        {isTablet ? null : (
+                          <ChatHistoryGate>
+                            <ChatHistory
+                              isExpanded
+                              setIsExpanded={(value) => {
+                                setChatOpen(typeof value === 'function' ? value(chatVisible) : value);
+                              }}
+                            />
+                          </ChatHistoryGate>
+                        )}
+                      </div>
                     </Allotment.Pane>
                   </Allotment>
-                  {isTablet && compactAuxiliary !== undefined ? (
+                  {isTablet && !manualOpen && compactAuxiliary !== undefined ? (
                     <TabletLane
                       label={t(chatVisible ? 'home.agentLane.label' : 'project.lanes.measures')}
                       side={chatVisible ? 'right' : 'left'}
@@ -181,13 +204,15 @@ export const ChatInterfaceDesktop = memo(function (): React.JSX.Element {
                         (chatVisible ? setChatOpen : setWorkbenchOpen)(false);
                       }}
                     >
-                      {chatVisible ? (
-                        <ChatHistoryGate>
-                          <ChatHistory />
-                        </ChatHistoryGate>
-                      ) : (
-                        <WorkbenchDockview />
-                      )}
+                      <div className='size-full' inert={!isAuxiliaryVisible} aria-hidden={!isAuxiliaryVisible}>
+                        {chatVisible ? (
+                          <ChatHistoryGate>
+                            <ChatHistory />
+                          </ChatHistoryGate>
+                        ) : (
+                          <WorkbenchDockview />
+                        )}
+                      </div>
                     </TabletLane>
                   ) : null}
                 </>

@@ -8,6 +8,7 @@ import { resetLanguageForTests, setLanguage } from '#i18n/language.js';
 import { formatTime, useTranslation } from '#i18n/translate.js';
 
 const openPanel = vi.hoisted(() => vi.fn());
+const setManualOpen = vi.hoisted(() => vi.fn());
 const updateName = vi.hoisted(() => vi.fn(async () => undefined));
 const savedAt = new Date(2026, 9, 23, 14, 2).getTime();
 const linkedModel = vi.hoisted(() => ({
@@ -68,6 +69,9 @@ vi.mock('#routes/w.$workspace.$project/project-workspace-context.js', async (imp
   ...(await importOriginal<typeof ProjectWorkspaceContext>()),
   useProjectWorkspace: () => ({
     openPanel,
+    manualAvailable: true,
+    manualOpen: false,
+    setManualOpen,
     registerRecordRecoveryFocus: () => undefined,
     restoreRecordRecoveryFocus: () => undefined,
   }),
@@ -140,6 +144,17 @@ describe('ProjectTopBar', () => {
     // Misure at the start, the agent at the end: the lanes' toggles frame the bar.
     expect(bar.firstElementChild).toBe(screen.getByTestId('measures-toggle'));
     expect(screen.getByTestId('agent-toggle')).toHaveAttribute('data-place', 'viewer');
+  });
+
+  it('should keep the assistant and manual editing one click away beside the project identity', async () => {
+    setLanguage('it');
+    renderBar();
+    expect(screen.getByRole('link', { name: 'Progetti' })).toHaveTextContent('SinopiaCAD');
+    expect(screen.getByRole('group', { name: 'Strumenti di progettazione' })).toContainElement(
+      screen.getByTestId('agent-toggle'),
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Modifica' }));
+    expect(setManualOpen).toHaveBeenCalledExactlyOnceWith(true);
   });
 
   it('keeps Tau’s branch, Share and file names out of the bar', () => {

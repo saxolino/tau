@@ -22,10 +22,10 @@ const textDecoder = new TextDecoder();
 export const chatTurnNotStartedCode = 'CHAT_TURN_NOT_STARTED';
 
 /** Plain copy for compaction failures that leave the chat's history intact. */
-export const chatHistoryTidyFailureMessage = 'This chat hit a problem while Tau was tidying its history.';
+export const chatHistoryTidyFailureMessage = 'This chat hit a problem while SinopiaCAD was tidying its history.';
 
 /** Plain copy for compaction failures caused by an oversized chat. */
-export const chatTooLongMessage = 'Tau could not make room for the next step.';
+export const chatTooLongMessage = 'SinopiaCAD could not make room for the next step.';
 
 /**
  * Client-side transport failure (request never reaches the API as structured JSON).

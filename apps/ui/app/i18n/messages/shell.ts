@@ -118,6 +118,8 @@ export const shellMessages = defineMessages({
       notNow: 'Non ora',
     },
     update: {
+      superseded: 'È disponibile una nuova versione di SinopiaCAD. Ricarica per usarla.',
+      reload: 'Ricarica',
       failedTitle: 'Non è stato possibile completare la richiesta',
       failedDetail: 'Riprova. La sessione attuale è ancora aperta.',
       title: {
@@ -301,6 +303,8 @@ export const shellMessages = defineMessages({
       notNow: 'Not now',
     },
     update: {
+      superseded: 'A newer version of SinopiaCAD is available. Reload to use it.',
+      reload: 'Reload',
       failedTitle: 'Couldn’t complete the request',
       failedDetail: 'Try again. Your current session is still open.',
       title: {

@@ -72,8 +72,8 @@ describe('ChatLaneToggle', () => {
   });
 
   it.each([
-    ['it', 'Agente', 'Mostra l’agente'],
-    ['en', 'Agent', 'Show the agent'],
+    ['it', 'Assistente', 'Mostra l’assistente'],
+    ['en', 'Assistant', 'Show the assistant'],
   ] as const)('names the agent in %s', async (language, name, tooltip) => {
     setLanguage(language);
     const user = userEvent.setup();
@@ -89,7 +89,7 @@ describe('ChatLaneToggle', () => {
     state.status = approval;
     const { container } = renderWithLanes(<ChatLaneToggle place='viewer' />, true);
 
-    expect(screen.getByRole('button', { name: 'Agente' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'Assistente' })).toHaveAttribute('aria-pressed', 'true');
     expect(container.querySelector('[data-slot="chat-toggle-mark"]')).toBeNull();
   });
 
@@ -98,12 +98,12 @@ describe('ChatLaneToggle', () => {
     renderWithLanes(<ChatLaneToggle place='lane' />, true);
 
     // The lane's own button only hides it: named for that, no pressed state (the top bar's toggle carries it).
-    const toggle = screen.getByRole('button', { name: 'Nascondi l’agente' });
+    const toggle = screen.getByRole('button', { name: 'Nascondi l’assistente' });
     expect(toggle).not.toHaveAttribute('aria-pressed');
     expect(toggle).toHaveAttribute('aria-keyshortcuts', 'Control+C');
     // The open pane names itself: the header carries the icon alone, a 28 px pane button.
     expect(toggle).toHaveClass('size-7');
-    expect(toggle).not.toHaveTextContent('Agente');
+    expect(toggle).not.toHaveTextContent('Assistente');
     await user.click(toggle);
 
     expect(setChatOpen).toHaveBeenCalledExactlyOnceWith(false);
@@ -113,9 +113,9 @@ describe('ChatLaneToggle', () => {
     const user = userEvent.setup();
     renderWithLanes(<ChatLaneToggle place='viewer' />, false);
 
-    const toggle = screen.getByRole('button', { name: 'Agente' });
+    const toggle = screen.getByRole('button', { name: 'Assistente' });
     expect(toggle).toHaveAttribute('aria-pressed', 'false');
-    expect(toggle).toHaveTextContent('Agente');
+    expect(toggle).toHaveTextContent('Assistente');
     expect(toggle).toHaveClass('@max-xl/viewer:w-7');
     await user.click(toggle);
 
@@ -127,14 +127,14 @@ describe('ChatLaneToggle', () => {
     const { container } = renderWithLanes(<ChatLaneToggle place='lane' />, true);
 
     expect(container.querySelector('[data-slot="chat-toggle-mark"]')).toBeNull();
-    expect(screen.getByRole('button', { name: 'Nascondi l’agente' })).not.toHaveAccessibleDescription();
+    expect(screen.getByRole('button', { name: 'Nascondi l’assistente' })).not.toHaveAccessibleDescription();
   });
 
   it('carries the sidebar mark and its sentence while the lane is hidden, without the count', () => {
     state.status = approval;
     const { container } = renderWithLanes(<ChatLaneToggle place='viewer' />, false);
 
-    const toggle = screen.getByRole('button', { name: 'Agente' });
+    const toggle = screen.getByRole('button', { name: 'Assistente' });
     expect(toggle).toHaveAttribute('aria-pressed', 'false');
     expect(toggle).toHaveAccessibleDescription('Needs your approval · 2');
     const mark = container.querySelector('[data-slot="chat-toggle-mark"]');
@@ -160,7 +160,7 @@ describe('ChatLaneToggle', () => {
     rerender(withLanes(<ChatLaneToggle place='lane' />, true));
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Nascondi l’agente' })).toHaveFocus();
+      expect(screen.getByRole('button', { name: 'Nascondi l’assistente' })).toHaveFocus();
     });
   });
 });

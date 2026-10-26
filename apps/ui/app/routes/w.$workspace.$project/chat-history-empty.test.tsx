@@ -12,8 +12,8 @@ afterEach(() => {
 describe('ChatHistoryEmpty', () => {
   // SinopiaCAD: the agent's empty state in the design's words (UI-UX-SinopiaCAD §2.4).
   it.each([
-    ['it', 'Dimmi cosa vuoi fare', /Posso partire da un’immagine/u],
-    ['en', 'Tell me what you want to make', /I can start from an image/u],
+    ['it', 'Progettiamo il prossimo pezzo', /Posso partire da un’immagine/u],
+    ['en', 'Let’s design the next piece', /I can start from an image/u],
   ] as const)('renders one concise invitation in %s without the old tips panel', (language, title, text) => {
     setLanguage(language);
     render(<ChatHistoryEmpty />);

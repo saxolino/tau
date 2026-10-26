@@ -141,10 +141,10 @@ const conflictSummary = (conflict: ProjectDiscoveryConflict): string => {
           return 'This project directory could not be read.';
         }
         case 'manifest-too-large': {
-          return 'tau.json is too large to be a Tau manifest, so the project was not opened.';
+          return 'tau.json is too large to be a project manifest, so the project was not opened.';
         }
         case 'manifest-unknown-schema': {
-          return 'tau.json uses a format this version of Tau does not support. Update Tau to open it.';
+          return 'tau.json uses a format this version of SinopiaCAD does not support. Update SinopiaCAD to open it.';
         }
         default: {
           return 'The tau.json manifest is invalid and was not opened.';
@@ -614,7 +614,7 @@ export function ProjectLibrary({ headingLevel = 1 }: { readonly headingLevel?: 1
                 <div className='text-sm text-muted-foreground'>
                   {project.manifestIssue?.code === 'manifest-invalid-json'
                     ? 'tau.json has a syntax error. The project opens; fix tau.json in its editor.'
-                    : 'tau.json has problems. The project opens, and Tau won’t change tau.json until it is repaired.'}
+                    : 'tau.json has problems. The project opens, and SinopiaCAD won’t change tau.json until it is repaired.'}
                 </div>
                 {project.manifestIssue ? <ManifestIssueLines issue={project.manifestIssue} /> : null}
               </div>
@@ -736,7 +736,7 @@ export function ProjectLibrary({ headingLevel = 1 }: { readonly headingLevel?: 1
           <AlertDialogHeader>
             <AlertDialogTitle>Repair project links to “{repairTarget?.workspaceName}”?</AlertDialogTitle>
             <AlertDialogDescription>
-              Tau updates browser routing metadata only. It will not move or modify folder contents.
+              SinopiaCAD updates browser routing metadata only. It will not move or modify folder contents.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

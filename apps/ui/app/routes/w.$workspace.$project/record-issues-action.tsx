@@ -52,7 +52,7 @@ const notSaved: Record<RecordIssueKind, string> = {
 function consequence(issue: RecordIssue, correction: EntriesCorrection | undefined): string {
   switch (issue.state) {
     case 'unconfirmed': {
-      return 'Your latest change is kept here. Tau has not heard whether it reached the file, so it is not yet confirmed saved.';
+      return 'Your latest change is kept here. SinopiaCAD has not heard whether it reached the file, so it is not yet confirmed saved.';
     }
     case 'invalid': {
       if (correction) {
@@ -61,13 +61,13 @@ function consequence(issue: RecordIssue, correction: EntriesCorrection | undefin
       return `The file could not be applied; ${notSaved[issue.kind]} until it is fixed.`;
     }
     case 'newer': {
-      return `${kept[issue.kind]}. ${notSaved[issue.kind].replace(/^./u, (first) => first.toUpperCase())} until this project is opened with a newer Tau.`;
+      return `${kept[issue.kind]}. ${notSaved[issue.kind].replace(/^./u, (first) => first.toUpperCase())} until this project is opened with a newer version of SinopiaCAD.`;
     }
     case 'unavailable': {
       return `${kept[issue.kind]}. Its saved settings could not be read; try again or keep working.`;
     }
     default: {
-      return `${kept[issue.kind]} while Tau reads its saved settings again.`;
+      return `${kept[issue.kind]} while SinopiaCAD reads its saved settings again.`;
     }
   }
 }
@@ -76,7 +76,7 @@ function consequence(issue: RecordIssue, correction: EntriesCorrection | undefin
 function problem(issue: RecordIssue, correction: EntriesCorrection | undefined): string {
   switch (issue.state) {
     case 'unconfirmed': {
-      return 'The last change was sent, and Tau has not heard back whether it was written.';
+      return 'The last change was sent, and SinopiaCAD has not heard back whether it was written.';
     }
     case 'invalid': {
       return correction
@@ -84,10 +84,10 @@ function problem(issue: RecordIssue, correction: EntriesCorrection | undefined):
         : 'The file does not match the settings format.';
     }
     case 'newer': {
-      return 'The file was written by a newer version of Tau.';
+      return 'The file was written by a newer version of SinopiaCAD.';
     }
     default: {
-      return 'Tau could not read the file.';
+      return 'SinopiaCAD could not read the file.';
     }
   }
 }

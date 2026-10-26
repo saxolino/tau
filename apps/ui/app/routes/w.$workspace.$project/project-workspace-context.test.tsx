@@ -86,6 +86,58 @@ describe('ProjectWorkspaceProvider', () => {
     keyboard.useKeybinding.mockImplementation(stubKeybinding);
   });
 
+  it('should keep manual drafts and sizing while switching back to the assistant', () => {
+    render(
+      <ProjectWorkspaceProvider>
+        <Probe />
+      </ProjectWorkspaceProvider>,
+    );
+    expect(workspace.assistantEntryOpen).toBe(true);
+    expect(send).not.toHaveBeenCalled();
+    act(() => {
+      workspace.registerManualViewer('view-1', true, true);
+      workspace.setManualDraftLayout('profile');
+      workspace.setManualOpen(true);
+    });
+    expect(workspace.manualOpen).toBe(true);
+    expect(workspace.manualDraftLayout).toBe('profile');
+    expect(workspace.assistantEntryOpen).toBe(false);
+    act(() => {
+      workspace.setChatOpen(true);
+    });
+    expect(workspace.manualOpen).toBe(false);
+    expect(workspace.manualDraftLayout).toBe('profile');
+  });
+
+  it('should scope the manual inspector to the active viewer and preserve another viewer on cleanup', () => {
+    render(
+      <ProjectWorkspaceProvider>
+        <Probe />
+      </ProjectWorkspaceProvider>,
+    );
+    let unregisterInactive: () => void = () => undefined;
+    act(() => {
+      workspace.registerManualViewer('view-1', true, true);
+      unregisterInactive = workspace.registerManualViewer('view-2', true, false);
+      workspace.setManualOpen(true);
+    });
+    expect(workspace.manualViewId).toBe('view-1');
+    expect(workspace.manualOpen).toBe(true);
+    act(() => {
+      unregisterInactive();
+    });
+    expect(workspace.manualAvailable).toBe(true);
+    expect(workspace.manualViewId).toBe('view-1');
+    act(() => {
+      workspace.registerManualViewer('view-1', true, false);
+      workspace.registerManualViewer('view-3', false, true);
+    });
+    // A newly active unsupported viewer owns the mode rather than enabling a stale inspector.
+    expect(workspace.manualViewId).toBe('view-3');
+    expect(workspace.manualAvailable).toBe(false);
+    expect(workspace.manualOpen).toBe(false);
+  });
+
   it.each(['replace', 'gap', 'moved'] as const)(
     'should preserve recovery focus across header %s without stealing it',
     (mode) => {

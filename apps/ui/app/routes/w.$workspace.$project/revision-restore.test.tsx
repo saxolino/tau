@@ -317,7 +317,7 @@ describe('RevisionRestore', () => {
 
     const [title, options] = toastError.mock.calls[0] ?? [];
     expect(title).toBe('That change could not be saved');
-    expect(options?.description).toBe('Tau could not record this change. Reload the page and try again.');
+    expect(options?.description).toBe('SinopiaCAD could not record this change. Reload the page and try again.');
     expect(capture).toHaveBeenCalledWith('revision_save_failed', {
       message: 'Buffer is not defined',
       code: undefined,

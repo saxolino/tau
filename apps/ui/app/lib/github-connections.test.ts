@@ -186,7 +186,7 @@ describe('githubErrorMessage', () => {
 
   it('should map a coded error from another layer and hide unknown messages', () => {
     expect(githubErrorMessage(Object.assign(new Error('raw'), { code: 'GIT_PROXY_UPSTREAM_FAILED' }))).toBe(
-      "Tau couldn't reach the Git host. Try again shortly.",
+      "SinopiaCAD couldn't reach the Git host. Try again shortly.",
     );
     expect(githubErrorMessage(new TypeError('Failed to fetch'))).toMatch(/couldn't reach its server/u);
     expect(githubErrorMessage(new Error('Not Found - https://docs.github.com'))).toBe(

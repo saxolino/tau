@@ -71,12 +71,15 @@ const SidebarBehavior = () => {
 
 const SidebarProvider = ({
   onOpenChange: setOpenProperty,
+  isRouteOpen,
   children,
   ...properties
 }: React.ComponentProps<'div'> & {
   readonly onOpenChange?: (open: boolean) => void;
+  /** Route-local override; changes never write the general navigation preference. */
+  readonly isRouteOpen?: boolean;
 }): React.JSX.Element => {
-  const [open, setOpenCookie] = useCookie(cookieName.sidebarOp, sidebarDefaultOpen);
+  const [storedOpen, setOpenCookie] = useCookie(cookieName.sidebarOp, sidebarDefaultOpen);
   const setOpen = React.useCallback(
     (nextOpen: boolean) => {
       if (setOpenProperty) {
@@ -90,7 +93,12 @@ const SidebarProvider = ({
   );
 
   return (
-    <DesignSystemSidebarProvider {...properties} open={open} onOpenChange={setOpen} keyboardShortcutKey=''>
+    <DesignSystemSidebarProvider
+      {...properties}
+      open={isRouteOpen ?? storedOpen}
+      onOpenChange={setOpen}
+      keyboardShortcutKey=''
+    >
       <SidebarBehavior />
       {children}
     </DesignSystemSidebarProvider>

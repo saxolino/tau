@@ -42,10 +42,10 @@ const hostedRemoteCopy: ReadonlyArray<readonly [string, string]> = [
 
 /** Whatever the engine itself could not do, said the same way for every verb. */
 const engineCopy: ReadonlyArray<readonly [string, string]> = [
-  ['ENGINE_FAILED', 'Tau could not read this project’s history. Reload the page and try again.'],
+  ['ENGINE_FAILED', 'SinopiaCAD could not read this project’s history. Reload the page and try again.'],
   ['ENGINE_UNAVAILABLE', 'This project’s history is not ready yet. Wait a moment and try again.'],
   ['MISSING_LARGE_OBJECT', 'A file this revision needs is not on this device. Sync this project, then try again.'],
-  ['UNSUPPORTED_OPERATION', 'Tau cannot do that to this project.'],
+  ['UNSUPPORTED_OPERATION', 'SinopiaCAD cannot do that to this project.'],
 ];
 
 /**
@@ -68,12 +68,12 @@ export const revisionFailureCopy: Readonly<
 > = {
   connection: {
     title: 'History could not connect',
-    fallback: 'Tau could not connect to this project’s history. Reload the page and try again.',
+    fallback: 'SinopiaCAD could not connect to this project’s history. Reload the page and try again.',
     codes: new Map(engineCopy),
   },
   restore: {
     title: 'Restore failed',
-    fallback: 'Tau could not restore that revision. Reload the page and try again.',
+    fallback: 'SinopiaCAD could not restore that revision. Reload the page and try again.',
     codes: new Map([
       ...engineCopy,
       /* A1: a turn holds the files, so the restore wrote nothing — Switch's words. */
@@ -110,7 +110,7 @@ export const revisionFailureCopy: Readonly<
   },
   branch: {
     title: 'That branch change did not go through',
-    fallback: 'Tau could not finish that branch change. Reload the page and try again.',
+    fallback: 'SinopiaCAD could not finish that branch change. Reload the page and try again.',
     codes: new Map([
       ...engineCopy,
       /* A fresh project: nothing recorded, and nothing unrecorded to record. */
@@ -120,14 +120,14 @@ export const revisionFailureCopy: Readonly<
       /* D91: a rename moves only the name, so a branch something else knows by its name is left alone. */
       [
         'BRANCH_RENAME_LINKED',
-        'This branch has its own set of files open, so Tau can’t rename it. Make a new branch from it instead.',
+        'This branch has its own set of files open, so SinopiaCAD can’t rename it. Make a new branch from it instead.',
       ],
       [
         'BRANCH_RENAME_PUSHED',
-        'This branch is already backed up under its name, and Tau can’t remove a name there. Make a new branch from it instead.',
+        'This branch is already backed up under its name, and SinopiaCAD can’t remove a name there. Make a new branch from it instead.',
       ],
       /* Made, with nowhere for a chat to work in it. */
-      ['BRANCH_UNPLACED', 'Tau made that branch but could not open its files. Reload the page and try again.'],
+      ['BRANCH_UNPLACED', 'SinopiaCAD made that branch but could not open its files. Reload the page and try again.'],
       ['CAS_LOST', 'Something else changed this project at the same time. Try again.'],
       ['CHECKOUT_CONFLICT', 'That branch already exists. Pick another name.'],
       /* Asked before the project has anything selected to branch from; it used
@@ -140,7 +140,7 @@ export const revisionFailureCopy: Readonly<
   },
   save: {
     title: 'That change could not be saved',
-    fallback: 'Tau could not record this change. Reload the page and try again.',
+    fallback: 'SinopiaCAD could not record this change. Reload the page and try again.',
     codes: new Map([
       ...engineCopy,
       /* D3: another writer moved the line first; the files stay as they are, unsaved. */
@@ -150,13 +150,13 @@ export const revisionFailureCopy: Readonly<
   },
   backup: {
     title: 'Not backed up',
-    fallback: 'Tau could not back this project up. It will try again.',
+    fallback: 'SinopiaCAD could not back this project up. It will try again.',
     codes: new Map([
       ...hostedRemoteCopy,
       /* Terminal (W2a): no retry and no verb clears it; only a repair of the cloud copy does. */
       [
         'REMOTE_DAMAGED',
-        'Tau has to repair this project’s copy on Tau Cloud before it can back it up again. Nothing on this device is lost.',
+        'SinopiaCAD has to repair this project’s copy on Tau Cloud before it can back it up again. Nothing on this device is lost.',
       ],
     ]),
   },
@@ -180,13 +180,13 @@ export const revisionFailureCopy: Readonly<
   },
   turn: {
     title: 'Nothing was saved for that change',
-    fallback: 'Tau could not record what that change produced. Try sending it again.',
+    fallback: 'SinopiaCAD could not record what that change produced. Try sending it again.',
     codes: new Map([
       ...engineCopy,
       /* Another document of this project is mid-change on the same files. */
       ['LEASE_UNAVAILABLE', 'Another window has this project open. Wait for it to finish, then try again.'],
       /* The earlier edits on the checkout could not be recorded before the turn began (RM-S14). */
-      ['BASE_CUT_FAILED', 'Tau could not save this project’s earlier edits first. Try sending that again.'],
+      ['BASE_CUT_FAILED', 'SinopiaCAD could not save this project’s earlier edits first. Try sending that again.'],
       ['CAS_LOST', 'Something else changed this project at the same time. Try sending that again.'],
       ['UNKNOWN_REVISION', 'The version that change built on is not in this project any more.'],
       /* Let go before it recorded anything — a stop, a reload, an abandonment. */

@@ -144,18 +144,17 @@ describe('manual geometry editing in a real browser', () => {
     const commit = vi.fn<(next: ManualDocument) => Promise<boolean>>(async () => true);
     const applyEdges = vi.fn<(size: number) => void>();
     render(<DirectPanelFixture commit={commit} applyEdges={applyEdges} />);
-    await expect
-      .element(page.getByRole('button', { name: 'Pezzi', exact: true }))
-      .toHaveAttribute('aria-pressed', 'true');
+    await expect.element(page.getByRole('radio', { name: 'Pezzi', exact: true })).toBeChecked();
     await expect
       .element(page.getByRole('button', { name: 'Sposta', exact: true }))
       .toHaveAttribute('aria-pressed', 'true');
     await expect.element(page.getByRole('region', { name: 'Bozza', exact: true })).not.toBeInTheDocument();
-    await page.getByRole('button', { name: 'Facce', exact: true }).click();
+    await page.getByRole('radio', { name: 'Facce', exact: true }).click();
     await expect.element(page.getByRole('button', { name: 'Sposta', exact: true })).not.toBeInTheDocument();
-    await page.getByRole('button', { name: 'Spigoli', exact: true }).click();
+    await page.getByRole('radio', { name: 'Spigoli', exact: true }).click();
     await expect.element(page.getByRole('button', { name: 'Estrudi faccia', exact: true })).not.toBeInTheDocument();
-    await expect.element(page.getByText('Fibbia · 2 spigoli selezionati', { exact: true })).toBeVisible();
+    await expect.element(page.getByText('Fibbia', { exact: true })).toBeVisible();
+    await expect.element(page.getByText('2 spigoli selezionati', { exact: true })).toBeVisible();
     await page.getByRole('spinbutton', { name: 'Raggio del raccordo', exact: true }).fill('0.6');
     await userEvent.keyboard('{Enter}');
     expect(applyEdges).not.toHaveBeenCalled();
@@ -164,8 +163,8 @@ describe('manual geometry editing in a real browser', () => {
     await page.getByRole('button', { name: 'Quote numeriche', exact: true }).click();
     await expect.element(page.getByRole('region', { name: 'Bozza', exact: true })).toBeVisible();
     await expect.element(page.getByRole('combobox', { name: 'Pezzo', exact: true })).toHaveTextContent('Fibbia');
-    await expect.element(page.getByRole('button', { name: 'Facce', exact: true })).toBeDisabled();
-    await expect.element(page.getByRole('button', { name: 'Scala', exact: true })).toBeDisabled();
+    await expect.element(page.getByRole('radio', { name: 'Facce', exact: true })).not.toBeInTheDocument();
+    await expect.element(page.getByRole('button', { name: 'Scala', exact: true })).not.toBeInTheDocument();
     expect(commit).not.toHaveBeenCalled();
     await page.getByRole('button', { name: 'Scarta bozza', exact: true }).click();
     await expect.element(page.getByRole('button', { name: 'Sposta', exact: true })).toBeEnabled();
@@ -187,6 +186,7 @@ describe('manual geometry editing in a real browser', () => {
     };
     const fixture = createFixture(original);
     render(<PanelFixture service={fixture.service} />);
+    await page.getByRole('radio', { name: /^Cronologia / }).click();
     await page.getByRole('button', { name: 'Modifica operazione 1', exact: true }).click();
     await expect.element(page.getByText('Fibbia · Faccia 3', { exact: true })).toBeVisible();
     await expect.element(page.getByRole('combobox', { name: 'Pezzo', exact: true })).not.toBeInTheDocument();
@@ -241,6 +241,7 @@ describe('manual geometry editing in a real browser', () => {
       };
       const fixture = createFixture(original);
       render(<PanelFixture service={fixture.service} />);
+      await page.getByRole('radio', { name: /^Cronologia / }).click();
       await page.getByRole('button', { name: 'Modifica operazione 1', exact: true }).click();
       await expect.element(page.getByText('Fibbia · Spigoli selezionati sul modello', { exact: true })).toBeVisible();
       await expect.element(page.getByRole('combobox', { name: 'Pezzo', exact: true })).not.toBeInTheDocument();
@@ -291,6 +292,7 @@ describe('manual geometry editing in a real browser', () => {
     mounted.unmount();
     const reopened = createManualEditService(fixture.authority);
     render(<PanelFixture service={reopened} />);
+    await page.getByRole('radio', { name: /^Cronologia / }).click();
     await page.getByRole('button', { name: 'Modifica operazione 1', exact: true }).click();
     const reopenedPoint = page.getByRole('button', { name: 'Punto 1', exact: true });
     await reopenedPoint.click();
@@ -347,6 +349,7 @@ describe('manual geometry editing in a real browser', () => {
     await expect.element(page.getByRole('region', { name: 'Bozza', exact: true })).toBeVisible();
     expect(fixture.service.getSnapshot().document).toEqual(external);
     await page.getByRole('button', { name: 'Scarta bozza', exact: true }).click();
+    await page.getByRole('radio', { name: /^Cronologia / }).click();
     await expect.element(page.getByRole('button', { name: 'Modifica operazione 1', exact: true })).toBeEnabled();
   });
   it('should save an open profile, dimension its segment, reopen it and discard changes', async () => {
@@ -377,6 +380,7 @@ describe('manual geometry editing in a real browser', () => {
     mounted.unmount();
     const reopened = createManualEditService(fixture.authority);
     render(<PanelFixture service={reopened} />);
+    await page.getByRole('radio', { name: /^Cronologia / }).click();
     await page.getByRole('button', { name: 'Modifica operazione 1', exact: true }).click();
     await expect.element(page.getByRole('checkbox', { name: 'Profilo chiuso', exact: true })).not.toBeChecked();
     await page.getByRole('button', { name: 'Punto 1', exact: true }).click();
@@ -400,9 +404,14 @@ describe('manual geometry editing in a real browser', () => {
     await expect
       .element(page.getByTestId('manual-profile-path'))
       .toHaveAttribute('d', 'M 12.5,0 A 12.5,12.5 0 1 0 -12.5,0 A 12.5,12.5 0 1 0 12.5,0 Z');
+    await page.getByText('Offset del profilo', { exact: true }).click();
     await page.getByRole('spinbutton', { name: 'Distanza offset', exact: true }).fill('-13');
     await userEvent.keyboard('{Enter}');
     await page.getByRole('button', { name: 'Applica offset alla bozza', exact: true }).click();
+    await page.getByText('Offset del profilo', { exact: true }).click();
+    await expect
+      .element(page.getByRole('spinbutton', { name: 'Distanza offset', exact: true, includeHidden: true }))
+      .not.toBeVisible();
     await expect.element(page.getByRole('alert')).toHaveTextContent('Offset non applicato');
     await expect.element(page.getByRole('spinbutton', { name: 'Raggio', exact: true })).toHaveValue('12.5');
     await page.getByRole('button', { name: 'Applica al modello', exact: true }).click();
@@ -439,7 +448,7 @@ describe('manual geometry editing in a real browser', () => {
     await page.getByRole('button', { name: 'Torna al modello 3D', exact: true }).click();
     expect(showModel).toHaveBeenCalledExactlyOnceWith();
     await page.getByRole('button', { name: 'Profilo ed estrusione', exact: true }).click();
-    await expect.element(page.getByRole('button', { name: 'Mostra profili 2D', exact: true })).toBeDisabled();
+    await expect.element(page.getByRole('button', { name: 'Mostra profili 2D', exact: true })).not.toBeInTheDocument();
     await page.getByRole('button', { name: 'Scarta bozza', exact: true }).click();
     await expect.element(page.getByRole('button', { name: 'Mostra profili 2D', exact: true })).toBeEnabled();
   });
@@ -462,6 +471,7 @@ describe('manual geometry editing in a real browser', () => {
       ],
     });
     render(<PanelFixture service={fixture.service} />);
+    await page.getByRole('radio', { name: /^Cronologia / }).click();
     await page.getByRole('button', { name: 'Modifica operazione 2', exact: true }).click();
     await page.getByRole('checkbox', { name: 'Profilo chiuso', exact: true }).click();
     await expect.element(page.getByRole('textbox', { name: 'Nome del nuovo pezzo' })).toHaveValue('Pezzo manuale 2');

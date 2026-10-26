@@ -206,7 +206,7 @@ class GitHubApiClient {
         repo,
         ref,
         partialCount: data.tree.length,
-        message: 'This repository has too many files for GitHub to list, so Tau cannot preview its files.',
+        message: 'This repository has too many files for GitHub to list, so SinopiaCAD cannot preview its files.',
       });
     }
 

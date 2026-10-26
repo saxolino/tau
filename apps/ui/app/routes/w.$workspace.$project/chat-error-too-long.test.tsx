@@ -28,7 +28,7 @@ describe('ChatErrorTooLong', () => {
     const { container } = render(<ChatErrorTooLong resumable />);
 
     expect(screen.getByText('This chat is too long to continue')).toBeInTheDocument();
-    expect(screen.getByText('Tau could not make room for the next step.')).toBeInTheDocument();
+    expect(screen.getByText('SinopiaCAD could not make room for the next step.')).toBeInTheDocument();
     expect(screen.getByText('Resume to continue without losing your work.')).toBeInTheDocument();
     expect(screen.getAllByRole('button').map((button) => button.textContent)).toEqual([
       'Resume',

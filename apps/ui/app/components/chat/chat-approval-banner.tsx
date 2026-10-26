@@ -140,7 +140,7 @@ const requesterName = (agentId: string | undefined, execution: CadAgentExecution
   }
 };
 
-const unreachable = 'This computer cannot reach its machines, so Tau cannot record your answer.';
+const unreachable = 'This computer cannot reach its machines, so SinopiaCAD cannot record your answer.';
 
 type AgentJob = Readonly<{ jobId: string; machineId: string }>;
 
