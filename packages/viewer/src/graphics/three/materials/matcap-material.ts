@@ -16,7 +16,7 @@ export const matcapMaterial = (): THREE.Texture => {
   }
 
   const textureLoader = new TextureLoader();
-  const matcapTexture = textureLoader.load('/textures/matcap-soft.png', () => {
+  const matcapTexture = textureLoader.load(`${import.meta.env.BASE_URL}textures/matcap-soft.png`, () => {
     loaded = true;
     loadListeners.emit();
     loadListeners.dispose();

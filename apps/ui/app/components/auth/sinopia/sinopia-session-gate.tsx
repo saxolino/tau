@@ -1,12 +1,13 @@
 import { useEffect } from 'react';
 import type { ReactNode } from 'react';
-import { useNavigate } from 'react-router';
+import { useHref, useNavigate } from 'react-router';
 import { useSinopiaReturn, useSinopiaSession } from '#hooks/use-sinopia-session.js';
 import { SinopiaAccessRetry } from '#components/auth/sinopia/sinopia-access-retry.js';
 import { SinopiaReserved } from '#components/auth/sinopia/sinopia-reserved.js';
 import { SinopiaLogin } from '#components/auth/sinopia/sinopia-login.js';
 import { SinopiaSecondFactor } from '#components/auth/sinopia/sinopia-second-factor.js';
 import { sinopiaSession } from '#lib/sinopia-session.js';
+import { stripBasename } from '#lib/base-path.js';
 
 /**
  * SinopiaCAD: holds the workspace behind the Sinopia session. Only an account sinopialab.com would let into its app
@@ -28,6 +29,7 @@ export function SinopiaSessionGate({
   const session = useSinopiaSession();
   const returnTo = useSinopiaReturn();
   const navigate = useNavigate();
+  const basename = useHref('/').replace(/\/$/u, '');
 
   useEffect(() => {
     if (returnTo === undefined) {
@@ -36,12 +38,13 @@ export function SinopiaSessionGate({
     // async-iife: bootstrap -- the workspace waits for the router to stand on the clean address, whatever the outcome.
     void (async (): Promise<void> => {
       try {
-        await navigate(returnTo, { replace: true });
+        // `returnTo` was read from `location` (`/cad/w/…`); `navigate` adds the basename itself.
+        await navigate(stripBasename(returnTo, basename), { replace: true });
       } finally {
         sinopiaSession().settleReturn(returnTo);
       }
     })();
-  }, [navigate, returnTo]);
+  }, [navigate, returnTo, basename]);
 
   if (returnTo !== undefined) {
     return placeholder;

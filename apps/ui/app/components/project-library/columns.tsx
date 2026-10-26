@@ -24,6 +24,7 @@ import {
   isCloudOnly,
 } from '#routes/projects_/cloud-projects.js';
 import type { LibraryRow } from '#routes/projects_/cloud-projects.js';
+import { publicAsset } from '#lib/base-path.js';
 
 // Rename component for table cells
 function ProjectNameCell({
@@ -41,7 +42,7 @@ function ProjectNameCell({
       <div className='flex items-center gap-3'>
         <div className='relative h-9 w-9 shrink-0 overflow-hidden rounded-full'>
           <img
-            src={thumbnailSource ?? '/placeholder.svg'}
+            src={thumbnailSource ?? publicAsset('placeholder.svg')}
             alt={project.name}
             className='absolute inset-0 h-full w-full object-cover'
           />

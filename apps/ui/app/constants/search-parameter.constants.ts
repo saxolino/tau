@@ -23,6 +23,12 @@ export const searchParameterName = {
   // The Parts category filter, absent for all categories.
   partCategory: 'category',
 
+  /* Entry links from Sinopia («Apri nel CAD») */
+  // The Sinopia project to start a new CAD from on the home («Da un progetto Sinopia»).
+  sinopiaProject: 'project',
+  // The CAD model of the account to open (`cad_models.id`).
+  sinopiaModel: 'model',
+
   /* Dialogs */
   // The open settings dialog section, absent when the dialog is closed.
   settings: 'settings',

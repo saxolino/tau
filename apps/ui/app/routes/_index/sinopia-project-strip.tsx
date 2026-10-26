@@ -327,6 +327,10 @@ const ReferenceImageCard = memo(function ReferenceImageCard({
 
 type StripProperties = Readonly<{
   onChoose: (selection: SinopiaReferenceSelection) => Promise<void>;
+  /** `?project=<id>` of a Sinopia link: the project whose images open as soon as the list is read. */
+  preselectProjectId?: string;
+  /** Called once the preselection was applied, or found nothing, so the parameter can leave the address. */
+  onPreselectHandled?: () => void;
   isPickerOpen: boolean;
   onPickerOpenChange: (isOpen: boolean) => void;
 }>;
@@ -341,6 +345,8 @@ export function SinopiaProjectStrip(properties: StripProperties): React.JSX.Elem
 
 function OwnedProjectStrip({
   onChoose,
+  preselectProjectId,
+  onPreselectHandled,
   userId,
   isPickerOpen,
   onPickerOpenChange,
@@ -362,6 +368,18 @@ function OwnedProjectStrip({
     onPickerOpenChange(false);
     setProject(chosen);
   };
+  // A Sinopia «Apri nel CAD» link for a project: open its images once the list is in; a project that is not the
+  // account's (or not there any more) is simply left, and the link is spent either way.
+  useEffect(() => {
+    if (preselectProjectId === undefined || projects.isPending) {
+      return;
+    }
+    const linked = projects.data?.find((item) => item.id === preselectProjectId);
+    if (linked !== undefined) {
+      setProject(linked);
+    }
+    onPreselectHandled?.();
+  }, [onPreselectHandled, preselectProjectId, projects.data, projects.isPending]);
   // Only projects with images to start from: the project a CAD model lives in starts empty and is already a model.
   const startable = projects.data?.filter((item) => item.imageCount !== 0) ?? [];
   const collection = projects.isPending ? (

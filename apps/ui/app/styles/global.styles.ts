@@ -1,6 +1,7 @@
 import type { LinkDescriptor } from 'react-router';
 import allotmentStylesUrl from 'allotment/dist/style.css?url';
 import globalStylesUrl from '#styles/global.css?url';
+import { publicAsset } from '#lib/base-path.js';
 
 /**
  * A stylesheet link React 19 treats as a stylesheet resource.
@@ -31,7 +32,7 @@ const appStylesheetPrecedence = 'default';
 const fonts: LinkDescriptor[] = [
   {
     rel: 'preload',
-    href: '/fonts/Inter-Latin-Variable.woff2',
+    href: publicAsset('fonts/Inter-Latin-Variable.woff2'),
     as: 'font',
     type: 'font/woff2',
     crossOrigin: 'anonymous',

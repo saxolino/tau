@@ -14,6 +14,7 @@ import { readConsentStatusFromHeader } from '#lib/cookie-consent.lib.js';
 import { ProductApp, RootErrorBoundary, RootLayout } from '#root-layout.js';
 import { RootCommandPaletteItems } from '#root-command-items.js';
 import type { Handle } from '#types/matches.types.js';
+import { publicAsset } from '#lib/base-path.js';
 
 /* SinopiaCAD: Tau's examples gallery (`ExampleCommandPaletteItems`, «Browse examples» to `/community`) is hidden
  * with Community until Sinopia redesigns it. */
@@ -34,9 +35,9 @@ export const meta: MetaFunction = () => [
   { name: 'apple-mobile-web-app-status-bar-style', content: 'black-translucent' },
   { name: 'apple-mobile-web-app-capable', content: 'yes' },
   { name: 'mobile-web-app-capable', content: 'yes' },
-  { rel: 'apple-touch-icon', href: '/apple-touch-icon.png' },
-  { rel: 'icon', href: '/favicon.ico', sizes: 'any' },
-  { rel: 'icon', href: '/favicon-96x96.png', type: 'image/png', sizes: '96x96' },
+  { rel: 'apple-touch-icon', href: publicAsset('apple-touch-icon.png') },
+  { rel: 'icon', href: publicAsset('favicon.ico'), sizes: 'any' },
+  { rel: 'icon', href: publicAsset('favicon-96x96.png'), type: 'image/png', sizes: '96x96' },
 ];
 
 // oxlint-disable-next-line @typescript-eslint/explicit-module-boundary-types -- loaders require type inference

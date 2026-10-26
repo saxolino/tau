@@ -24,6 +24,7 @@ import { HomeRecentProjects } from '#routes/_index/home-recent-projects.js';
 import { useHomeImageIntake } from '#routes/_index/use-home-image-intake.js';
 
 import { SinopiaProjectStrip } from '#routes/_index/sinopia-project-strip.js';
+import { OpenSinopiaModelFromLink, useSinopiaEntryLink } from '#routes/_index/sinopia-entry-link.js';
 import type { SinopiaReferenceSelection } from '#services/sinopia-references.js';
 
 const hasFiles = (dataTransfer: DataTransfer): boolean => dataTransfer.types.includes('Files');
@@ -49,6 +50,15 @@ function HomeSurface(): React.JSX.Element {
   const [measure, setMeasure] = useState('');
   const [references, setReferences] = useState<SinopiaReferenceSelection>();
   const [isSinopiaPickerOpen, setSinopiaPickerOpen] = useState(false);
+  // Sinopia's «Apri nel CAD» links: `?project=<id>` and `?model=<id>`.
+  const entry = useSinopiaEntryLink();
+  const { consume } = entry;
+  const spendProjectLink = useCallback((): void => {
+    consume('project');
+  }, [consume]);
+  const spendModelLink = useCallback((): void => {
+    consume('model');
+  }, [consume]);
   const { onSubmit, isSubmitting, rememberReferences } = useNewProjectSubmit(false, references);
   const {
     model: { model },
@@ -245,7 +255,12 @@ function HomeSurface(): React.JSX.Element {
             </div>
           ) : null}
           <HomeRecentProjects />
+          {entry.modelId === undefined ? null : (
+            <OpenSinopiaModelFromLink modelId={entry.modelId} onSpent={spendModelLink} />
+          )}
           <SinopiaProjectStrip
+            preselectProjectId={entry.projectId}
+            onPreselectHandled={spendProjectLink}
             onChoose={takeSinopiaImages}
             isPickerOpen={isSinopiaPickerOpen}
             onPickerOpenChange={setSinopiaPickerOpen}
