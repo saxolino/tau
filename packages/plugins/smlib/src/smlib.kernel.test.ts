@@ -1917,6 +1917,132 @@ describe('manual sidecar live filesystem watch', () => {
   });
 });
 
+describe('expanded manual profiles', () => {
+  it('should retain placed open sketches beside exact circle and offset polygon STEP solids after reopen', async () => {
+    const code = `import { Box } from '@classcad/smlibwasm'; export default function main() { return { shape: Box(1, 1, 1), name: 'base' }; }`;
+    const sidecar = JSON.stringify({
+      version: 1,
+      operations: [
+        {
+          id: 'circle',
+          type: 'extrude',
+          mode: 'new',
+          name: 'disk',
+          distance: 2,
+          profile: { kind: 'circle', center: { x: 0, y: 0 }, radius: 5, plane: 'xy', origin: [20, 0, 0] },
+        },
+        {
+          id: 'offset',
+          type: 'extrude',
+          mode: 'new',
+          name: 'offset',
+          distance: 2,
+          profile: {
+            kind: 'polygon',
+            points: [
+              { id: 'a', x: -1, y: -1 },
+              { id: 'b', x: 11, y: -1 },
+              { id: 'c', x: 11, y: 6 },
+              { id: 'd', x: -1, y: 6 },
+            ],
+            plane: 'xy',
+            origin: [40, 0, 0],
+          },
+        },
+        {
+          id: 'open',
+          type: 'sketch',
+          name: 'outline',
+          profile: {
+            kind: 'polygon',
+            closed: false,
+            points: [
+              { id: 'a', x: 0, y: 0 },
+              { id: 'b', x: 10, y: 0 },
+              { id: 'c', x: 10, y: 5 },
+            ],
+            plane: 'xz',
+            origin: [0, 0, 0],
+          },
+        },
+      ],
+    });
+    const verify = async () => {
+      const client = createClient({ 'main.ts': code, 'main.ts.manual.json': sidecar });
+      const drawing = await renderGeometry(client, {
+        file: createGeometryFile('main.ts'),
+        parameters: {},
+        view: 'drawing',
+        instance: 'outline',
+      });
+      expect(expectSvgContent(drawing)).toContain('viewBox="-0.2 -5.2 10.4 5.4"');
+      const model = await renderGeometry(client, { file: createGeometryFile('main.ts'), parameters: {} });
+      assertRenderingSuccess(model);
+      const exported = await exportLastRender(client, 'step');
+      assertExportSuccess(exported);
+      const library = await import('@classcad/smlibwasm');
+      const restored = library.fromStep(exported.files[0].bytes);
+      const parts = (Array.isArray(restored) ? restored : [restored]).map((shape) => {
+        if (!(shape instanceof library.Part)) {
+          throw new Error('Expected exported native solids');
+        }
+        expect(shape.isValid()).toBe(true);
+        return shape;
+      });
+      expect(parts).toHaveLength(3);
+      expect(parts.reduce((total, part) => total + part.volume, 0)).toBeCloseTo(1 + Math.PI * 50 + 168, 4);
+    };
+    await verify();
+    await verify();
+  });
+
+  it('should offer only drawing and no body export for a saved open arc sketch', async () => {
+    const client = createClient({
+      'main.ts': `import '@classcad/smlibwasm'; export default function main() { return []; }`,
+      'main.ts.manual.json': JSON.stringify({
+        version: 1,
+        operations: [
+          {
+            id: 'arc',
+            type: 'sketch',
+            name: 'arc',
+            profile: {
+              kind: 'arc',
+              center: { x: 0, y: 0 },
+              radius: 5,
+              startAngle: 0,
+              sweepAngle: 90,
+              plane: 'yz',
+              origin: [0, 0, 0],
+            },
+          },
+        ],
+      }),
+    });
+    const document = client.open({ source: { path: 'main.ts' } });
+    try {
+      const evaluated = await document.evaluation();
+      if (evaluated.superseded || !evaluated.evaluation.success) {
+        throw new Error('Expected saved native arc sketch');
+      }
+      expect(evaluated.evaluation.views.map(({ id }) => id)).toEqual(['drawing']);
+      expect(evaluated.evaluation.exports).toEqual([]);
+      const view = document.view('drawing', { instance: 'arc' });
+      try {
+        const rendered = await view.rendering();
+        if (rendered.superseded) {
+          throw new Error('Arc drawing was superseded');
+        }
+        expect(readSvgPaths(expectSvgContent(rendered.rendering))).toHaveLength(1);
+      } finally {
+        view.close();
+      }
+    } finally {
+      document.close();
+    }
+  });
+});
+
 describe('manual replay version compatibility', () => {
   it('should replay a saved 1.3.0 face operation after a cache-only kernel upgrade and retain source guards', async () => {
     const code = `import { Box } from '@classcad/smlibwasm'; export const defaultParams = { size: 10 }; export default function main(params: typeof defaultParams) { return { shape: Box(params.size, 10, 10), name: 'piece' }; }`;
@@ -1933,7 +2059,7 @@ describe('manual replay version compatibility', () => {
     const oldWitness = createHash('sha256').update(witnessPayload).digest('hex');
     expect(oldWitness).toBe('30e359254831ad5106fecf2647fb9872949ebac3c5eae128e91aa3a95dbdd8e4');
     const definition = await resolveSmlibDefinition();
-    expect(definition.version).toBe('1.4.0');
+    expect(definition.version).toBe('1.5.0');
     const initial = createClient({ 'main.ts': code });
     const initialRendering = await renderGeometry(initial, {
       file: createGeometryFile('main.ts'),

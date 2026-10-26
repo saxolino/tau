@@ -69,7 +69,7 @@ import type { DrawingEntry, NamedInputShape, SmlibLibrary } from '#utils/render-
 import { convertSmlibGeometriesToGltf } from '#utils/smlib-to-gltf.js';
 
 const kernelId = 'smlib';
-const kernelVersion = '1.4.0';
+const kernelVersion = '1.5.0';
 // Cache metadata can change without invalidating saved face/edge provenance.
 // Preserve the canonical payload's kernelVersion key and 1.3.0 replay identity;
 // bump this separately when replay semantics change and require new witnesses.

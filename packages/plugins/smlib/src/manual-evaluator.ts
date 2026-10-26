@@ -1,6 +1,6 @@
 /* oxlint-disable new-cap -- SMLib exposes capitalized shape factory functions. */
-import type { Part, Shell, Sketch, Edge, Face } from '@classcad/smlibwasm';
-import { manualProfileSegments } from '#manual-operations.js';
+import type { Part, Shell, Sketch, Edge, Face, Wire } from '@classcad/smlibwasm';
+import { isManualProfileClosed, manualProfileSegments } from '#manual-operations.js';
 import type {
   ManualDocument,
   ManualOperation,
@@ -29,27 +29,69 @@ const placedPlane = (library: SmlibLibrary, plane: ManualProfile['plane'], origi
 };
 
 /**
- * Reconstruct an editable, closed planar profile using the native kernel.
+ * Reconstruct an editable planar curve using exact native lines, Béziers or circular arcs.
  * @param library - Initialized SMLib module.
  * @param profile - Canonical point coordinates in millimetres.
+ * @returns Native wire positioned in world coordinates, preserving authored closure.
+ */
+export function buildManualProfileWire(library: SmlibLibrary, profile: ManualProfile): Wire {
+  let local: Wire;
+  if (profile.kind === 'circle' || profile.kind === 'arc') {
+    local = new library.Wire(
+      library.CenterArc(
+        [profile.center.x, profile.center.y, 0],
+        profile.radius,
+        profile.kind === 'circle' ? 0 : profile.startAngle,
+        profile.kind === 'circle' ? 360 : profile.sweepAngle,
+      ),
+    );
+  } else if (profile.kind === 'polygon') {
+    local = library.Polyline(
+      profile.points.map(({ x, y }): ManualVector => [x, y, 0]),
+      { close: isManualProfileClosed(profile) },
+    );
+  } else {
+    local = new library.Wire(
+      manualProfileSegments(profile).map((segment) =>
+        library.Bezier(
+          [segment.start, segment.control1, segment.control2, segment.end].map(({ x, y }): ManualVector => [x, y, 0]),
+        ),
+      ),
+    );
+  }
+  if (!Number.isFinite(local.length) || local.length <= 1e-9 || local.isClosed !== isManualProfileClosed(profile)) {
+    throw new Error('The profile did not produce the intended nonempty native curve.');
+  }
+  return placedPlane(library, profile.plane, profile.origin).mul(local);
+}
+
+/**
+ * Reconstruct a closed region using the native kernel; open curves cannot become solids.
+ * @param library - Initialized SMLib module.
+ * @param profile - Canonical local profile geometry in millimetres.
  * @returns Native planar sketch positioned in world coordinates.
  */
 export function buildManualProfile(library: SmlibLibrary, profile: ManualProfile): Sketch {
-  const points = profile.points.map(({ x, y }): ManualVector => [x, y, 0]);
+  if (!isManualProfileClosed(profile) || profile.kind === 'arc') {
+    throw new Error('Extrusion requires a closed profile. Close the profile first.');
+  }
+  // Retain the historical constructors and ordering for saved polygon/spline replay witnesses.
   const local =
-    profile.kind === 'polygon'
-      ? library.Polygon(points)
-      : library.makeFace(
-          new library.Wire(
-            manualProfileSegments(profile).map((segment) =>
-              library.Bezier(
-                [segment.start, segment.control1, segment.control2, segment.end].map(
-                  ({ x, y }): ManualVector => [x, y, 0],
+    profile.kind === 'circle'
+      ? library.Circle(profile.radius).translate([profile.center.x, profile.center.y, 0])
+      : profile.kind === 'polygon'
+        ? library.Polygon(profile.points.map(({ x, y }): ManualVector => [x, y, 0]))
+        : library.makeFace(
+            new library.Wire(
+              manualProfileSegments(profile).map((segment) =>
+                library.Bezier(
+                  [segment.start, segment.control1, segment.control2, segment.end].map(
+                    ({ x, y }): ManualVector => [x, y, 0],
+                  ),
                 ),
               ),
             ),
-          ),
-        );
+          );
   if (!Number.isFinite(local.area) || local.area <= 1e-9) {
     throw new Error('The profile must enclose a nonzero area.');
   }
@@ -235,7 +277,11 @@ async function extrudeSelectedFace(
   return result;
 }
 
-const withOperation = (entry: NamedInputShape, shape: Part | Shell, operation: ManualOperation): NamedInputShape => ({
+const withOperation = (
+  entry: NamedInputShape,
+  shape: Part | Shell | Wire | Edge,
+  operation: ManualOperation,
+): NamedInputShape => ({
   ...entry,
   shape,
   manual: {
@@ -251,14 +297,31 @@ async function applyOperation(
   input: { operation: ManualOperation; replayWitness?: string },
 ): Promise<NamedInputShape[]> {
   const { operation } = input;
-  if (operation.type === 'extrude' && operation.mode === 'new') {
+  if (operation.type === 'sketch' || (operation.type === 'extrude' && operation.mode === 'new')) {
     const name = operation.name!;
     if (entries.some((entry) => entry.name === name || entry.manualTargetName === name)) {
       throw new Error(`A piece named "${name}" already exists. Choose a unique name.`);
     }
-    const shape = buildManualProfile(library, operation.profile).extrude(operation.distance);
-    assertValidBody(library, shape);
-    return [...entries, withOperation({ shape, name, manualTargetName: name }, shape, operation)];
+    const shape =
+      operation.type === 'sketch'
+        ? buildManualProfileWire(library, operation.profile)
+        : buildManualProfile(library, operation.profile).extrude(operation.distance);
+    if (shape instanceof library.Part) {
+      assertValidBody(library, shape);
+    }
+    return [
+      ...entries,
+      withOperation(
+        {
+          shape,
+          name,
+          manualTargetName: name,
+          ...(operation.type === 'sketch' ? { manualDrawingPlane: operation.profile.plane } : {}),
+        },
+        shape,
+        operation,
+      ),
+    ];
   }
   const { target } = operation;
   if (!target) {
@@ -354,7 +417,7 @@ export async function applyManualOperations(input: {
     }
     try {
       let replayWitness: string | undefined;
-      if (input.replaySource && operation.target) {
+      if (input.replaySource && 'target' in operation && operation.target) {
         // oxlint-disable-next-line no-await-in-loop -- a face's provenance binds precisely this ordered prefix.
         replayWitness = await manualReplayWitness(input.replaySource, prefix, operation.target.name);
       }

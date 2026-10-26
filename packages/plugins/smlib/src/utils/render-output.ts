@@ -14,6 +14,7 @@ import type { GlbMaterial } from '@taucad/geometry-core';
 import type { ShapeConfig, SmlibShape } from '#model.js';
 import type { GeometrySmlib } from '#smlib.types.js';
 import type { ManualShapeInfo } from '#manual-evaluator.js';
+import type { ManualProfile } from '#manual-operations.js';
 import { normalizeColor } from '#utils/normalize-color.js';
 import { projectSurfaceCoordinates } from '#utils/surface-coordinates.js';
 
@@ -38,6 +39,8 @@ export type NamedInputShape = InputShape & {
   /** Original explicit name, before display de-duplication; absence disables stable manual targeting. */
   manualTargetName?: string;
   manual?: ManualShapeInfo;
+  /** Authored principal plane for manual sketch projection; native samples remain in world coordinates. */
+  manualDrawingPlane?: ManualProfile['plane'];
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
@@ -643,7 +646,8 @@ export function sampleDrawing(library: SmlibLibrary, config: NamedInputShape): D
 }
 
 /**
- * Render drawings as one SVG of the model's XY plane (Y up, as on paper).
+ * Render drawings as one SVG, projecting manual sketches onto their authored principal plane.
+ * Source drawings without explicit projection keep the model's XY plane.
  *
  * @param entries - Sampled drawing entries.
  * @returns The SVG drawing, in millimetres.
@@ -659,7 +663,9 @@ export function renderDrawing(entries: readonly DrawingEntry[]): GeometrySvg {
   const paths = entries.map((entry) => {
     const segments = entry.polylines.map((polyline) =>
       polyline
-        .map(([x = 0, y = 0], index) => {
+        .map(([worldX = 0, worldY = 0, worldZ = 0], index) => {
+          const x = entry.manualDrawingPlane === 'yz' ? worldY : worldX;
+          const y = entry.manualDrawingPlane === 'xy' || entry.manualDrawingPlane === undefined ? worldY : worldZ;
           minX = Math.min(minX, x);
           maxX = Math.max(maxX, x);
           minY = Math.min(minY, -y);

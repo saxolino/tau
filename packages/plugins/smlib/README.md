@@ -56,6 +56,45 @@ Hand the definition to a client — `createNodeClient`, `createRuntimeWorker`, o
 
 ## API
 
+### Editable manual profiles
+
+The `@taucad/smlib/manual-operations` sidecar API stores editable geometry rather
+than a tessellated approximation. Version 1 histories accept an additive
+`{ id, type: 'sketch', name, profile }` operation. It creates an exact native
+wire for the Drawing view; it does not create a solid. A separate `extrude`
+operation requires a closed profile and creates the STEP-exportable solid.
+Drawing-only wires are excluded from STEP and mesh exports.
+
+All profiles carry `plane: 'xy' | 'xz' | 'yz'` and a world-space `origin`.
+Their local coordinates use millimetres:
+
+- `polygon` and `spline` retain stable `{ id, x, y }` points. Optional `closed`
+  is `false` for open curves. Its absence retains the historical closed
+  interpretation, and parsing does not insert this field into old documents.
+- `circle` stores `{ center: { x, y }, radius }` and is always closed.
+- `arc` stores `{ center: { x, y }, radius, startAngle, sweepAngle }` and is
+  always open. Angles are degrees; positive sweeps are counterclockwise.
+  A sweep must be nonzero and smaller than a full revolution.
+
+`ManualPointProfile` narrows the union to editable point profiles.
+`manualProfileSegments` returns their exact cubic Bézier controls, including
+open endpoint tangents. `isManualProfileClosed` provides the shared closure
+rule. `offsetManualProfile(profile, distance)` returns new canonical geometry
+with the same placement and point identities. Closed positive offsets grow
+outward independently of polygon winding; open positive offsets move left
+along the authored direction. Circles and arcs remain analytic circles.
+Polygon offsets use line mitres and reject intersections, collapsed or
+reversed segments, and corners exceeding a 20-times-distance mitre. Spline
+offsets fail explicitly. The offset result is stored directly in the profile;
+there is no hidden offset modifier or sampled polygon substituted for a circle.
+
+This additive analytic union keeps curve kinds and native error cases explicit.
+A single sampled-points representation would simplify callers but discard
+circle/arc identities and exact STEP geometry, so it is not used. Saved legacy
+payloads retain replay identity `1.3.0`; the expanded kernel cache identity is
+`1.5.0`. Manual sketches retain their authored plane for Drawing projection,
+while their native geometry and sampled coordinates remain in world space.
+
 | Export         | Kind            | Use                                                                              |
 | -------------- | --------------- | -------------------------------------------------------------------------------- |
 | `smlib`        | toolkit factory | package-named factory; forwards `kernels.default` options to `smlibKernel`       |

@@ -19,20 +19,59 @@ export type ManualVector = z.infer<typeof vector>;
 /** A uniquely named source piece; never a mesh index. @public */
 export type ManualTarget = z.infer<typeof target>;
 
-/** Closed profile in the local coordinates of a placed principal plane. @public */
+const profilePlacement = { plane, origin: vector };
+const profileCenter = z.object({ x: scalar, y: scalar }).strict();
+
+/** Analytic or point-authored profile in the local coordinates of a placed principal plane. @public */
 export const manualProfileSchema = z
-  .object({
-    kind: z.enum(['polygon', 'spline']),
-    points: z.array(point).min(3).max(256),
-    plane,
-    origin: vector,
-  })
-  .strict()
+  .discriminatedUnion('kind', [
+    z
+      .object({
+        ...profilePlacement,
+        kind: z.literal('polygon'),
+        points: z.array(point).min(2).max(256),
+        closed: z.boolean().optional(),
+      })
+      .strict(),
+    z
+      .object({
+        ...profilePlacement,
+        kind: z.literal('spline'),
+        points: z.array(point).min(2).max(256),
+        closed: z.boolean().optional(),
+      })
+      .strict(),
+    z.object({ ...profilePlacement, kind: z.literal('circle'), center: profileCenter, radius: positive }).strict(),
+    z
+      .object({
+        ...profilePlacement,
+        kind: z.literal('arc'),
+        center: profileCenter,
+        radius: positive,
+        startAngle: scalar,
+        sweepAngle: z
+          .number()
+          .min(-360)
+          .max(360)
+          .refine(
+            (value) => Math.abs(value) > 1e-6 && Math.abs(value) < 360,
+            'An arc needs a nonzero sweep smaller than 360 degrees.',
+          ),
+      })
+      .strict(),
+  ])
   .superRefine((profile, context) => {
+    if (profile.kind === 'circle' || profile.kind === 'arc') {
+      return;
+    }
+    if (profile.closed !== false && profile.points.length < 3) {
+      context.addIssue({ code: 'custom', message: 'A closed profile needs at least three points.', path: ['points'] });
+    }
     if (new Set(profile.points.map((value) => value.id)).size !== profile.points.length) {
       context.addIssue({ code: 'custom', message: 'Profile point ids must be unique.', path: ['points'] });
     }
-    for (let index = 0; index < profile.points.length; index++) {
+    const segmentCount = profile.closed === false ? profile.points.length - 1 : profile.points.length;
+    for (let index = 0; index < segmentCount; index++) {
       const current = profile.points[index]!;
       const next = profile.points[(index + 1) % profile.points.length]!;
       if (Math.hypot(current.x - next.x, current.y - next.y) < 1e-6) {
@@ -44,11 +83,23 @@ export const manualProfileSchema = z
       }
     }
   });
-/** Editable points remain canonical; the kernel rebuilds the closed curve. @public */
+/** Editable points or analytic parameters remain canonical when the kernel rebuilds the curve. @public */
 export type ManualProfile = z.infer<typeof manualProfileSchema>;
+/** An editable polyline or interpolated spline with stable point identities. @public */
+export type ManualPointProfile = Extract<ManualProfile, { kind: 'polygon' | 'spline' }>;
 
 /** A profile-local point in millimetres. @public */
-export type ManualProfilePoint = Pick<ManualProfile['points'][number], 'x' | 'y'>;
+export type ManualProfilePoint = { x: number; y: number };
+
+/**
+ * Test whether a profile bounds a region; omitted legacy closure remains closed.
+ * @param profile - Canonical profile.
+ * @returns True for a circle or a closed point profile.
+ * @public
+ */
+export function isManualProfileClosed(profile: ManualProfile): boolean {
+  return profile.kind === 'circle' || (profile.kind !== 'arc' && profile.closed !== false);
+}
 
 /** Cubic Bézier controls shared by the editable preview and native geometry. @public */
 export type ManualProfileSegment = {
@@ -59,17 +110,18 @@ export type ManualProfileSegment = {
 };
 
 /**
- * Build a closed, uniform Catmull-Rom curve as exact cubic Bézier segments.
+ * Build a uniform Catmull-Rom curve as exact cubic Bézier segments.
  * @param profile - Validated local profile points in their authored order.
- * @returns One segment per point; the last segment closes on the first point.
+ * @returns Closed segments, or open segments with clamped endpoint tangents.
  * @public
  */
-export function manualProfileSegments(profile: ManualProfile): ManualProfileSegment[] {
+export function manualProfileSegments(profile: ManualPointProfile): ManualProfileSegment[] {
   const { points } = profile;
-  return points.map((point, index) => {
-    const before = points[(index + points.length - 1) % points.length]!;
+  const closed = isManualProfileClosed(profile);
+  return points.slice(0, closed ? points.length : -1).map((point, index) => {
+    const before = points[closed ? (index + points.length - 1) % points.length : Math.max(0, index - 1)]!;
     const next = points[(index + 1) % points.length]!;
-    const after = points[(index + 2) % points.length]!;
+    const after = points[closed ? (index + 2) % points.length : Math.min(points.length - 1, index + 2)]!;
     return {
       start: { x: point.x, y: point.y },
       control1: { x: point.x + (next.x - before.x) / 6, y: point.y + (next.y - before.y) / 6 },
@@ -77,6 +129,137 @@ export function manualProfileSegments(profile: ManualProfile): ManualProfileSegm
       end: { x: next.x, y: next.y },
     };
   });
+}
+
+const profileTolerance = 1e-6;
+const cross2 = (a: ManualProfilePoint, b: ManualProfilePoint): number => a.x * b.y - a.y * b.x;
+const subtract2 = (a: ManualProfilePoint, b: ManualProfilePoint): ManualProfilePoint => ({
+  x: a.x - b.x,
+  y: a.y - b.y,
+});
+const signedProfileArea = (points: ManualProfilePoint[]): number =>
+  points.reduce((sum, point, index) => sum + cross2(point, points[(index + 1) % points.length]!), 0) / 2;
+
+function assertSimplePolyline(points: ManualProfilePoint[], closed: boolean): void {
+  const count = closed ? points.length : points.length - 1;
+  for (let first = 0; first < count; first++) {
+    const a = points[first]!;
+    const b = points[(first + 1) % points.length]!;
+    const ab = subtract2(b, a);
+    for (let second = first + 2; second < count; second++) {
+      if (closed && first === 0 && second === count - 1) {
+        continue;
+      }
+      const c = points[second]!;
+      const d = points[(second + 1) % points.length]!;
+      const cd = subtract2(d, c);
+      const ac = subtract2(c, a);
+      const determinant = cross2(ab, cd);
+      if (Math.abs(determinant) <= profileTolerance) {
+        if (Math.abs(cross2(ac, ab)) > profileTolerance) {
+          continue;
+        }
+        const lengthSquared = ab.x ** 2 + ab.y ** 2;
+        const start = (ac.x * ab.x + ac.y * ab.y) / lengthSquared;
+        const ad = subtract2(d, a);
+        const end = (ad.x * ab.x + ad.y * ab.y) / lengthSquared;
+        if (Math.max(Math.min(start, end), 0) > Math.min(Math.max(start, end), 1) + profileTolerance) {
+          continue;
+        }
+      } else {
+        const alongFirst = cross2(ac, cd) / determinant;
+        const alongSecond = cross2(ac, ab) / determinant;
+        if (
+          alongFirst < -profileTolerance ||
+          alongFirst > 1 + profileTolerance ||
+          alongSecond < -profileTolerance ||
+          alongSecond > 1 + profileTolerance
+        ) {
+          continue;
+        }
+      }
+      throw new Error('The profile intersects or overlaps itself. Correct the points before offsetting.');
+    }
+  }
+}
+
+/**
+ * Offset canonical analytic curves or a line polyline without tessellation.
+ * Closed positive distances grow outward; open positive distances go left along the authored direction.
+ * Polygon corners use line mitres; intersections, collapsed segments and mitres beyond 20 times the distance fail closed.
+ * @param profile - Canonical source geometry; splines are unsupported.
+ * @param distance - Signed offset in millimetres.
+ * @returns Editable geometry with the same point identities, placement and analytic curve kind.
+ * @public
+ */
+export function offsetManualProfile(profile: ManualProfile, distance: number): ManualProfile {
+  manualProfileSchema.parse(profile);
+  if (!Number.isFinite(distance) || Math.abs(distance) <= profileTolerance || Math.abs(distance) > 1_000_000) {
+    throw new Error('Offset distance must be finite, nonzero and within the model limits.');
+  }
+  if (profile.kind === 'spline') {
+    throw new Error('Spline offset is unsupported. Use a line profile, circle or circular arc.');
+  }
+  if (profile.kind === 'circle' || profile.kind === 'arc') {
+    const radius = profile.radius + (profile.kind === 'circle' ? distance : -Math.sign(profile.sweepAngle) * distance);
+    if (radius <= profileTolerance) {
+      throw new Error('The offset collapses the circular profile. Reduce the distance.');
+    }
+    return manualProfileSchema.parse({ ...profile, radius });
+  }
+  const closed = isManualProfileClosed(profile);
+  const { points } = profile;
+  assertSimplePolyline(points, closed);
+  const area = closed ? signedProfileArea(points) : 0;
+  if (closed && Math.abs(area) <= profileTolerance) {
+    throw new Error('The profile must enclose a nonzero area before offsetting.');
+  }
+  const leftDistance = closed && area > 0 ? -distance : distance;
+  const count = closed ? points.length : points.length - 1;
+  const directions = Array.from({ length: count }, (_, index) => {
+    const delta = subtract2(points[(index + 1) % points.length]!, points[index]!);
+    const length = Math.hypot(delta.x, delta.y);
+    return { x: delta.x / length, y: delta.y / length };
+  });
+  const shifted = (index: number, direction: ManualProfilePoint): ManualProfilePoint => ({
+    x: points[index]!.x - direction.y * leftDistance,
+    y: points[index]!.y + direction.x * leftDistance,
+  });
+  const offsetPoints = points.map((point, index) => {
+    const before = directions[(index + count - 1) % count]!;
+    const after = directions[index % count]!;
+    if (!closed && (index === 0 || index === points.length - 1)) {
+      return { ...point, ...shifted(index, index === 0 ? after : before) };
+    }
+    const start = shifted(index, before);
+    const end = shifted(index, after);
+    const determinant = cross2(before, after);
+    let result = end;
+    if (Math.abs(determinant) <= 1e-10) {
+      if (before.x * after.x + before.y * after.y < 0) {
+        throw new Error('The profile reverses direction at a corner. Correct it before offsetting.');
+      }
+    } else {
+      const along = cross2(subtract2(end, start), after) / determinant;
+      result = { x: start.x + before.x * along, y: start.y + before.y * along };
+    }
+    if (Math.hypot(result.x - point.x, result.y - point.y) > Math.abs(distance) * 20 + profileTolerance) {
+      throw new Error('The offset creates an excessive mitre. Reduce the distance or open the corner angle.');
+    }
+    return { ...point, ...result };
+  });
+  for (let index = 0; index < count; index++) {
+    const delta = subtract2(offsetPoints[(index + 1) % points.length]!, offsetPoints[index]!);
+    const direction = directions[index]!;
+    if (delta.x * direction.x + delta.y * direction.y <= profileTolerance) {
+      throw new Error('The offset collapses or reverses a segment. Reduce the distance.');
+    }
+  }
+  assertSimplePolyline(offsetPoints, closed);
+  if (closed && signedProfileArea(offsetPoints) * area <= 0) {
+    throw new Error('The offset collapses the closed profile. Reduce the distance.');
+  }
+  return manualProfileSchema.parse({ ...profile, points: offsetPoints });
 }
 
 /** Native Z-up millimetre bounds, also used to choose a piece-local transform pivot. @public */
@@ -242,6 +425,7 @@ const creation = { mode: booleanMode, name: authoredName.optional(), target: tar
 /** Serializable, ordered native operations; no executable code is accepted. @public */
 export const manualOperationSchema = z
   .discriminatedUnion('type', [
+    z.object({ ...base, type: z.literal('sketch'), name: authoredName, profile: manualProfileSchema }).strict(),
     z.object({ ...base, type: z.literal('translate'), target, delta: vector }).strict(),
     z
       .object({
@@ -283,6 +467,13 @@ export const manualOperationSchema = z
   .superRefine((operation, context) => {
     if (operation.type !== 'extrude') {
       return;
+    }
+    if (!isManualProfileClosed(operation.profile)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Extrusion requires a closed profile. Close the profile first.',
+        path: ['profile'],
+      });
     }
     if (operation.mode === 'new' && (!operation.name || operation.target !== undefined)) {
       context.addIssue({ code: 'custom', message: 'A new piece needs a name and no target.' });
