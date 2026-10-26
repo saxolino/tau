@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { cpus, loadavg } from 'node:os';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type * as Smlib from '@classcad/smlibwasm';
 import { famiglie } from '#famiglie/registro.js';
 import type { FamigliaQualsiasi } from '#famiglie/famiglia.js';
@@ -11,6 +11,8 @@ import type { FamigliaQualsiasi } from '#famiglie/famiglia.js';
  * ovali (fibbia, placca) superano il budget perché `extrude` sformato e raccordi su pareti ellittiche B-spline costano
  * centinaia di millisecondi nel kernel. Si misura il migliore di tre costruzioni dopo un giro a vuoto.
  */
+// Costruzioni B-rep ripetute: sulla macchina carica una prova supera i 5 s predefiniti.
+vi.setConfig({ testTimeout: 60_000 });
 let lib: typeof Smlib;
 beforeAll(async () => {
   lib = await import('@classcad/smlibwasm');

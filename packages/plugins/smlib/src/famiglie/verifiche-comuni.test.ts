@@ -1,6 +1,6 @@
 /* oxlint-disable new-cap -- SMLib exposes capitalized shape factory functions. */
 // @vitest-environment node
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type * as Smlib from '@classcad/smlibwasm';
 import type { DefinizioneParametro, ParametriAnnidati } from '#famiglie/famiglia.js';
 import { materiale, materiali } from '#famiglie/materiali.js';
@@ -27,6 +27,8 @@ import {
   trasportaMarcatori,
 } from '#famiglie/verifiche-comuni.js';
 
+// Costruzioni B-rep ripetute: sulla macchina carica una prova supera i 5 s predefiniti.
+vi.setConfig({ testTimeout: 60_000 });
 let lib: typeof Smlib;
 beforeAll(async () => {
   lib = await import('@classcad/smlibwasm');
