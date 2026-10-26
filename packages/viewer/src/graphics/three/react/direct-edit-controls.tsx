@@ -3,13 +3,14 @@ import {
   createGltfFatLineMaterial,
   createGltfFatLineSegmentsFromPositions,
 } from '#graphics/three/materials/gltf-edges.js';
-import { gltfEdgeSelectedColor } from '#graphics/three/overlay-colors.constants.js';
+import { manualHandleColor, manualSelectionColor } from '#graphics/three/overlay-colors.constants.js';
+import { edgeTubeGeometry } from '#graphics/three/react/manual-preview-geometry.js';
 import { useSectionClip } from '#graphics/three/react/section-clipping-group.jsx';
 import { installSectionClip } from '#graphics/three/materials/section-clip.js';
 import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import type { ThreeEvent } from '@react-three/fiber';
-import { Plane, Quaternion, Raycaster, Vector2, Vector3 } from 'three';
+import { Mesh, MeshBasicMaterial, Plane, Quaternion, Raycaster, Vector2, Vector3 } from 'three';
 import type { Group, Object3D } from 'three';
 import { toRenderPoint } from '@taucad/spatial';
 import { useKeybinding } from '@taucad/ui/components/keyboard';
@@ -48,6 +49,8 @@ type DirectEditControlsState = {
         material: ReturnType<typeof createGltfFatLineMaterial>;
       }
     | undefined;
+  /** The fillet or chamfer reach around the selected edges, while the host previews a size. */
+  edgeGhost: Mesh | undefined;
   // oxlint-disable-next-line @typescript-eslint/no-restricted-types -- React's scene ref is null before mount.
   handles: React.RefObject<Group | null>;
   press: (event: ThreeEvent<PointerEvent>, axis: Vector3) => void;
@@ -87,7 +90,7 @@ export function useDirectEditControls({
     const material = createGltfFatLineMaterial({
       backend,
       resolution: new Vector2(1, 1),
-      edgeColor: gltfEdgeSelectedColor,
+      edgeColor: manualHandleColor,
     });
     material.linewidth = 4;
     material.depthTest = true;
@@ -110,6 +113,39 @@ export function useDirectEditControls({
     },
     [edgeOverlay],
   );
+  const { edgeSize } = tool;
+  const edgeGhost = useMemo(() => {
+    if (!edgeGeometry || edgeSize === undefined || !(edgeSize > 0)) {
+      return undefined;
+    }
+    const geometry = edgeTubeGeometry(
+      edgeGeometry.getAttribute('position').array,
+      edgeSize / renderFrame.metersPerRenderUnit,
+    );
+    if (!geometry) {
+      return undefined;
+    }
+    const mesh = new Mesh(
+      geometry,
+      new MeshBasicMaterial({
+        color: manualSelectionColor,
+        transparent: true,
+        opacity: 0.5,
+        depthWrite: false,
+        toneMapped: false,
+      }),
+    );
+    mesh.raycast = () => undefined;
+    mesh.renderOrder = 901;
+    return mesh;
+  }, [edgeGeometry, edgeSize, renderFrame]);
+  useEffect(
+    () => () => {
+      edgeGhost?.geometry.dispose();
+      edgeGhost?.material.dispose();
+    },
+    [edgeGhost],
+  );
   useEffect(() => {
     if (ghost) {
       installSectionClip(ghost.material, clipping);
@@ -117,7 +153,10 @@ export function useDirectEditControls({
     if (edgeOverlay) {
       installSectionClip(edgeOverlay.material, clipping);
     }
-  }, [ghost, edgeOverlay, clipping]);
+    if (edgeGhost) {
+      installSectionClip(edgeGhost.material, clipping);
+    }
+  }, [ghost, edgeOverlay, edgeGhost, clipping]);
   const cancel = useCallback(() => active.current?.cancel(), []);
   useRenderFrameRetarget(cancel);
   useKeybinding(escapeKey, cancel, { enabled: () => active.current !== undefined, priority: 2, scope: 'global' });
@@ -274,14 +313,14 @@ export function useDirectEditControls({
     },
     [selection, lock, graphics, get, renderFrame, tool, mode, ghost],
   );
-  return { selection, mode, ghost, edgeOverlay, handles, press };
+  return { selection, mode, ghost, edgeOverlay, edgeGhost, handles, press };
 }
 
 /** Native handle gestures and borrowed-geometry previews with independent ownership. @internal */
 export const DirectEditControls = memo(function DirectEditControls(
   props: Readonly<{ tool: DirectEditTool; artifactKey: string; scene: Object3D }>,
 ): React.JSX.Element | undefined {
-  const { selection, mode, ghost, edgeOverlay, handles, press } = useDirectEditControls(props);
+  const { selection, mode, ghost, edgeOverlay, edgeGhost, handles, press } = useDirectEditControls(props);
   if (!selection) {
     return undefined;
   }
@@ -289,9 +328,10 @@ export const DirectEditControls = memo(function DirectEditControls(
   return (
     <>
       {ghost ? <primitive object={ghost.group} /> : null}
-      {edgeOverlay?.line ? (
+      {edgeOverlay?.line !== undefined || edgeGhost !== undefined ? (
         <SceneOverlay overlayActive>
-          <primitive object={edgeOverlay.line} />
+          {edgeGhost ? <primitive object={edgeGhost} /> : null}
+          {edgeOverlay?.line ? <primitive object={edgeOverlay.line} /> : null}
         </SceneOverlay>
       ) : null}
       {isTransform ? (

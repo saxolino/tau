@@ -86,6 +86,11 @@
   --verified: oklch(var(--l-medium) 0.25 var(--hue-verified));
   --input: oklch(var(--l-subtle) var(--c-paper) var(--hue-paper));
   --ring: oklch(var(--l-medium) 0.08 var(--hue-primary));
+  /* SinopiaCAD: titanio (#B3A895) marks what is selected on the model and the details of a CAD tool: the selected piece,
+     face or edge, a tool in use, a preview. Never a filled action, which stays Sinopia red. `--titanium-foreground` is
+     the same hue dark enough for text and icons on paper. */
+  --titanium: oklch(0.736 0.029 81.4deg);
+  --titanium-foreground: oklch(0.47 0.032 81.4deg);
 
   /* Focus-indicator geometry. These four values and the `focus-outline` utilities below are the
      single entry point for every keyboard focus indicator in every Tau surface: change them here
@@ -167,6 +172,7 @@
   --input: oklch(var(--l-subtle) var(--c-paper) var(--hue-paper));
   --border: oklch(var(--l-subtle) var(--c-paper) var(--hue-paper));
   --accent: oklch(0.273 var(--c-paper) var(--hue-paper));
+  --titanium-foreground: oklch(0.8 0.03 81.4deg);
   /* Sinopia's dark elevation: card (E1) and popover (E2) sit above the warm charcoal page. */
   --card: oklch(0.207 var(--c-paper) var(--hue-paper));
   --popover: oklch(0.252 var(--c-paper) var(--hue-paper));
@@ -529,6 +535,8 @@
   --color-alert: var(--alert);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  --color-titanium: var(--titanium);
+  --color-titanium-foreground: var(--titanium-foreground);
   --color-sidebar: var(--sidebar-background);
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar-primary: var(--sidebar-primary);
