@@ -1,3 +1,4 @@
+import type { ManualEdgeGeometry, ManualBounds } from '@taucad/smlib/manual-operations';
 import { describe, it, expect, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 import { NodeIO } from '@gltf-transform/core';
@@ -181,6 +182,35 @@ describe('convertSmlibGeometriesToGltf', () => {
       convertSmlibGeometriesToGltf({ geometries: [fallback], includeTauTopology: true }),
     ).payload;
     expect(fallbackPayload.components[0]!.sourceRefs).toMatchObject({ manualFaces: [] });
+  });
+
+  it('maps edge occurrences to native indices and retains native millimetre bounds for interaction pivots', () => {
+    const edgeGeometry = {
+      kind: 'line',
+      start: [10, 20, 30],
+      end: [11, 20, 30],
+      length: 1,
+      bounds: { min: [10, 20, 30], max: [11, 20, 30] },
+      adjacentFaceCount: 2,
+      seam: false,
+      closed: false,
+    } satisfies ManualEdgeGeometry;
+    const bounds = { min: [10, 20, 30], max: [11, 20, 30] } satisfies ManualBounds;
+    const geometry = createSimpleGeometry({
+      manual: { targetName: 'piece', bodySignature: 'raw', operationIds: [], replayWitness: '1'.repeat(64) },
+      manualBounds: bounds,
+      manualEdges: [{ index: 73, geometry: edgeGeometry }],
+      edges: { lines: [10, 20, 30, 11, 20, 30], edgeGroups: [{ start: 0, count: 6, edgeId: 73 }] },
+    });
+    const { payload } = readTopologyPayload(
+      convertSmlibGeometriesToGltf({ geometries: [geometry], includeTauTopology: true }),
+    );
+    expect(payload.components[0]!.edgeGroups).toEqual([{ start: 0, count: 6, edgeId: 0 }]);
+    expect(payload.components[0]!.sourceRefs).toMatchObject({
+      manualBounds: bounds,
+      manualEdges: [{ edgeId: 0, index: 73, geometry: edgeGeometry }],
+      manualReplayWitness: '1'.repeat(64),
+    });
   });
 
   it('should convert empty geometries array to valid GLB', async () => {

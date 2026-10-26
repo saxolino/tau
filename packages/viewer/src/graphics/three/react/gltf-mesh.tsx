@@ -1,3 +1,6 @@
+import { DirectEditControls } from '#graphics/three/react/direct-edit-controls.jsx';
+import { directEditEdges, pickDirectEditEdge } from '#graphics/three/react/direct-edit-geometry.js';
+import type { DirectEditTool } from '#graphics/three/react/direct-edit-tool.js';
 import type { ModelPickResult } from '#graphics/three/utils/model-gpu-pick.js';
 import { fromRenderPoint } from '@taucad/spatial';
 import { PlanarFaceControls } from '#graphics/three/react/planar-face-controls.jsx';
@@ -24,13 +27,12 @@ import type {
   Material,
   Texture,
   Intersection,
-  Raycaster,
   BufferGeometry,
   Mesh,
   MeshPhysicalMaterial,
   InstancedMesh,
 } from 'three';
-import { Vector2, Box3, Vector3 } from 'three';
+import { Vector2, Box3, Vector3, Raycaster } from 'three';
 import { useFrame, useThree } from '@react-three/fiber';
 import type { ThreeEvent } from '@react-three/fiber';
 import { applyMatcap } from '#graphics/three/materials/gltf-matcap.js';
@@ -337,6 +339,7 @@ export function restoreOriginalMaterials(scene: Group, saved: Map<number, Materi
 
 type GltfMeshDisplayProperties = {
   readonly planarFaceTool?: PlanarFaceTool;
+  readonly directEditTool?: DirectEditTool;
   /**
    * The GLTF file to load.
    */
@@ -2044,6 +2047,7 @@ export function applyGltfEdgeThemeColor(scene: Group, edgeColor: number): void {
 export function GltfMesh({
   gltfFile,
   planarFaceTool,
+  directEditTool,
   sourceFile,
   geometryHash,
   presentationRevision = 0,
@@ -2091,7 +2095,9 @@ export function GltfMesh({
     (state) => state.context.isMeasureActive || state.context.measurements.some((measurement) => measurement.isPinned),
   );
   const activePlanarFaceTool = componentManifest?.mechanism ? undefined : planarFaceTool;
-  const needsMeasurementFeatures = hasMeasurementDemand || activePlanarFaceTool !== undefined;
+  const activeDirectEditTool = componentManifest?.mechanism ? undefined : directEditTool;
+  const needsMeasurementFeatures =
+    hasMeasurementDemand || activePlanarFaceTool !== undefined || activeDirectEditTool !== undefined;
   const measurementDemandRef = useRef(needsMeasurementFeatures);
   useLayoutEffect(() => {
     measurementDemandRef.current = needsMeasurementFeatures;
@@ -2167,7 +2173,8 @@ export function GltfMesh({
       // GPU ID/depth hits identify a piece but carry no triangle faceIndex. Native face
       // editing requires the exact clipping-aware BVH hit; its pending result already
       // replays the pointer after an off-thread tree becomes ready.
-      const gpu: ModelPickResult = activePlanarFaceTool ? { status: 'unavailable' } : modelPick.pick(raycaster);
+      const gpu: ModelPickResult =
+        (activePlanarFaceTool ?? activeDirectEditTool) ? { status: 'unavailable' } : modelPick.pick(raycaster);
       let hit: Intersection<Mesh> | undefined;
       let pending: boolean;
       if (gpu.status === 'unavailable') {
@@ -2205,7 +2212,15 @@ export function GltfMesh({
     return () => {
       scene.raycast = previousRaycast;
     };
-  }, [activePlanarFaceTool, getModelPickableMeshes, graphicsActor, modelPick, renderFrame, scene]);
+  }, [
+    activePlanarFaceTool,
+    activeDirectEditTool,
+    getModelPickableMeshes,
+    graphicsActor,
+    modelPick,
+    renderFrame,
+    scene,
+  ]);
 
   const handleKinematicsPointerDown = useKinematicsViewer({
     unitId,
@@ -2662,6 +2677,42 @@ export function GltfMesh({
           return;
         }
       }
+      if (
+        activeDirectEditTool &&
+        !graphicsContext.suppressNextModelPointerClick &&
+        graphicsContext.modelPointerClickSuppressionReasons.length === 0 &&
+        !hasModelHitBlockingSceneUiHit(event.intersections) &&
+        presentation
+      ) {
+        event.stopPropagation();
+        const componentId = getObjectComponentId(event.object);
+        const edgeMode = activeDirectEditTool.mode === 'fillet' || activeDirectEditTool.mode === 'chamfer';
+        if (edgeMode) {
+          const edge = pickDirectEditEdge({
+            edges: directEditEdges(presentation.scene),
+            raycaster: Object.assign(new Raycaster(), { ray: event.ray.clone() }),
+            camera: event.camera,
+            height: size.height,
+            meshes: getModelPickableMeshes(),
+            clipping: resolveSectionViewRaycastClip(graphicsContext, renderFrame),
+          });
+          if (edge) {
+            activeDirectEditTool.onPick({
+              componentId: edge.componentId,
+              edgeId: edge.edgeId,
+              point: fromRenderPoint({ renderFrame, point: [edge.point.x, edge.point.y, edge.point.z] }),
+              artifactKey: presentation.key,
+            });
+          }
+        } else if (componentId) {
+          activeDirectEditTool.onPick({
+            componentId,
+            point: fromRenderPoint({ renderFrame, point: [event.point.x, event.point.y, event.point.z] }),
+            artifactKey: presentation.key,
+          });
+        }
+        return;
+      }
       const clickAction = resolveModelPointerClickAction({
         intersections: event.intersections,
         modelComponentId: getObjectComponentId(event.object),
@@ -2696,7 +2747,16 @@ export function GltfMesh({
         graphicsActor.send(dispatchEvent);
       }
     },
-    [activePlanarFaceTool, graphicsActor, presentation, renderFrame, unitId],
+    [
+      activePlanarFaceTool,
+      activeDirectEditTool,
+      graphicsActor,
+      presentation,
+      renderFrame,
+      unitId,
+      size.height,
+      getModelPickableMeshes,
+    ],
   );
 
   const resolveContextMenuActionFromEvent = useCallback(
@@ -2820,6 +2880,9 @@ export function GltfMesh({
   return (
     <>
       {activePlanarFaceTool ? <PlanarFaceControls tool={activePlanarFaceTool} artifactKey={presentation.key} /> : null}
+      {activeDirectEditTool ? (
+        <DirectEditControls tool={activeDirectEditTool} artifactKey={presentation.key} scene={scene} />
+      ) : null}
       <group matrix={assetMatrix} matrixAutoUpdate={false}>
         <primitive
           object={scene}

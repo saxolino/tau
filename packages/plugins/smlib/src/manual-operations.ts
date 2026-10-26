@@ -79,6 +79,76 @@ export function manualProfileSegments(profile: ManualProfile): ManualProfileSegm
   });
 }
 
+/** Native Z-up millimetre bounds, also used to choose a piece-local transform pivot. @public */
+export const manualBoundsSchema = z
+  .object({ min: vector, max: vector })
+  .strict()
+  .refine(
+    ({ min, max }) => min.every((value, index) => value <= max[index]!),
+    'Bounds must have ordered minima and maxima.',
+  );
+/** Exact native piece or curve bounds in millimetres. @public */
+export type ManualBounds = z.infer<typeof manualBoundsSchema>;
+
+const edgeGeometryBase = {
+  length: positive,
+  bounds: manualBoundsSchema,
+  adjacentFaceCount: z.number().int().min(1).max(1000),
+  seam: z.boolean(),
+  closed: z.boolean(),
+};
+/** Whole native edge geometry; no mesh sampling or mutable native identifier is a replay witness. @public */
+export const manualEdgeGeometrySchema = z
+  .discriminatedUnion('kind', [
+    z.object({ ...edgeGeometryBase, kind: z.literal('line'), start: vector, end: vector }).strict(),
+    z
+      .object({
+        ...edgeGeometryBase,
+        kind: z.literal('circle'),
+        start: vector,
+        end: vector,
+        center: vector,
+        normal: direction,
+        radius: positive,
+      })
+      .strict(),
+    z
+      .object({
+        ...edgeGeometryBase,
+        kind: z.literal('nurbs'),
+        degree: z.number().int().min(1).max(32),
+        knots: z.array(z.number()).min(4).max(8192),
+        points: z.array(vector).min(2).max(4096),
+        weights: z.array(z.number()).min(2).max(4096).nullable(),
+      })
+      .strict(),
+  ])
+  .superRefine((geometry, context) => {
+    if (
+      geometry.kind === 'nurbs' &&
+      (geometry.knots.length !== geometry.points.length + geometry.degree + 1 ||
+        (geometry.weights !== null && geometry.weights.length !== geometry.points.length))
+    ) {
+      context.addIssue({ code: 'custom', message: 'NURBS control points, degree, knots and weights must agree.' });
+    }
+    if (
+      geometry.kind === 'nurbs' &&
+      (geometry.degree >= geometry.points.length ||
+        !geometry.knots.every((value, index) => index === 0 || value >= geometry.knots[index - 1]!) ||
+        geometry.knots.at(-1)! <= geometry.knots[0]! ||
+        (geometry.weights !== null && !geometry.weights.some((weight) => Math.abs(weight) > 1e-12)))
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'NURBS knots must be ordered with a nonzero span and valid weights.',
+      });
+    }
+  });
+/** Analytic or complete NURBS identity of one native edge at a replay step. @public */
+export type ManualEdgeGeometry = z.infer<typeof manualEdgeGeometrySchema>;
+/** A visible edge occurrence mapped to its native curve descriptor. @public */
+export type ManualEdgeInfo = { edgeId: number; index: number; geometry: ManualEdgeGeometry };
+
 /** Semantic selections survive compatible edits; indices require an unchanged geometry witness. @public */
 export const manualEdgeSelectionSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('all') }).strict(),
@@ -88,8 +158,31 @@ export const manualEdgeSelectionSchema = z.discriminatedUnion('kind', [
       kind: z.literal('indices'),
       indices: z.array(z.number().int().min(0).max(100_000)).min(1).max(512),
       bodySignature: identifier,
+      replayWitness: z
+        .string()
+        .regex(/^[\da-f]{64}$/)
+        .optional(),
+      geometries: z.array(manualEdgeGeometrySchema).min(1).max(512).optional(),
     })
-    .strict(),
+    .strict()
+    .superRefine((selection, context) => {
+      if ((selection.replayWitness === undefined) !== (selection.geometries === undefined)) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Picked edges require both replay provenance and curve descriptors.',
+        });
+      }
+      if (
+        selection.geometries &&
+        (selection.indices.length !== selection.geometries.length ||
+          new Set(selection.indices).size !== selection.indices.length)
+      ) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Each unique picked edge index must have exactly one curve descriptor.',
+        });
+      }
+    }),
 ]);
 /** Selection of exact B-rep edges at this history step. @public */
 export type ManualEdgeSelection = z.infer<typeof manualEdgeSelectionSchema>;

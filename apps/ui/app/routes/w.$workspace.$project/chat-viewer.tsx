@@ -6,6 +6,7 @@ import type { AppCapabilitiesManifest } from '#types/runtime-client.alias.js';
 import { useSelector } from '@xstate/react';
 import { useManualEdits } from '#hooks/use-manual-edits.js';
 import { useManualFaceTool } from '#hooks/use-manual-face-tool.js';
+import { useManualDirectTool } from '#hooks/use-manual-direct-tool.js';
 import { matchesManualSidecarRevision } from '#services/manual-face-draft.js';
 import { ManualEditPanel } from '#routes/w.$workspace.$project/manual-edit-panel.js';
 import { useTranslation } from '#i18n/translate.js';
@@ -705,6 +706,15 @@ const ViewerContent = memo(function ({
     ready: faceReady,
     open: isManualEditOpen,
   });
+  const directTool = useManualDirectTool({
+    edits: manualEdits,
+    manifest: manualManifest,
+    runtimeDocument,
+    renderStamp: rendering?.success ? `${rendering.evaluationId}:${rendering.requestId}:${rendering.hash}` : undefined,
+    artifactKey: presentedKey,
+    ready: faceReady,
+    open: isManualEditOpen,
+  });
   const viewerActionMenuData = partMenu.openMenuData;
   const viewerPart =
     viewerActionMenuData?.node.kind === 'part' && viewerActionMenuData.node.primitiveRefs?.length
@@ -880,6 +890,7 @@ const ViewerContent = memo(function ({
             isGeometryUnitClosed ? null : (
               <CadViewer
                 planarFaceTool={faceTool.tool}
+                directEditTool={directTool.tool}
                 enableZoom
                 enablePan
                 secondaryMouseButtonMode='camera-pan'
@@ -993,6 +1004,7 @@ const ViewerContent = memo(function ({
               isSaving={manualEdits.saving}
               error={manualEdits.error}
               faceControls={faceTool.controls}
+              directControls={directTool.controls}
               onClose={() => {
                 setIsManualEditOpen(false);
               }}

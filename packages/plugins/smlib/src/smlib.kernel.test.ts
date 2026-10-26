@@ -3,6 +3,7 @@
 /* oxlint-disable @typescript-eslint/no-unsafe-assignment -- vitest asymmetric matchers return any */
 /* eslint-disable @typescript-eslint/naming-convention -- File names use extensions like 'box.ts' */
 import { mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRuntimeClient } from '@taucad/runtime';
@@ -1913,6 +1914,92 @@ describe('manual sidecar live filesystem watch', () => {
       await client.shutdown();
       await rm(directory, { recursive: true, force: true });
     }
+  });
+});
+
+describe('manual replay version compatibility', () => {
+  it('should replay a saved 1.3.0 face operation after a cache-only kernel upgrade and retain source guards', async () => {
+    const code = `import { Box } from '@classcad/smlibwasm'; export const defaultParams = { size: 10 }; export default function main(params: typeof defaultParams) { return { shape: Box(params.size, 10, 10), name: 'piece' }; }`;
+    // Frozen canonical payloads from the 1.3.0 replay algorithm at 05def99a7.
+    // Keep these independent of the current replay helpers and their field ordering.
+    const sourcePayload =
+      '{"entryPath":"main.ts","files":[{"path":"main.ts","sha256":"1af1218e2b97a5fbe8b492d283ff4b2d560f58dee1b1441f35bb3d9cf8fd6a2e"}],"kernelVersion":"1.3.0","libraryVersion":"0.3.4","parameters":{"size":10},"unresolvedPaths":[],"version":1}';
+    const oldSource = createHash('sha256').update(sourcePayload).digest('hex');
+    expect(createHash('sha256').update(code).digest('hex')).toBe(
+      '1af1218e2b97a5fbe8b492d283ff4b2d560f58dee1b1441f35bb3d9cf8fd6a2e',
+    );
+    expect(oldSource).toBe('801f9d03793e69f74abf3557afcd055a9f1d322764023a1f117207807649cb34');
+    const witnessPayload = `{"operations":[],"source":"${oldSource}","targetName":"piece","version":1}`;
+    const oldWitness = createHash('sha256').update(witnessPayload).digest('hex');
+    expect(oldWitness).toBe('30e359254831ad5106fecf2647fb9872949ebac3c5eae128e91aa3a95dbdd8e4');
+    const definition = await resolveSmlibDefinition();
+    expect(definition.version).toBe('1.4.0');
+    const initial = createClient({ 'main.ts': code });
+    const initialRendering = await renderGeometry(initial, {
+      file: createGeometryFile('main.ts'),
+      parameters: { size: 10 },
+      content: { includeTopology: true },
+    });
+    assertRenderingSuccess(initialRendering);
+    const topology = await readTopologyPayload(extractGltfFromResult(initialRendering));
+    const metadata = z
+      .object({
+        manualBodySignature: z.string(),
+        manualReplayWitness: z.string(),
+        manualFaces: z.array(z.object({ index: z.number(), geometry: manualFaceGeometrySchema })),
+      })
+      .parse(topology.components[0]!.sourceRefs);
+    expect(metadata.manualReplayWitness).toBe(oldWitness);
+    const face = metadata.manualFaces.find(({ geometry }) => geometry.normal[2] > 0.9);
+    if (!face) {
+      throw new Error('Expected top planar face');
+    }
+    const operation: ManualOperation = {
+      id: 'saved-face',
+      type: 'faceExtrude',
+      target: { name: 'piece' },
+      distance: 2,
+      face: {
+        index: face.index,
+        bodySignature: metadata.manualBodySignature,
+        replayWitness: oldWitness,
+        geometry: face.geometry,
+        point: [0, 0, face.geometry.center[2]],
+      },
+    };
+    const sidecar = JSON.stringify({ version: 1, operations: [operation] });
+    const reopened = createClient({ 'main.ts': code, 'main.ts.manual.json': sidecar });
+    const rendering = await renderGeometry(reopened, {
+      file: createGeometryFile('main.ts'),
+      parameters: { size: 10 },
+    });
+    assertRenderingSuccess(rendering);
+    const exported = await exportLastRender(reopened, 'step');
+    assertExportSuccess(exported);
+    const library = await import('@classcad/smlibwasm');
+    const body = library.fromStep(exported.files[0].bytes);
+    if (!(body instanceof library.Part)) {
+      throw new Error('Expected exact STEP solid');
+    }
+    expect(body.isValid()).toBe(true);
+    expect(body.volume).toBeCloseTo(1200, 4);
+    expect(body.bbox().max.z).toBeCloseTo(7, 4);
+    const changedSource = createClient({ 'main.ts': `${code}\n// Changed source`, 'main.ts.manual.json': sidecar });
+    const rejectedSource = await renderGeometry(changedSource, {
+      file: createGeometryFile('main.ts'),
+      parameters: { size: 10 },
+    });
+    assertRenderingFailure(rejectedSource);
+    expect(rejectedSource.issues.map(({ message }) => message).join('\n')).toContain('older source or manual history');
+    const changedParameters = createClient({ 'main.ts': code, 'main.ts.manual.json': sidecar });
+    const rejectedParameters = await renderGeometry(changedParameters, {
+      file: createGeometryFile('main.ts'),
+      parameters: { size: 11 },
+    });
+    assertRenderingFailure(rejectedParameters);
+    expect(rejectedParameters.issues.map(({ message }) => message).join('\n')).toContain(
+      'older source or manual history',
+    );
   });
 });
 

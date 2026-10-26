@@ -1,3 +1,4 @@
+import type { DirectEditTool } from '@taucad/viewer/cad/direct-edit-tool';
 import { useLayoutEffect } from 'react';
 import type { RenderFrame } from '@taucad/spatial';
 import { act, cleanup, render, waitFor } from '@testing-library/react';
@@ -109,6 +110,7 @@ const mocks = vi.hoisted(() => {
   };
 });
 
+vi.mock('#graphics/three/react/direct-edit-controls.jsx', () => ({ DirectEditControls: () => undefined }));
 vi.mock('#graphics/three/react/planar-face-controls.jsx', () => ({ PlanarFaceControls: () => undefined }));
 
 vi.mock('#graphics/three/react/use-model-gpu-pick.js', () => ({
@@ -929,87 +931,101 @@ describe('GltfMesh camera lifecycle', () => {
     }
   });
 
-  it('picks an exact native face while the GPU picker only identifies the piece', async () => {
-    const gltf = createGltf();
-    const mesh = new Mesh(new BoxGeometry(), new MeshBasicMaterial());
-    gltf.scene.add(mesh);
-    const originalRaycast = gltf.scene.raycast;
-    vi.spyOn(GLTFLoader.prototype, 'parseAsync').mockResolvedValue(gltf);
-    const exact = vi.spyOn(bvhRaycast, 'raycastFirstVisibleMeshHit');
-    const onPick = vi.fn();
-    const tool = { onPick, onPreview: vi.fn(), onCommit: vi.fn(), onCancel: vi.fn() };
-    const canvas = document.createElement('canvas');
-    const renderer = Object.create(WebGLRenderer.prototype) as WebGLRenderer;
-    Object.defineProperties(renderer, {
-      dispose: { value: vi.fn() },
-      domElement: { value: canvas },
-      render: { value: vi.fn() },
-      setPixelRatio: { value: vi.fn() },
-      setSize: { value: vi.fn() },
-      outputColorSpace: { value: '', writable: true },
-      toneMapping: { value: 0, writable: true },
-      toneMappingExposure: { value: 1, writable: true },
-    });
-    extend({ Group });
-    const root = createRoot(canvas);
-    const camera = new PerspectiveCamera(60, 1, 0.1, 100);
-    camera.position.set(0, 0, 5);
-    camera.lookAt(0, 0, 0);
-    camera.updateMatrixWorld();
-    try {
-      await act(async () => {
-        await root.configure({
-          camera,
-          events: createPointerEvents,
-          frameloop: 'never',
-          gl: renderer,
-          size: { width: 800, height: 800, top: 0, left: 0 },
+  it.each(['planar', 'direct'] as const)(
+    'should pick an exact native %s target while the GPU picker only identifies the piece',
+    async (mode) => {
+      const gltf = createGltf();
+      const mesh = new Mesh(new BoxGeometry(), new MeshBasicMaterial());
+      gltf.scene.add(mesh);
+      const originalRaycast = gltf.scene.raycast;
+      vi.spyOn(GLTFLoader.prototype, 'parseAsync').mockResolvedValue(gltf);
+      const exact = vi.spyOn(bvhRaycast, 'raycastFirstVisibleMeshHit');
+      const onPick = vi.fn();
+      const tool = {
+        mode: 'translate',
+        onPick,
+        onPreview: vi.fn(),
+        onCommit: vi.fn(),
+        onCancel: vi.fn(),
+      } satisfies DirectEditTool;
+      const canvas = document.createElement('canvas');
+      const renderer = Object.create(WebGLRenderer.prototype) as WebGLRenderer;
+      Object.defineProperties(renderer, {
+        dispose: { value: vi.fn() },
+        domElement: { value: canvas },
+        render: { value: vi.fn() },
+        setPixelRatio: { value: vi.fn() },
+        setSize: { value: vi.fn() },
+        outputColorSpace: { value: '', writable: true },
+        toneMapping: { value: 0, writable: true },
+        toneMappingExposure: { value: 1, writable: true },
+      });
+      extend({ Group });
+      const root = createRoot(canvas);
+      const camera = new PerspectiveCamera(60, 1, 0.1, 100);
+      camera.position.set(0, 0, 5);
+      camera.lookAt(0, 0, 0);
+      camera.updateMatrixWorld();
+      try {
+        await act(async () => {
+          await root.configure({
+            camera,
+            events: createPointerEvents,
+            frameloop: 'never',
+            gl: renderer,
+            size: { width: 800, height: 800, top: 0, left: 0 },
+          });
         });
-      });
-      const store = root.render(
-        <GltfMesh
-          gltfFile={new Uint8Array([1])}
-          geometryHash='actually-loaded'
-          enableMatcap={false}
-          planarFaceTool={tool}
-        />,
-      );
-      await waitFor(() => {
-        expect(gltf.scene.raycast).not.toBe(originalRaycast);
-      });
-      setModelComponentOwner(mesh, { unitId: 'unit:test', componentId: 'native-piece' });
-      mesh.userData['measurementFeatures'] = {
-        componentId: 'native-piece',
-        faces: [{ id: 'face:73', start: 0, count: 36 }],
-      };
-      store.getState().scene.updateMatrixWorld(true);
-      mocks.modelPickResult = {
-        status: 'hit',
-        intersection: { distance: 4.5, point: new Vector3(0, 0, 0.5), object: mesh },
-      };
-      const pointer = mock<PointerEvent>({ offsetX: 400, offsetY: 400, pointerId: 1, button: 0, target: canvas });
-      const { handlers } = store.getState().events;
-      mocks.graphicsActor.send.mockClear();
-      await act(async () => {
-        handlers?.onPointerDown(pointer);
-      });
-      await act(async () => {
-        handlers?.onClick(pointer);
-      });
-      expect(exact).toHaveBeenCalled();
-      expect(onPick).toHaveBeenCalledOnce();
-      const picked = onPick.mock.calls[0]![0] as { point: number[] };
-      expect(picked).toMatchObject({ componentId: 'native-piece', faceId: 73, artifactKey: 'actually-loaded' });
-      expect(picked.point[2]).toBeCloseTo(0.5);
-      expect(mocks.graphicsActor.send).not.toHaveBeenCalledWith(
-        expect.objectContaining({ type: 'toggleModelComponentSelection' }),
-      );
-    } finally {
-      await act(async () => {
-        root.unmount();
-      });
-    }
-  });
+        const store = root.render(
+          <GltfMesh
+            gltfFile={new Uint8Array([1])}
+            geometryHash='actually-loaded'
+            enableMatcap={false}
+            planarFaceTool={mode === 'planar' ? tool : undefined}
+            directEditTool={mode === 'direct' ? tool : undefined}
+          />,
+        );
+        await waitFor(() => {
+          expect(gltf.scene.raycast).not.toBe(originalRaycast);
+        });
+        setModelComponentOwner(mesh, { unitId: 'unit:test', componentId: 'native-piece' });
+        mesh.userData['measurementFeatures'] = {
+          componentId: 'native-piece',
+          faces: [{ id: 'face:73', start: 0, count: 36 }],
+        };
+        store.getState().scene.updateMatrixWorld(true);
+        mocks.modelPickResult = {
+          status: 'hit',
+          intersection: { distance: 4.5, point: new Vector3(0, 0, 0.5), object: mesh },
+        };
+        const pointer = mock<PointerEvent>({ offsetX: 400, offsetY: 400, pointerId: 1, button: 0, target: canvas });
+        const { handlers } = store.getState().events;
+        mocks.graphicsActor.send.mockClear();
+        await act(async () => {
+          handlers?.onPointerDown(pointer);
+        });
+        await act(async () => {
+          handlers?.onClick(pointer);
+        });
+        expect(exact).toHaveBeenCalled();
+        expect(onPick).toHaveBeenCalledOnce();
+        const picked = onPick.mock.calls[0]![0] as { point: number[] };
+        expect(picked).toMatchObject({
+          componentId: 'native-piece',
+          artifactKey: 'actually-loaded',
+          ...(mode === 'planar' ? { faceId: 73 } : {}),
+        });
+        expect(picked.point[2]).toBeCloseTo(0.5);
+        expect(mocks.graphicsActor.send).not.toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'toggleModelComponentSelection' }),
+        );
+      } finally {
+        await act(async () => {
+          root.unmount();
+        });
+      }
+    },
+  );
 
   it('should leave hover and selection alone while the model pick is pending, then resolve the replayed pointer', async () => {
     const gltf = createGltf();

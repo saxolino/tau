@@ -1210,6 +1210,9 @@
     "name": "logo-keychain",
     "mainFile": "main.ts",
     "files": [
+      "assets.d.ts",
+      "assets/Geist-Bold.ttf",
+      "assets/Geist-LICENSE.txt",
       "assets/logo.svg",
       "logo-keychain.geospec.ts",
       "main.ts",
@@ -1566,6 +1569,17 @@
     "mainFile": "main.ts",
     "files": [
       "README.md",
+      "main.ts",
+      "tau.json"
+    ]
+  },
+  {
+    "kind": "test-fixture",
+    "geometry": "3d",
+    "kernel": "smlib",
+    "name": "manual-buckle-fixture",
+    "mainFile": "main.ts",
+    "files": [
       "main.ts",
       "tau.json"
     ]

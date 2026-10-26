@@ -6,6 +6,7 @@ import { Button } from '@taucad/ui/components/button';
 import { Input } from '@taucad/ui/components/input';
 import { useTranslation } from '#i18n/translate.js';
 import type { Translate } from '#i18n/translate.js';
+import type { DirectEditTool } from '@taucad/viewer/cad/direct-edit-tool';
 import {
   ManualChoice,
   ManualNumberField,
@@ -18,6 +19,23 @@ const toolTypes = ['extrude', 'translate', 'rotate', 'scale', 'mirror', 'hole', 
 type Tool = (typeof toolTypes)[number];
 type Commit = (document: ManualDocument) => Promise<boolean>;
 type Draft = { base: ManualDocument; operation: ManualOperation; commit: Commit; isNew: boolean };
+type DirectMode = DirectEditTool['mode'];
+const directModes = new Set<string>(['translate', 'rotate', 'scale', 'fillet', 'chamfer']);
+const isDirectMode = (tool: Tool): tool is DirectMode => directModes.has(tool);
+
+/** Direct body transforms and exact picked-edge operations, sharing the existing manual history. */
+export type ManualDirectControls = Readonly<{
+  mode?: DirectMode;
+  available: boolean;
+  selected?: Readonly<{ name: string; edgeCount: number }>;
+  size: number;
+  preview?: string;
+  error?: string;
+  onModeChange: (mode: DirectMode | undefined) => void;
+  onSizeChange: (size: number) => void;
+  onApply: () => void;
+  onCancel: () => void;
+}>;
 
 /** Shared controls for picking a native planar face and editing its signed extrusion. */
 export type ManualFaceControls = Readonly<{
@@ -89,6 +107,11 @@ function OperationFields({
   onChange: (operation: ManualOperation) => void;
   t: Translate;
 }>): React.JSX.Element {
+  const hasPickedEdges =
+    (operation.type === 'fillet' || operation.type === 'chamfer') &&
+    operation.edges.kind === 'indices' &&
+    operation.edges.replayWitness !== undefined &&
+    operation.edges.geometries !== undefined;
   const targetChoice = (
     <ManualChoice
       label={t('manualEdit.target')}
@@ -250,25 +273,27 @@ function OperationFields({
                 onChange({ ...operation, size });
               }}
             />
-            <ManualChoice
-              label={t('manualEdit.edges')}
-              value={operation.edges.kind}
-              choices={[
-                { value: 'all', label: t('manualEdit.allEdges') },
-                { value: 'parallel', label: t('manualEdit.parallelEdges') },
-                ...(operation.edges.kind === 'indices'
-                  ? [{ value: 'indices', label: t('manualEdit.guardedEdges') }]
-                  : []),
-              ]}
-              onChange={(kind) => {
-                if (kind === 'all') {
-                  onChange({ ...operation, edges: { kind } });
-                }
-                if (kind === 'parallel') {
-                  onChange({ ...operation, edges: { kind, axis: [0, 0, 1] } });
-                }
-              }}
-            />
+            {hasPickedEdges ? null : (
+              <ManualChoice
+                label={t('manualEdit.edges')}
+                value={operation.edges.kind}
+                choices={[
+                  { value: 'all', label: t('manualEdit.allEdges') },
+                  { value: 'parallel', label: t('manualEdit.parallelEdges') },
+                  ...(operation.edges.kind === 'indices'
+                    ? [{ value: 'indices', label: t('manualEdit.guardedEdges') }]
+                    : []),
+                ]}
+                onChange={(kind) => {
+                  if (kind === 'all') {
+                    onChange({ ...operation, edges: { kind } });
+                  }
+                  if (kind === 'parallel') {
+                    onChange({ ...operation, edges: { kind, axis: [0, 0, 1] } });
+                  }
+                }}
+              />
+            )}
             {operation.edges.kind === 'parallel' ? (
               <ManualVectorFields
                 label={t('manualEdit.axis')}
@@ -357,7 +382,13 @@ function OperationFields({
   };
   return (
     <div className='space-y-3'>
-      {operation.type === 'extrude' || operation.type === 'faceExtrude' ? null : targetChoice}
+      {hasPickedEdges ? (
+        <p className='text-xs text-muted-foreground'>
+          {operation.target.name} · {t('manualEdit.guardedEdges')}
+        </p>
+      ) : operation.type === 'extrude' || operation.type === 'faceExtrude' ? null : (
+        targetChoice
+      )}
       {fields()}
     </div>
   );
@@ -395,6 +426,7 @@ export function ManualEditPanel({
   error,
   onClose,
   faceControls,
+  directControls,
 }: Readonly<{
   document: ManualDocument | undefined;
   targets: readonly string[];
@@ -408,6 +440,7 @@ export function ManualEditPanel({
   error?: string;
   onClose?: () => void;
   faceControls?: ManualFaceControls;
+  directControls?: ManualDirectControls;
 }>): React.JSX.Element {
   const { t } = useTranslation();
   const [draft, setDraft] = useState<Draft>();
@@ -422,6 +455,7 @@ export function ManualEditPanel({
       return;
     }
     faceControls?.onEnableChange(false);
+    directControls?.onModeChange(undefined);
     setDraft({ base: document, operation, commit: onCommit, isNew });
     setLocalError(undefined);
     setHasSaved(false);
@@ -533,6 +567,7 @@ export function ManualEditPanel({
               aria-pressed={faceControls.enabled}
               disabled={busy || Boolean(draft) || !document || !faceControls.available}
               onClick={() => {
+                directControls?.onModeChange(undefined);
                 faceControls.onEnableChange(!faceControls.enabled);
               }}
             >
@@ -543,9 +578,15 @@ export function ManualEditPanel({
             <Button
               key={type}
               size='sm'
-              variant='outline'
+              variant={directControls?.mode === type ? 'secondary' : 'outline'}
+              aria-pressed={isDirectMode(type) && directControls ? directControls.mode === type : undefined}
               disabled={busy || Boolean(draft) || !document || (type !== 'extrude' && choices.length === 0)}
               onClick={() => {
+                if (directControls && isDirectMode(type)) {
+                  faceControls?.onEnableChange(false);
+                  directControls.onModeChange(directControls.mode === type ? undefined : type);
+                  return;
+                }
                 const names = new Set([
                   ...targets,
                   ...(document?.operations.flatMap((operation) =>
@@ -564,6 +605,80 @@ export function ManualEditPanel({
             </Button>
           ))}
         </section>
+        {directControls?.mode && !draft ? (
+          <section aria-label={t('manualEdit.directTool')} className='space-y-3 border-t border-border pt-3'>
+            <p className='text-xs text-muted-foreground'>
+              {t(
+                directControls.available
+                  ? directControls.mode === 'fillet' || directControls.mode === 'chamfer'
+                    ? 'manualEdit.edgeSelectHelp'
+                    : directControls.selected
+                      ? 'manualEdit.directDragHelp'
+                      : 'manualEdit.directSelectHelp'
+                  : 'manualEdit.directUnavailable',
+              )}
+            </p>
+            {directControls.error ? (
+              <p role='alert' className='text-xs text-destructive'>
+                {directControls.error}
+              </p>
+            ) : null}
+            {directControls.selected ? (
+              <p className='text-xs'>
+                {directControls.selected.name}
+                {directControls.mode === 'fillet' || directControls.mode === 'chamfer'
+                  ? ` · ${t('manualEdit.edgeCount', { count: directControls.selected.edgeCount })}`
+                  : ''}
+              </p>
+            ) : null}
+            {directControls.preview ? (
+              <p role='status' className='text-xs tabular-nums'>
+                {directControls.preview}
+              </p>
+            ) : null}
+            {directControls.mode === 'fillet' || directControls.mode === 'chamfer' ? (
+              <>
+                <ManualNumberField
+                  label={t(directControls.mode === 'fillet' ? 'manualEdit.edgeRadius' : 'manualEdit.size')}
+                  value={directControls.size}
+                  onChange={directControls.onSizeChange}
+                  min={0.001}
+                />
+                <Button
+                  size='sm'
+                  disabled={
+                    busy ||
+                    !directControls.available ||
+                    !directControls.selected?.edgeCount ||
+                    !Number.isFinite(directControls.size) ||
+                    directControls.size <= 0
+                  }
+                  onClick={directControls.onApply}
+                >
+                  {t('manualEdit.apply')}
+                </Button>
+              </>
+            ) : null}
+            <div className='flex flex-wrap gap-2'>
+              <Button
+                size='xs'
+                variant='outline'
+                disabled={busy || choices.length === 0}
+                onClick={() => {
+                  const type = directControls.mode;
+                  if (type) {
+                    startDraft(newOperation(type, directControls.selected?.name ?? choices[0] ?? '', ''), true);
+                  }
+                }}
+              >
+                {t('manualEdit.numericDraft')}
+              </Button>
+              <Button size='xs' variant='ghost' disabled={busy} onClick={directControls.onCancel}>
+                {t('manualEdit.clearSelection')}
+              </Button>
+            </div>
+          </section>
+        ) : null}
         {faceControls?.enabled && !draft ? (
           <section aria-label={t('manualEdit.faceExtrude')} className='space-y-3 border-t border-border pt-3'>
             <p className='text-xs text-muted-foreground'>

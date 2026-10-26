@@ -122,7 +122,8 @@
     "./services/graphics-camera-registry": "./src/services/graphics-camera-registry.ts",
     "./utils/inspect-glb": "./src/utils/inspect-glb.ts",
     "./package.json": "./package.json",
-    "./cad/planar-face-tool": "./src/graphics/three/react/planar-face-tool.ts"
+    "./cad/planar-face-tool": "./src/graphics/three/react/planar-face-tool.ts",
+    "./cad/direct-edit-tool": "./src/graphics/three/react/direct-edit-tool.ts"
   },
   "publishConfig": {
     "access": "public",
@@ -562,6 +563,11 @@
         "types": "./dist/graphics/three/react/planar-face-tool.d.mts",
         "import": "./dist/graphics/three/react/planar-face-tool.mjs",
         "default": "./dist/graphics/three/react/planar-face-tool.mjs"
+      },
+      "./cad/direct-edit-tool": {
+        "types": "./dist/graphics/three/react/direct-edit-tool.d.mts",
+        "import": "./dist/graphics/three/react/direct-edit-tool.mjs",
+        "default": "./dist/graphics/three/react/direct-edit-tool.mjs"
       }
     },
     "imports": {}

@@ -1,6 +1,7 @@
 import '#styles/global.css';
 import { cleanup, render } from '@testing-library/react';
-import { useEffect, useSyncExternalStore } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
+import type { DirectEditTool } from '@taucad/viewer/cad/direct-edit-tool';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { commands, page, userEvent } from 'vitest/browser';
 import type { ManualDocument } from '@taucad/smlib/manual-operations';
@@ -77,6 +78,59 @@ function PanelFixture({ service }: Readonly<{ service: ManualService }>): React.
   );
 }
 
+function DirectPanelFixture({
+  commit,
+  applyEdges,
+}: Readonly<{
+  commit: (next: ManualDocument) => Promise<boolean>;
+  applyEdges: (size: number) => void;
+}>): React.JSX.Element {
+  const [mode, setMode] = useState<DirectEditTool['mode']>();
+  const [document] = useState<ManualDocument>({ version: 1, operations: [] });
+  const [faceEnabled, setFaceEnabled] = useState(false);
+  const [size, setSize] = useState(1);
+  return (
+    <TooltipProvider>
+      <div className='h-dvh w-full max-w-96'>
+        <ManualEditPanel
+          document={document}
+          targets={targets}
+          onCommit={commit}
+          onUndo={async () => false}
+          onRedo={async () => false}
+          canUndo={false}
+          canRedo={false}
+          faceControls={{
+            enabled: faceEnabled,
+            available: true,
+            distance: 1,
+            onEnableChange: setFaceEnabled,
+            onDistanceChange: () => undefined,
+            onApply: () => undefined,
+            onCancel: () => {
+              setFaceEnabled(false);
+            },
+          }}
+          directControls={{
+            mode,
+            available: true,
+            size,
+            selected: mode ? { name: 'Fibbia', edgeCount: 2 } : undefined,
+            onModeChange: setMode,
+            onSizeChange: setSize,
+            onApply: () => {
+              applyEdges(size);
+            },
+            onCancel: () => {
+              setMode(undefined);
+            },
+          }}
+        />
+      </div>
+    </TooltipProvider>
+  );
+}
+
 beforeEach(() => {
   setLanguage('it');
 });
@@ -85,6 +139,39 @@ afterEach(() => {
 });
 
 describe('manual geometry editing in a real browser', () => {
+  it('should arm one direct tool, preserve the numeric alternative and apply selected-edge radius explicitly', async () => {
+    await page.viewport(390, 900);
+    const commit = vi.fn<(next: ManualDocument) => Promise<boolean>>(async () => true);
+    const applyEdges = vi.fn<(size: number) => void>();
+    render(<DirectPanelFixture commit={commit} applyEdges={applyEdges} />);
+    await page.getByRole('button', { name: 'Sposta', exact: true }).click();
+    await expect
+      .element(page.getByRole('button', { name: 'Sposta', exact: true }))
+      .toHaveAttribute('aria-pressed', 'true');
+    await expect.element(page.getByRole('region', { name: 'Bozza', exact: true })).not.toBeInTheDocument();
+    await page.getByRole('button', { name: 'Estrudi faccia', exact: true }).click();
+    await expect
+      .element(page.getByRole('button', { name: 'Sposta', exact: true }))
+      .toHaveAttribute('aria-pressed', 'false');
+    await page.getByRole('button', { name: 'Raccordo', exact: true }).click();
+    await expect
+      .element(page.getByRole('button', { name: 'Estrudi faccia', exact: true }))
+      .toHaveAttribute('aria-pressed', 'false');
+    await expect.element(page.getByText('Fibbia · 2 spigoli selezionati', { exact: true })).toBeVisible();
+    await page.getByRole('spinbutton', { name: 'Raggio del raccordo', exact: true }).fill('0.6');
+    await userEvent.keyboard('{Enter}');
+    expect(applyEdges).not.toHaveBeenCalled();
+    await page.getByRole('button', { name: 'Applica al modello', exact: true }).click();
+    expect(applyEdges).toHaveBeenCalledExactlyOnceWith(0.6);
+    await page.getByRole('button', { name: 'Quote numeriche', exact: true }).click();
+    await expect.element(page.getByRole('region', { name: 'Bozza', exact: true })).toBeVisible();
+    await expect.element(page.getByRole('button', { name: 'Estrudi faccia', exact: true })).toBeDisabled();
+    await expect.element(page.getByRole('button', { name: 'Scala', exact: true })).toBeDisabled();
+    expect(commit).not.toHaveBeenCalled();
+    await page.getByRole('button', { name: 'Scarta bozza', exact: true }).click();
+    await expect.element(page.getByRole('button', { name: 'Sposta', exact: true })).toBeEnabled();
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(390);
+  });
   it('should edit a face extrusion distance without retargeting its original guarded face', async () => {
     await page.viewport(420, 900);
     const original: ManualDocument = {
@@ -119,6 +206,61 @@ describe('manual geometry editing in a real browser', () => {
       expect(fixture.service.getSnapshot().document).toEqual(original);
     });
   });
+
+  it.each(['fillet', 'chamfer'] as const)(
+    'should edit a saved picked-edge %s size without changing its target or selection',
+    async (type) => {
+      await page.viewport(420, 900);
+      const original: ManualDocument = {
+        version: 1,
+        operations: [
+          {
+            id: 'selected-edge',
+            type,
+            target: { name: 'Fibbia' },
+            size: 1,
+            edges: {
+              kind: 'indices',
+              indices: [2],
+              bodySignature: 'a'.repeat(64),
+              replayWitness: 'b'.repeat(64),
+              geometries: [
+                {
+                  kind: 'line',
+                  start: [0, 0, 0],
+                  end: [10, 0, 0],
+                  length: 10,
+                  bounds: { min: [0, 0, 0], max: [10, 0, 0] },
+                  adjacentFaceCount: 2,
+                  seam: false,
+                  closed: false,
+                },
+              ],
+            },
+          },
+        ],
+      };
+      const fixture = createFixture(original);
+      render(<PanelFixture service={fixture.service} />);
+      await page.getByRole('button', { name: 'Modifica operazione 1', exact: true }).click();
+      await expect.element(page.getByText('Fibbia · Spigoli selezionati sul modello', { exact: true })).toBeVisible();
+      await expect.element(page.getByRole('combobox', { name: 'Pezzo', exact: true })).not.toBeInTheDocument();
+      await expect.element(page.getByRole('combobox', { name: 'Spigoli', exact: true })).not.toBeInTheDocument();
+      await page.getByRole('spinbutton', { name: 'Misura', exact: true }).fill('0.6');
+      await userEvent.keyboard('{Enter}');
+      await page.getByRole('button', { name: 'Applica al modello', exact: true }).click();
+      await vi.waitFor(() => {
+        expect(fixture.service.getSnapshot().document).toEqual({
+          version: 1,
+          operations: [{ ...original.operations[0], size: 0.6 }],
+        });
+      });
+      await page.getByRole('button', { name: 'Annulla modifica', exact: true }).click();
+      await vi.waitFor(() => {
+        expect(fixture.service.getSnapshot().document).toEqual(original);
+      });
+    },
+  );
 
   it('should persist dragged profile points, reopen them and undo or redo an edited extrusion', async () => {
     await page.viewport(420, 1000);

@@ -69,7 +69,11 @@ import type { DrawingEntry, NamedInputShape, SmlibLibrary } from '#utils/render-
 import { convertSmlibGeometriesToGltf } from '#utils/smlib-to-gltf.js';
 
 const kernelId = 'smlib';
-const kernelVersion = '1.3.0';
+const kernelVersion = '1.4.0';
+// Cache metadata can change without invalidating saved face/edge provenance.
+// Preserve the canonical payload's kernelVersion key and 1.3.0 replay identity;
+// bump this separately when replay semantics change and require new witnesses.
+const manualReplaySemanticsVersion = '1.3.0';
 
 /**
  * Live SMLib native handle: the shapes `main` returned, the model's GLB resources and the entry
@@ -423,7 +427,7 @@ export const smlibKernel = defineKernel({
           dependencies: bundleResult.dependencies,
           unresolvedPaths: bundleResult.unresolvedPaths,
           parameters,
-          kernelVersion,
+          kernelVersion: manualReplaySemanticsVersion,
           libraryVersion: smlibPackage.version,
           runtime,
         });

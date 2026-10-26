@@ -1,3 +1,4 @@
+import { manualEdgeGeometry } from '#manual-edge.js';
 import { manualFaceGeometry } from '#manual-evaluator.js';
 import type * as SmlibModule from '@classcad/smlibwasm';
 import type { GeometrySvg, KernelIssue, RuntimeSpanTracer, TessellationReport } from '@taucad/runtime/types';
@@ -572,9 +573,24 @@ function renderMesh(config: NamedInputShape, options: RenderOptions): GeometrySm
     };
   }
 
+  if (config.manual && shape instanceof library.Part) {
+    const bounds = shape.bbox();
+    geometry.manualBounds = {
+      min: [bounds.min.x, bounds.min.y, bounds.min.z],
+      max: [bounds.max.x, bounds.max.y, bounds.max.z],
+    };
+  }
+
   if (collectBrepEdges && !(shape instanceof library.Mesh)) {
     withSpan({ tracer, name: 'smlib.tessellate.edges', attributes: { ...attributes, output: 'edges' } }, () => {
-      appendEdges(geometry.edges, [...shape.edges()], tessellation);
+      const nativeEdges = [...shape.edges()];
+      appendEdges(geometry.edges, nativeEdges, tessellation);
+      if (config.manual?.replayWitness && shape instanceof library.Part) {
+        geometry.manualEdges = nativeEdges.flatMap((edge, index) => {
+          const descriptor = manualEdgeGeometry(edge);
+          return descriptor ? [{ index, geometry: descriptor }] : [];
+        });
+      }
     });
   }
 

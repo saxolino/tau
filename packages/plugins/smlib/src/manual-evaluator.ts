@@ -11,6 +11,7 @@ import type {
   ManualFaceSelection,
   ManualFaceGeometry,
 } from '#manual-operations.js';
+import { resolveManualEdges } from '#manual-edge.js';
 import { manualReplayWitness } from '#manual-replay.js';
 import type { NamedInputShape, SmlibLibrary } from '#utils/render-output.js';
 
@@ -102,7 +103,12 @@ function assertValidBody(library: SmlibLibrary, shape: Part | Shell): void {
   }
 }
 
-async function selectEdges(library: SmlibLibrary, part: Part, selection: ManualEdgeSelection): Promise<Edge[]> {
+async function selectEdges(
+  library: SmlibLibrary,
+  part: Part,
+  input: { selection: ManualEdgeSelection; replayWitness?: string },
+): Promise<Edge[]> {
+  const { selection } = input;
   const edges = part.edges();
   if (selection.kind === 'all') {
     return [...edges];
@@ -113,6 +119,12 @@ async function selectEdges(library: SmlibLibrary, part: Part, selection: ManualE
       throw new Error('No edges match the selected direction.');
     }
     return selected;
+  }
+  if (selection.replayWitness !== undefined) {
+    if (!input.replayWitness || input.replayWitness !== selection.replayWitness || !selection.geometries) {
+      throw new Error('The selected edges belong to an older source or manual history. Re-select them.');
+    }
+    return resolveManualEdges(part, selection.geometries);
   }
   if ((await manualBodySignature(library, part)) !== selection.bodySignature) {
     throw new Error('The selected edges belong to an older geometry. Re-select them before applying this operation.');
@@ -298,7 +310,10 @@ async function applyOperation(
     case 'fillet':
     case 'chamfer': {
       const part = requirePart(library, entry);
-      const edges = await selectEdges(library, part, operation.edges);
+      const edges = await selectEdges(library, part, {
+        selection: operation.edges,
+        replayWitness: input.replayWitness,
+      });
       result = operation.type === 'fillet' ? part.fillet(edges, operation.size) : part.chamfer(edges, operation.size);
       break;
     }

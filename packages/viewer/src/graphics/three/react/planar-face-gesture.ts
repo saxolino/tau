@@ -87,6 +87,8 @@ export function beginPlanarFaceGesture(
     pointerId: number;
     start: PointerPoint;
     metersPerRenderUnit: number;
+    /** Optional scalar sampler for other native manipulation handles. */
+    sampleDistance?: (point: PointerPoint) => number | undefined;
     controls: { enabled: boolean } | undefined;
     acquire: () => () => void;
     onPreview: (distance: number) => void;
@@ -115,7 +117,9 @@ export function beginPlanarFaceGesture(
   }
   const preview = (point: PointerPoint): void => {
     latest = undefined;
-    const result = planarFaceDragDistance({ ...options, rect: options.canvas.getBoundingClientRect(), current: point });
+    const result = options.sampleDistance
+      ? options.sampleDistance(point)
+      : planarFaceDragDistance({ ...options, rect: options.canvas.getBoundingClientRect(), current: point });
     if (result === undefined || !Number.isFinite(result)) {
       return;
     }

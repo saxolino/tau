@@ -1,4 +1,4 @@
-import type { ManualFaceInfo } from '#manual-operations.js';
+import type { ManualFaceInfo, ManualEdgeInfo, ManualBounds } from '#manual-operations.js';
 import type { GlbMaterial } from '@taucad/geometry-core';
 import type { ManualShapeInfo } from '#manual-evaluator.js';
 
@@ -12,6 +12,10 @@ export type GeometrySmlib = {
   manual?: ManualShapeInfo;
   /** Native planar face descriptors, only when tessellation retained a trusted face mapping. */
   manualFaces?: Array<Omit<ManualFaceInfo, 'faceId'>>;
+  /** Native curves corresponding exactly to sampled edge ranges. */
+  manualEdges?: Array<Omit<ManualEdgeInfo, 'edgeId'>>;
+  /** Exact solid bounds in native Z-up millimetres. */
+  manualBounds?: ManualBounds;
   /** Exact solid volume (mm³) and authored density (g/cm³), never mesh-derived estimates. */
   physical?: { volumeMm3: number; density: number; massGrams: number };
   faces: {

@@ -155,6 +155,11 @@ function buildNodeFromSmlibGeometry({
     return native ? [{ faceId, ...native }] : [];
   });
   const edgeGroups = edges.edgeGroups.map((group, edgeId) => ({ ...group, edgeId }));
+  const manualEdges = edgeGroups.flatMap(({ edgeId }) => {
+    const nativeIndex = edges.edgeGroups[edgeId]?.edgeId;
+    const native = geometry.manualEdges?.find(({ index }) => index === nativeIndex);
+    return native ? [{ edgeId, ...native }] : [];
+  });
 
   if (compactedFaces && compactedFaces.indices.length > 0) {
     const positions = transformVertexArray(faces.vertices, transformOptions);
@@ -306,6 +311,8 @@ function buildNodeFromSmlibGeometry({
               manualOperationIds: geometry.manual.operationIds,
               ...(geometry.manual.replayWitness ? { manualReplayWitness: geometry.manual.replayWitness } : {}),
               manualFaces,
+              manualEdges,
+              ...(geometry.manualBounds ? { manualBounds: geometry.manualBounds } : {}),
             }
           : {}),
       },

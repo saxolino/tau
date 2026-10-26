@@ -1,3 +1,4 @@
+import type { DirectEditTool } from '#graphics/three/react/direct-edit-tool.js';
 import type { PlanarFaceTool } from '#graphics/three/react/planar-face-tool.js';
 import { memo } from 'react';
 import type { CanvasProps } from '@react-three/fiber';
@@ -20,6 +21,7 @@ type CadViewerProperties = Omit<ThreeViewerProperties, 'graphicsBackend'> &
   CadViewerCanvasEventProperties & {
     readonly artifact?: Artifact;
     readonly planarFaceTool?: PlanarFaceTool;
+    readonly directEditTool?: DirectEditTool;
     readonly artifactHash?: string;
     readonly sourceFile?: string;
     readonly enableSurfaces?: boolean;
@@ -39,6 +41,7 @@ export const CadViewer = memo(
   ({
     artifact,
     planarFaceTool,
+    directEditTool,
     artifactHash,
     sourceFile,
     enableSurfaces = true,
@@ -64,6 +67,7 @@ export const CadViewer = memo(
         <GltfMesh
           gltfFile={known.content}
           planarFaceTool={planarFaceTool}
+          directEditTool={directEditTool}
           sourceFile={sourceFile}
           geometryHash={artifactHash}
           presentationRevision={requestedGltfRevision}
