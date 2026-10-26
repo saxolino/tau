@@ -10,3 +10,5 @@ export { rileggiStep } from '#famiglie/verifiche-comuni.js';
 export { valutaFamiglia } from '#famiglie/valuta-famiglia.js';
 export type { Valutazione } from '#famiglie/valuta-famiglia.js';
 export { famiglie } from '#famiglie/registro.js';
+export { fibbia, presetPilotaFibbia } from '#famiglie/fibbia.js';
+export type { ParametriFibbia, VarianteFibbia } from '#famiglie/fibbia.js';
