@@ -69,15 +69,15 @@ export const gltfEdgeColorLightMode = 0x00_00_00;
 export const gltfEdgeColorDarkMode = 0x86_86_86;
 
 /**
- * Edge tint of a **hovered** model component, drawn through occluding surfaces. Light yellow;
- * one value for both themes — reads against white and `#171717`. See
+ * Edge tint of a **hovered** model component, drawn through occluding surfaces. SinopiaCAD's titanium: a cool
+ * blue-grey that no metal of the material table shares, so a selected gold or brass piece never reads as «more gold»
+ * (UI-UX-SinopiaCAD §1.2). One value for both themes: 2.8:1 on the cream floor, 5.6:1 on charcoal. See
  * `docs/research/viewer-edge-emphasis-highlighting-blueprint.md`.
  */
-export const gltfEdgeHoverColor = 0xff_d5_4a;
+export const gltfEdgeHoverColor = 0x7d_91_a5;
 
 /**
- * Edge tint of a **selected** or focused model component. Same light yellow as hover: the
- * darker `0xb88600` read as illegible over orange/wood surfaces (operator ruling 2026-09-22).
+ * Edge tint of a **selected** or focused model component. Same titanium as hover; the wash's strength tells them apart.
  */
 export const gltfEdgeSelectedColor = gltfEdgeHoverColor;
 
