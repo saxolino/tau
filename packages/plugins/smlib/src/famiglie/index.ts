@@ -13,4 +13,6 @@ export { famiglie } from '#famiglie/registro.js';
 export { fibbia, presetPilotaFibbia } from '#famiglie/fibbia.js';
 export type { ParametriFibbia, VarianteFibbia } from '#famiglie/fibbia.js';
 export { tacco } from '#famiglie/tacco.js';
+export { placca, TRATTO_LATO } from '#famiglie/placca.js';
+export type { ParametriPlacca, VariantePlacca } from '#famiglie/placca.js';
 export type { ParametriTacco, VarianteTacco } from '#famiglie/tacco.js';

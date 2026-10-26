@@ -472,8 +472,8 @@ function sezione(lib: Lib, forma: FormaSeduta, larghezza: number, lunghezza: num
 }
 
 /**
- * Se un punto sta dentro il contorno di una sezione ridotto di `riduzione` (approssimazione per difetto della
- * sezione offsettata: l'ellisse a semiassi ridotti sta dentro l'offset vero).
+ * Se un punto sta dentro il contorno di una sezione ridotto di `riduzione` (l'ellisse a semiassi ridotti approssima
+ * l'offset vero a meno di centesimi: il margine di 0,8 mm delle colonne lo copre).
  */
 function dentroSezione(
   forma: FormaSeduta,
