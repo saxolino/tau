@@ -66,7 +66,9 @@ describe('createUiRuntimeConfig', () => {
       tauWebSocketUrl: 'wss://api.tau.test',
     });
 
-    expect(resolvedRuntime.middleware[0]).toMatchObject({
+    // The smlib plugin now contributes its pass-through manual-sidecar middleware ahead of the explicit list,
+    // so observability is looked up by id instead of by position.
+    expect(resolvedRuntime.middleware.find((middleware) => middleware.id === 'observability')).toMatchObject({
       id: 'observability',
       options: { reportUrl: 'https://api.tau.test/v1/telemetry/ingest' },
     });

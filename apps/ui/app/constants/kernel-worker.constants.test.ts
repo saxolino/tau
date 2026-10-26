@@ -59,7 +59,10 @@ describe('kernel-worker constants', () => {
     }
     // PicoVoxel keeps its default wasm 'auto' (resolved per worker from the isolation snapshot).
     expect(resolvedRuntime.kernels.find((kernel) => kernel.id === 'picovoxel')).not.toHaveProperty('options.wasm');
+    // The smlib plugin contributes its manual-sidecar middleware (a pass-through watch of the manual history file)
+    // ahead of the explicitly listed ones; the explicit order after it is unchanged.
     expect(resolvedRuntime.middleware.map((middleware) => middleware.id)).toEqual([
+      'smlibManualSidecar',
       'observability',
       'parameterFileResolver',
       'parameterUnits',

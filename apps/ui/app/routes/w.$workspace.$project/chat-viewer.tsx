@@ -591,7 +591,10 @@ const ViewerContent = memo(function ({
   useEffect(() => {
     return registerManualViewer?.(viewId, profile === 'editor' && kernelId === 'smlib', isActiveViewer);
   }, [profile, kernelId, registerManualViewer, viewId, isActiveViewer]);
-  const isCadLoading = useCadSelector(selectIsCadLoading, false);
+  // Loading only gates the manual-edit readiness below, so any other viewer must not re-render on every
+  // loading flip (a render transition that presents no geometry re-renders nothing).
+  const isManualCapable = profile === 'editor' && kernelId === 'smlib';
+  const isCadLoading = useCadSelector((snapshot) => isManualCapable && selectIsCadLoading(snapshot), false);
   const savedView = viewRecords.get(viewId);
   const selectedKernelView = savedView?.selectedKernelView;
   const offeredViewId = selectedKernelView ?? (evaluation?.success ? evaluation.views[0]?.id : undefined);
@@ -727,7 +730,12 @@ const ViewerContent = memo(function ({
   const presentedArtifactKey = useGraphicsSelector((state) => state.context.artifactKey);
   const presentedSourceFile = useGraphicsSelector((state) => state.context.artifactSourceFile);
   const presentedKey = useGraphicsSelector((state) => state.context.gltfPresentation.presentedKey);
-  const gltfPresentation = useGraphicsSelector((state) => state.context.gltfPresentation);
+  // Only the settled key (a primitive): selecting the whole presentation object re-rendered the viewer on every
+  // graphics transition, which the render-count test forbids.
+  const settledPresentedKey = useGraphicsSelector((state) => {
+    const { phase, requestedRevision, presentedRevision, presentedKey: key } = state.context.gltfPresentation;
+    return phase === 'presented' && requestedRevision === presentedRevision ? key : undefined;
+  });
   const manualProjectionReady =
     profile === 'editor' &&
     kernelId === 'smlib' &&
@@ -786,9 +794,7 @@ const ViewerContent = memo(function ({
     rendering.evaluationId === evaluation.id &&
     rendering.hash === presentedArtifactKey &&
     presentedSourceFile === entryPath &&
-    gltfPresentation.phase === 'presented' &&
-    gltfPresentation.requestedRevision === gltfPresentation.presentedRevision &&
-    gltfPresentation.presentedKey === rendering.hash &&
+    settledPresentedKey === rendering.hash &&
     matchesManualSidecarRevision(manualEdits.contentDigest, rendering.sourceRevision, entryPath);
   const faceTool = useManualFaceTool({
     edits: manualEdits,
