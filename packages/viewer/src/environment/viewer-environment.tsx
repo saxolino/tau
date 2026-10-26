@@ -67,6 +67,124 @@ export type ViewerLabels = {
   readonly lockGridSize: (size: string) => string;
   /** The grid menu's hint. */
   readonly gridZoomHint: string;
+  /** The words of the measuring row and its list. */
+  readonly measurement: MeasurementLabels;
+  /** The words of the view settings menu. */
+  readonly settings: SettingsLabels;
+};
+
+/**
+ * The words of the viewer settings menu (English by default).
+ *
+ * @public
+ */
+export type SettingsLabels = {
+  readonly model: string;
+  readonly surfaces: string;
+  readonly lines: string;
+  readonly matcap: string;
+  readonly matcapInfo: string;
+  readonly lightingActive: string;
+  readonly lightingInactive: string;
+  readonly postProcessing: string;
+  readonly postProcessingInfo: string;
+  readonly occlusionActive: string;
+  readonly occlusionInactive: string;
+  readonly viewport: string;
+  readonly gizmo: string;
+  readonly grid: string;
+  readonly axes: string;
+  readonly upDirection: string;
+  readonly upAria: (axis: string) => string;
+  readonly orthographic: string;
+  readonly fieldOfView: string;
+  readonly fieldOfViewAria: string;
+  readonly fieldOfViewDrag: string;
+  readonly fieldOfViewKeys: string;
+  readonly rendering: string;
+  readonly renderTimeout: string;
+  readonly timeoutInfo: string;
+  readonly timeoutDisabled: string;
+  readonly kernelSettings: string;
+  readonly kernelDefaults: string;
+  readonly kernelChanged: (count: number) => string;
+  readonly kernelReset: string;
+  readonly kernelPreset: string;
+  readonly kernelCustom: string;
+  readonly kernelModeOf: (label: string) => string;
+  readonly kernelPresetOf: (label: string) => string;
+  readonly seconds: (count: number) => string;
+  readonly minutes: (count: number) => string;
+};
+
+/**
+ * The words of the Measure tool, so an embedder can show them in its own language (English by default).
+ *
+ * @public
+ */
+export type MeasurementLabels = {
+  readonly operations: Readonly<
+    Record<
+      | 'point-distance'
+      | 'minimum-distance'
+      | 'center-distance'
+      | 'plane-spacing'
+      | 'edge-length'
+      | 'radius'
+      | 'diameter'
+      | 'angle'
+      | 'extent-x'
+      | 'extent-y'
+      | 'extent-z',
+      string
+    >
+  >;
+  readonly qualities: Readonly<Record<'mesh' | 'fitted' | 'cad' | 'snapshot', string>>;
+  readonly list: string;
+  readonly resolving: string;
+  readonly unavailable: string;
+  readonly outOfDate: string;
+  readonly pending: string;
+  readonly rootFrame: string;
+  readonly featureFrame: string;
+  readonly evidenceFor: (label: string) => string;
+  readonly noEvidence: string;
+  readonly summary: (operation: string, label: string, isOutOfDate: boolean) => string;
+  readonly pin: (label: string) => string;
+  readonly copyFull: (label: string) => string;
+  readonly remove: (label: string) => string;
+  readonly chooseHint: string;
+  readonly clickTwoPoints: string;
+  readonly count: (count: number) => string;
+  readonly targets: (mode: string, filter: string) => string;
+  readonly modeAuto: string;
+  readonly modePoints: string;
+  readonly filterAll: string;
+  readonly filters: Readonly<Record<'point' | 'edge' | 'face' | 'circle' | 'body', string>>;
+  readonly targetsName: string;
+  readonly mode: string;
+  readonly modeName: string;
+  readonly snapOn: string;
+  readonly snapOff: string;
+  readonly snapTurnOff: string;
+  readonly snapTurnOn: string;
+  readonly filter: string;
+  readonly filterName: string;
+  readonly operation: string;
+  readonly operationName: string;
+  readonly frame: string;
+  readonly frameName: string;
+  readonly frameRoot: string;
+  readonly frameLocal: string;
+  readonly chooseTarget: string;
+  readonly selectTarget: string;
+  readonly loadMore: string;
+  readonly lock: string;
+  readonly unlock: string;
+  readonly useTarget: string;
+  readonly clearAll: string;
+  readonly locked: string;
+  readonly previewName: string;
 };
 
 /**
@@ -97,6 +215,106 @@ export const defaultViewerLabels: ViewerLabels = {
   grid: 'Grid',
   lockGridSize: (size) => `Lock Grid Size (${size})`,
   gridZoomHint: 'Adjust grid size by changing zoom level',
+  settings: {
+    model: 'Model',
+    surfaces: 'Surfaces',
+    lines: 'Lines',
+    matcap: 'Matcap',
+    matcapInfo:
+      'A material that gives models a consistent appearance independent of scene lighting. Rendering performance is improved with this enabled.',
+    lightingActive: 'Lighting effects are active',
+    lightingInactive: 'Lighting effects are inactive',
+    postProcessing: 'Post-processing',
+    postProcessingInfo: 'Enables screen-space ambient occlusion for more realistic depth and contact shadows.',
+    occlusionActive: 'Ambient occlusion is active',
+    occlusionInactive: 'Ambient occlusion is inactive',
+    viewport: 'Viewport',
+    gizmo: 'Gizmo',
+    grid: 'Grid',
+    axes: 'Axes',
+    upDirection: 'Up Direction',
+    upAria: (axis) => `${axis}-up`,
+    orthographic: 'Orthographic',
+    fieldOfView: 'Field of view',
+    fieldOfViewAria: 'Field of view, 0° is orthographic',
+    fieldOfViewDrag: 'Drag for field of view · 0° is orthographic',
+    fieldOfViewKeys: 'Click or Enter to type · ←→ step 1° · Shift 5° · P toggles orthographic',
+    rendering: 'Rendering',
+    renderTimeout: 'Timeout',
+    timeoutInfo: 'Maximum time to wait for CAD rendering before timing out. Set to "Disabled" to turn off timeout.',
+    timeoutDisabled: 'Disabled',
+    kernelSettings: 'Kernel settings',
+    kernelDefaults: 'Using kernel defaults',
+    kernelChanged: (count) => `${count} changed from ${count === 1 ? 'its default' : 'defaults'}`,
+    kernelReset: 'Reset to defaults',
+    kernelPreset: 'Preset',
+    kernelCustom: 'Custom',
+    kernelModeOf: (label) => `${label} mode`,
+    kernelPresetOf: (label) => `${label} preset`,
+    seconds: (count) => `${count}s`,
+    minutes: (count) => `${count} min`,
+  },
+  measurement: {
+    operations: {
+      'point-distance': 'Point distance',
+      'minimum-distance': 'Minimum distance',
+      'center-distance': 'Center distance',
+      'plane-spacing': 'Plane spacing',
+      'edge-length': 'Edge length',
+      radius: 'Radius',
+      diameter: 'Diameter',
+      angle: 'Angle',
+      'extent-x': 'X extent',
+      'extent-y': 'Y extent',
+      'extent-z': 'Z extent',
+    },
+    qualities: { mesh: 'Mesh', fitted: 'Fitted', cad: 'CAD geometry', snapshot: 'Snapshot' },
+    list: 'Measurements',
+    resolving: 'Resolving distance',
+    unavailable: 'Distance unavailable',
+    outOfDate: 'Out of date',
+    pending: 'Pending',
+    rootFrame: 'Root frame',
+    featureFrame: 'Selected feature frame',
+    evidenceFor: (label) => `Measurement source and accuracy for ${label}`,
+    noEvidence: 'Source accuracy information is unavailable.',
+    summary: (operation, label, isOutOfDate) => `${operation}: ${label}${isOutOfDate ? ', out of date' : ''}`,
+    pin: (label) => `Pin ${label}`,
+    copyFull: (label) => `Copy full precision for ${label}`,
+    remove: (label) => `Remove ${label}`,
+    chooseHint: 'Choose a feature or two points',
+    clickTwoPoints: 'Click two points',
+    count: (count) => `${count} ${count === 1 ? 'measurement' : 'measurements'}`,
+    targets: (mode, filter) => `Targets: ${mode} · ${filter}`,
+    modeAuto: 'Auto',
+    modePoints: 'Points',
+    filterAll: 'All',
+    filters: { point: 'Points', edge: 'Edges', face: 'Faces', circle: 'Circles', body: 'Bodies' },
+    targetsName: 'Measurement targets',
+    mode: 'Mode',
+    modeName: 'Measurement mode',
+    snapOn: 'Snap on',
+    snapOff: 'Snap off',
+    snapTurnOff: 'Turn snapping off',
+    snapTurnOn: 'Turn snapping on',
+    filter: 'Filter',
+    filterName: 'Feature filter',
+    operation: 'Operation',
+    operationName: 'Measurement operation',
+    frame: 'Frame',
+    frameName: 'Measurement frame',
+    frameRoot: 'Root',
+    frameLocal: 'Selected feature local',
+    chooseTarget: 'Choose target',
+    selectTarget: 'Select a visible target',
+    loadMore: 'Load more targets',
+    lock: 'Lock target',
+    unlock: 'Unlock target',
+    useTarget: 'Use target',
+    clearAll: 'Clear all',
+    locked: 'Locked: ',
+    previewName: 'Live measurement preview',
+  },
 };
 
 /**

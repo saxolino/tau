@@ -45,11 +45,11 @@ describe('ConnectGithubGistRoute', () => {
     mocks.status.mockResolvedValue('connected');
   });
 
-  it('should name the Tau account and start the grant only from the button', async () => {
+  it('should name the SinopiaCAD account and start the grant only from the button', async () => {
     renderAt('/connect/github-gist');
 
     expect(screen.getByText('ada@example.com')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Use a different Tau account' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: 'Use a different SinopiaCAD account' })).toHaveAttribute(
       'href',
       '/auth/sign-out?redirectTo=%2Fconnect%2Fgithub-gist',
     );
@@ -63,12 +63,12 @@ describe('ConnectGithubGistRoute', () => {
     });
   });
 
-  it('should confirm a verified return and send the person back to Tau', async () => {
+  it('should confirm a verified return and send the person back to SinopiaCAD', async () => {
     renderAt('/connect/github-gist?shareAuth=github-gist');
 
     expect(screen.getByRole('status')).toHaveTextContent('Checking Gist access');
     expect(await screen.findByText('Gist access granted')).toBeVisible();
-    expect(screen.getByText('You can return to Tau. Nothing has been published.')).toBeVisible();
+    expect(screen.getByText('You can return to SinopiaCAD. Nothing has been published.')).toBeVisible();
     expect(screen.queryByRole('button', { name: 'Allow Gist access' })).not.toBeInTheDocument();
   });
 
@@ -149,7 +149,7 @@ describe('ConnectGithubGistRoute', () => {
     mocks.session = session;
     renderAt('/connect/github-gist');
 
-    expect(screen.getByText('Checking your Tau account')).toBeInTheDocument();
+    expect(screen.getByText('Checking your SinopiaCAD account')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Allow Gist access' })).not.toBeInTheDocument();
   });
 });

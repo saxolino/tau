@@ -1280,7 +1280,7 @@ export const chatRunMachine = setup({
                     code: unreadable,
                     message:
                       unreadable === 'RUN_UNREADABLE'
-                        ? `A newer version of Tau wrote part of chat ${context.chatId}. Update Tau to continue it.`
+                        ? `A newer version of SinopiaCAD wrote part of chat ${context.chatId}. Update SinopiaCAD to continue it.`
                         : `Chat ${context.chatId}'s history cannot be replayed; start a new chat.`,
                   }),
                 });

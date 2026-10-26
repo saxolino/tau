@@ -517,7 +517,7 @@ function useGithubGistExtension(
         {browserConsent ? (
           <div role='status' className={featureCalloutClassName}>
             {browserConsent === 'waiting'
-              ? 'Finish in your browser. Tau continues here once GitHub grants Gist access.'
+              ? 'Finish in your browser. SinopiaCAD continues here once GitHub grants Gist access.'
               : browserConsent === 'cancelled'
                 ? 'Stopped waiting for your browser. Gist access was not changed here.'
                 : 'Gist access did not arrive within 10 minutes. Try again.'}
@@ -526,13 +526,13 @@ function useGithubGistExtension(
         {githubStatus && githubStatus !== 'connected' && browserConsent !== 'waiting' ? (
           <div className={featureCalloutClassName}>
             {githubStatus === 'disabled'
-              ? 'Gist sharing is off in Tau. Enable it in Security settings to share again.'
+              ? 'Gist sharing is off in SinopiaCAD. Enable it in Security settings to share again.'
               : githubStatus === 'reconnect-required'
                 ? 'Reconnect GitHub to verify access before sharing.'
                 : githubStatus === 'signed-out'
-                  ? 'Sign in to Tau before connecting GitHub.'
+                  ? 'Sign in to SinopiaCAD before connecting GitHub.'
                   : githubStatus === 'permission-required'
-                    ? 'GitHub is connected, but Tau needs Gist access before it can publish.'
+                    ? 'GitHub is connected, but SinopiaCAD needs Gist access before it can publish.'
                     : 'Connect GitHub to create a Gist.'}
           </div>
         ) : null}
@@ -622,10 +622,10 @@ const usePortableShareMethods = (
         id: 'direct',
         label: labelOf('direct'),
         icon: DirectIcon,
-        description: 'Create a self-contained link that works without a Tau account or storage.',
+        description: 'Create a self-contained link that works without a SinopiaCAD account or storage.',
         notice: {
           icon: <ShieldCheck className='mt-0.5 size-5 text-primary' aria-hidden />,
-          title: 'No upload through Tau',
+          title: 'No upload through SinopiaCAD',
           text: 'The compressed project stays in the URL. Anyone with the link can open it.',
         },
         encryption,
@@ -642,7 +642,7 @@ const usePortableShareMethods = (
         notice: {
           icon: <SvgIcon id='github' className='mt-0.5 size-5' aria-hidden />,
           title: 'Stored on GitHub',
-          text: 'Tau sends the compressed project to GitHub using your Gist connection.',
+          text: 'SinopiaCAD sends the compressed project to GitHub using your Gist connection.',
         },
         encryption,
         options: [{ id: 'public-gist', label: 'Publish as a public Gist' }],
@@ -883,8 +883,8 @@ function useTauShareBody(options: TauShareOptions): () => React.JSX.Element {
           isDisabled={busy || visibilityMutating}
           description={
             signInRequired
-              ? 'Sign in to persist this project with Tau.'
-              : 'Tau-hosted sharing is unavailable right now.'
+              ? 'Sign in to persist this project with SinopiaCAD.'
+              : 'SinopiaCAD-hosted sharing is unavailable right now.'
           }
         >
           <div className='flex flex-col gap-4'>
@@ -897,7 +897,7 @@ function useTauShareBody(options: TauShareOptions): () => React.JSX.Element {
               )}
             >
               {signInRequired
-                ? 'A Tau account keeps this hosted share available over time.'
+                ? 'A SinopiaCAD account keeps this hosted share available over time.'
                 : 'Check your connection and try again.'}
             </div>
             <div className='flex justify-end'>

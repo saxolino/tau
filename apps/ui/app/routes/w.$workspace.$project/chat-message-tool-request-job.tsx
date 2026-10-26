@@ -68,7 +68,7 @@ const iconOf = (job: JobRecord): typeof Printer => {
 
 /** Said when the printer has not confirmed a start for minutes: whether it prints is unknown, so nothing invites a retry. */
 const unconfirmedStart =
-  "The machine hasn't confirmed the start. Check the machine; Tau updates this when the machine reports the run.";
+  "The machine hasn't confirmed the start. Check the machine; SinopiaCAD updates this when the machine reports the run.";
 
 /**
  * Why a job settled as it did, in the provider's own words, as the agent's

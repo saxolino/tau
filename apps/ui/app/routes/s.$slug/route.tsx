@@ -296,7 +296,7 @@ export const PortableShareSurface = (): React.JSX.Element => {
         <div className='max-w-md rounded-xl border bg-card p-6 text-center'>
           <h1 className='text-lg font-semibold'>GitHub Gist unpublished</h1>
           <p className='mt-2 text-sm text-muted-foreground'>
-            This Tau share and its GitHub Gist link no longer resolve.
+            This SinopiaCAD share and its GitHub Gist link no longer resolve.
           </p>
         </div>
       </main>

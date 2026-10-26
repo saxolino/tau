@@ -80,12 +80,16 @@ describe('GridSizeIndicator', () => {
     await user.click(screen.getByRole('button', { name: 'Grid 50 mm, units and grid' }));
 
     expect(await screen.findByRole('menu')).toBeVisible();
-    expect(screen.getByRole('menuitemradio', { name: /^Millimeter/ })).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByRole('menuitemradio', { name: /^Millimetri/ })).toHaveAttribute('aria-checked', 'true');
     expect(screen.getByRole('menuitem', { name: 'Lock Grid Size (50 mm)' })).toBeVisible();
 
-    await user.click(screen.getByRole('menuitemradio', { name: /^Centimeter/ }));
+    // SinopiaCAD works in millimetres only: the other units are not offered.
+    expect(screen.queryByRole('menuitemradio', { name: /^Centimeter|^Inch|^Foot|^Yard/ })).toBeNull();
+    expect(screen.getAllByRole('menuitemradio')).toHaveLength(1);
 
-    expect(mocks.graphicsSend).toHaveBeenLastCalledWith({ type: 'setGridUnit', payload: { unit: 'cm' } });
+    await user.click(screen.getByRole('menuitemradio', { name: /^Millimetri/ }));
+
+    expect(mocks.graphicsSend).toHaveBeenLastCalledWith({ type: 'setGridUnit', payload: { unit: 'mm' } });
     expect(screen.getByRole('menu')).toBeVisible();
   });
 

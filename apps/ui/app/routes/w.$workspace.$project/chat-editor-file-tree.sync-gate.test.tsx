@@ -134,7 +134,7 @@ describe('the Files tree while the open pull is running', () => {
 
     renderTree();
 
-    expect(screen.getByRole('region', { name: 'Connecting to Tau Cloud' })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Connecting to SinopiaCAD Cloud' })).toBeInTheDocument();
     expect(screen.queryByText('No files available')).not.toBeInTheDocument();
   });
 
@@ -145,7 +145,7 @@ describe('the Files tree while the open pull is running', () => {
     renderTree();
 
     expect(screen.getByRole('treeitem', { name: /bracket\.scad/u })).toBeInTheDocument();
-    expect(screen.queryByRole('region', { name: 'Connecting to Tau Cloud' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Connecting to SinopiaCAD Cloud' })).not.toBeInTheDocument();
   });
 
   it('should keep waiting after checking expires while the first download remains pending', () => {

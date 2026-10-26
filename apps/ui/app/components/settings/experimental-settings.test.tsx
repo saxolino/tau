@@ -23,7 +23,7 @@ describe('ExperimentalSettings', () => {
   it('should render only the exposed feature flags from the registry', () => {
     render(<ExperimentalSettings />);
 
-    expect(screen.getByText('Tau Debug')).toBeInTheDocument();
+    expect(screen.getByText('SinopiaCAD Debug')).toBeInTheDocument();
     for (const hidden of [
       'Marketing Landing',
       'Machines',

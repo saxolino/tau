@@ -51,6 +51,7 @@ export const shellMessages = defineMessages({
     projects: {
       recent: 'Progetti recenti',
       live: '{count} attivi',
+      liveOne: '{count} attivo',
       moreActionsForProjects: 'Altre azioni per i progetti',
       closeIdleOne: 'Chiudi {count} progetto inattivo',
       closeIdleOther: 'Chiudi {count} progetti inattivi',
@@ -236,6 +237,7 @@ export const shellMessages = defineMessages({
     projects: {
       recent: 'Recent projects',
       live: '{count} live',
+      liveOne: '{count} live',
       moreActionsForProjects: 'More actions for projects',
       closeIdleOne: 'Close {count} idle project',
       closeIdleOther: 'Close {count} idle projects',

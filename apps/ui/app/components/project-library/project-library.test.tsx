@@ -260,7 +260,7 @@ describe('ProjectLibrary', () => {
   });
 
   // ── D20: one list, local and Tau Cloud ──────────────────────────────────────
-  describe('one list with Tau Cloud (D20)', () => {
+  describe('one list with SinopiaCAD Cloud (D20)', () => {
     const renderLibrary = (): void => {
       render(
         <TestRouter>
@@ -274,8 +274,8 @@ describe('ProjectLibrary', () => {
     it('should preserve local projects while reporting a failed cloud catalog', () => {
       cloudListing.isFailed = true;
       renderLibrary();
-      expect(screen.getByRole('alert')).toHaveTextContent('Tau Cloud projects could not be loaded');
-      expect(screen.getByRole('button', { name: 'Retry Tau Cloud' })).toBeEnabled();
+      expect(screen.getByRole('alert')).toHaveTextContent('SinopiaCAD Cloud projects could not be loaded');
+      expect(screen.getByRole('button', { name: 'Retry SinopiaCAD Cloud' })).toBeEnabled();
       expect(screen.getByRole('link', { name: 'Open Gearbox Alpha' })).toBeInTheDocument();
     });
 
@@ -290,7 +290,7 @@ describe('ProjectLibrary', () => {
         </TestRouter>,
       );
       expect(screen.queryByText('No projects yet')).not.toBeInTheDocument();
-      expect(screen.getByText('Loading Tau Cloud projects…')).toBeInTheDocument();
+      expect(screen.getByText('Loading SinopiaCAD Cloud projects…')).toBeInTheDocument();
       cloudListing.isFetching = false;
       cloudListing.isFailed = true;
       view.rerender(
@@ -304,7 +304,7 @@ describe('ProjectLibrary', () => {
       expect(screen.getByRole('alert')).toBeInTheDocument();
     });
 
-    it('should list local-only, both and Tau-Cloud-only projects in the same grid, with no second section', () => {
+    it('should list local-only, both and SinopiaCAD-Cloud-only projects in the same grid, with no second section', () => {
       cloudListing.current = [
         { id: 'proj_aaaaaaaaaaaaaaaaaaaaa', name: 'Gearbox Alpha', role: 'owner' },
         { id: 'proj_ddddddddddddddddddddd', name: 'Hinge Delta', role: 'owner' },
@@ -315,12 +315,14 @@ describe('ProjectLibrary', () => {
       expect(screen.getByRole('link', { name: 'Open Bracket Beta' })).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'Open Hinge Delta' })).toBeInTheDocument();
       /* Both: the Tau Cloud glyph, once. */
-      expect(screen.getAllByText('Also on Tau Cloud')).toHaveLength(1);
-      expect(screen.queryByText('Backed up on Tau Cloud. This device does not have it yet.')).not.toBeInTheDocument();
-      expect(screen.queryByRole('heading', { name: 'From Tau Cloud' })).toBeNull();
+      expect(screen.getAllByText('Also on SinopiaCAD Cloud')).toHaveLength(1);
+      expect(
+        screen.queryByText('Backed up on SinopiaCAD Cloud. This device does not have it yet.'),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByRole('heading', { name: 'From SinopiaCAD Cloud' })).toBeNull();
     });
 
-    it('should mark each row local, both or Tau Cloud only', () => {
+    it('should mark each row local, both or SinopiaCAD Cloud only', () => {
       mockCookieValues = { [cookieName.projectViewMode]: 'table' };
       cloudListing.current = [
         { id: 'proj_aaaaaaaaaaaaaaaaaaaaa', name: 'Gearbox Alpha', role: 'owner' },
@@ -328,15 +330,15 @@ describe('ProjectLibrary', () => {
       ];
       renderLibrary();
 
-      expect(screen.getByRole('row', { name: /Gearbox Alpha/u })).toHaveTextContent('Also on Tau Cloud');
-      expect(screen.getByRole('row', { name: /Bracket Beta/u })).not.toHaveTextContent('Also on Tau Cloud');
+      expect(screen.getByRole('row', { name: /Gearbox Alpha/u })).toHaveTextContent('Also on SinopiaCAD Cloud');
+      expect(screen.getByRole('row', { name: /Bracket Beta/u })).not.toHaveTextContent('Also on SinopiaCAD Cloud');
       const cloudOnly = screen.getByRole('row', { name: /Hinge Delta/u });
-      expect(cloudOnly).toHaveTextContent('Tau Cloud');
+      expect(cloudOnly).toHaveTextContent('SinopiaCAD Cloud');
       expect(cloudOnly).not.toHaveTextContent('Backed up on');
       expect(within(cloudOnly).getByRole('button', { name: 'Open Hinge Delta' })).toBeInTheDocument();
     });
 
-    it('should never offer a project in this device’s Trash as Tau Cloud’s alone', () => {
+    it('should never offer a project in this device’s Trash as SinopiaCAD Cloud’s alone', () => {
       mockTrashedProjects = [
         { ...makeProject('proj_ddddddddddddddddddddd', 'Hinge Delta', '/hinge-delta'), deletedAt: 5 },
       ];
@@ -347,7 +349,7 @@ describe('ProjectLibrary', () => {
       expect(screen.queryByText('Hinge Delta')).toBeNull();
     });
 
-    it('should open a Tau-Cloud-only project by cloning it under the remote’s id', async () => {
+    it('should open a SinopiaCAD-Cloud-only project by cloning it under the remote’s id', async () => {
       cloudListing.current = [{ id: 'proj_ddddddddddddddddddddd', name: 'Hinge Delta', role: 'owner' }];
       renderLibrary();
 
@@ -387,7 +389,7 @@ describe('ProjectLibrary', () => {
       expect(await screen.findByRole('button', { name: 'Open Hinge Delta' })).toHaveAttribute('aria-busy', 'false');
     });
 
-    it('should say whose a shared Tau-Cloud-only project is before it is opened', () => {
+    it('should say whose a shared SinopiaCAD-Cloud-only project is before it is opened', () => {
       cloudListing.current = [{ id: 'proj_ddddddddddddddddddddd', name: 'Reference Jig', role: 'read' }];
       renderLibrary();
 
@@ -400,7 +402,7 @@ describe('ProjectLibrary', () => {
       expect(card).not.toHaveTextContent('This device does not have it yet.');
     });
 
-    it('should show a Tau-Cloud-only project instead of the empty state when this device has none', () => {
+    it('should show a SinopiaCAD-Cloud-only project instead of the empty state when this device has none', () => {
       mockUseProjectsResult = { ...createUseProjectsResult(), projects: [] };
       cloudListing.current = [{ id: 'proj_ddddddddddddddddddddd', name: 'Hinge Delta', role: 'owner' }];
       renderLibrary();
@@ -409,7 +411,7 @@ describe('ProjectLibrary', () => {
       expect(screen.queryByText('No projects yet')).toBeNull();
     });
 
-    it('should leave Tau-Cloud-only projects out of the table’s selection', () => {
+    it('should leave SinopiaCAD-Cloud-only projects out of the table’s selection', () => {
       mockCookieValues = { [cookieName.projectViewMode]: 'table' };
       cloudListing.current = [{ id: 'proj_ddddddddddddddddddddd', name: 'Hinge Delta', role: 'owner' }];
       renderLibrary();
@@ -445,7 +447,7 @@ describe('ProjectLibrary', () => {
 
       await waitFor(() => {
         expect(deleteProject).toHaveBeenCalledTimes(2);
-        expect(mockToastWarning).toHaveBeenCalledWith('Moved 1 project to Trash; 1 failed');
+        expect(mockToastWarning).toHaveBeenCalledWith('Moved to Trash: 1; failed: 1');
       });
       expect(mockToastSuccess).not.toHaveBeenCalled();
     });
@@ -840,7 +842,9 @@ describe('ProjectLibrary', () => {
       ),
     ).toBeInTheDocument();
     expect(
-      screen.getByText('$schema "https://tau.new/schemas/tau-schema-v2.json" is not supported by this version of Tau.'),
+      screen.getByText(
+        '$schema "https://tau.new/schemas/tau-schema-v2.json" is not supported by this version of SinopiaCAD.',
+      ),
     ).toBeInTheDocument();
   });
 

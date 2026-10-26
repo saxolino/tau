@@ -532,7 +532,7 @@ describe('machine channel', () => {
     try {
       await expect(client.ready).rejects.toMatchObject({
         code: 'MACHINE_CHANNEL_VERSION_MISMATCH',
-        message: 'This Tau and the machines host it reached are different versions. Update Tau.',
+        message: 'This SinopiaCAD and the machines host it reached are different versions. Update SinopiaCAD.',
       });
     } finally {
       client.close();

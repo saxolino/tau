@@ -158,7 +158,7 @@ export function BrowserPane({ tabId }: { readonly tabId?: string } = {}): React.
   if (!bridge) {
     return (
       <div className='p-6 text-sm'>
-        <h2 className='font-medium'>Browse in Tau desktop</h2>
+        <h2 className='font-medium'>Browse in SinopiaCAD desktop</h2>
         <p className='mt-2 text-muted-foreground'>The desktop app lets you browse the web alongside your project.</p>
       </div>
     );

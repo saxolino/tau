@@ -44,14 +44,14 @@ export default function GithubConnectionCompleteRoute(): React.JSX.Element {
       return {
         title: 'GitHub connection failed',
         detail: desktopPolling
-          ? `${githubErrorMessage({ code: callbackError })} Return to the Tau desktop app to try again.`
+          ? `${githubErrorMessage({ code: callbackError })} Return to the SinopiaCAD desktop app to try again.`
           : githubErrorMessage({ code: callbackError }),
         failed: true,
         code: callbackError,
       };
     }
     if (desktopPolling) {
-      return { title: 'GitHub connected', detail: 'Return to the Tau desktop app to continue.', failed: false };
+      return { title: 'GitHub connected', detail: 'Return to the SinopiaCAD desktop app to continue.', failed: false };
     }
     if (attemptId === null && !setupReturn) {
       return { title: 'GitHub connection failed', detail: 'This GitHub return is incomplete.', failed: true };
@@ -74,7 +74,7 @@ export default function GithubConnectionCompleteRoute(): React.JSX.Element {
         // oxlint-disable-next-line react/set-state-in-effect -- the remembered return exists only in this tab's storage.
         setOutcome({
           title: 'GitHub access updated',
-          detail: 'Return to Tau and refresh the repository list to see the change.',
+          detail: 'Return to SinopiaCAD and refresh the repository list to see the change.',
           failed: false,
         });
       } else {
@@ -128,7 +128,7 @@ export default function GithubConnectionCompleteRoute(): React.JSX.Element {
         <div>
           <PageHeader title={outcome?.title ?? 'Connecting GitHub…'} />
           <p className='mt-2 text-sm text-muted-foreground'>
-            {outcome?.detail ?? 'You will return to Tau automatically.'}
+            {outcome?.detail ?? 'You will return to SinopiaCAD automatically.'}
           </p>
         </div>
         {outcome === undefined || desktopPolling ? undefined : (
@@ -144,7 +144,7 @@ export default function GithubConnectionCompleteRoute(): React.JSX.Element {
               </Button>
             ) : undefined}
             <Button asChild variant='outline'>
-              <Link to={returnTo}>Back to Tau</Link>
+              <Link to={returnTo}>Back to SinopiaCAD</Link>
             </Button>
           </div>
         )}

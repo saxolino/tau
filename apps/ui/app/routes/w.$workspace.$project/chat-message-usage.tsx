@@ -90,7 +90,7 @@ export function ChatMessageUsage({
   const label = [
     `Usage: ${modelLabel}`,
     `${tokens} tokens`,
-    credits === undefined ? undefined : `Tau credits: ${credits}`,
+    credits === undefined ? undefined : `SinopiaCAD credits: ${credits}`,
   ]
     .filter(Boolean)
     .join(', ');

@@ -482,7 +482,9 @@ export function ProjectProvider({
         if (current.kind === 'text') {
           const read = readProjectManifestBytes(current.content);
           if (!read.success || read.issue !== undefined) {
-            throw new Error('tau.json needs repair before Tau can change it. Repair it, or fix it in the editor.');
+            throw new Error(
+              'tau.json needs repair before SinopiaCAD can change it. Repair it, or fix it in the editor.',
+            );
           }
         }
       }

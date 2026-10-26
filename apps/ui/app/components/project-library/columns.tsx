@@ -1,4 +1,6 @@
 import type { ColumnDef } from '@tanstack/react-table';
+import { useTranslation } from '#i18n/translate.js';
+import type { Translate } from '#i18n/translate.js';
 import { ArrowRight } from 'lucide-react';
 import { NavLink, useNavigation } from 'react-router';
 import type { ReactNode } from 'react';
@@ -31,6 +33,7 @@ function ProjectNameCell({
   readonly project: ProjectListItem & { readonly onCloud?: boolean };
   readonly actions: ProjectActions;
 }) {
+  const { t } = useTranslation();
   const thumbnail = useProjectThumbnail(project.id);
   const thumbnailSource = thumbnail.url;
   return (
@@ -59,7 +62,7 @@ function ProjectNameCell({
                 thumbnail.refresh();
               }}
             >
-              Retry thumbnail
+              {t('library.retryThumbnail')}
             </Button>
           ) : null}
           <InlineTextEditor
@@ -80,6 +83,7 @@ function ProjectNameCell({
 }
 
 function ProjectOpenButton({ project }: { readonly project: ProjectListItem }): ReactNode {
+  const { t } = useTranslation();
   const navigation = useNavigation();
   const projectUrl = projectUrlOr(project.slugs);
   const isOpening = navigation.location?.pathname === projectUrl;
@@ -94,7 +98,7 @@ function ProjectOpenButton({ project }: { readonly project: ProjectListItem }): 
           }
         }}
       >
-        {isOpening ? 'Opening…' : 'Open'}
+        {isOpening ? t('library.opening') : t('library.open')}
         {isOpening ? <Loader /> : <ArrowRight />}
       </NavLink>
     </Button>
@@ -105,6 +109,7 @@ function ProjectOpenButton({ project }: { readonly project: ProjectListItem }): 
 export const createColumns = (
   actions: ProjectActions,
   onOpenCloudProject: (entry: CloudProject) => Promise<void>,
+  t: Translate,
 ): Array<ColumnDef<LibraryRow>> => [
   {
     id: 'select',
@@ -112,7 +117,7 @@ export const createColumns = (
       <div className='pl-2'>
         <Checkbox
           checked={table.getIsAllPageRowsSelected() || (table.getIsSomePageRowsSelected() && 'indeterminate')}
-          aria-label='Select all'
+          aria-label={t('library.selectAll')}
           onCheckedChange={(value) => {
             table.toggleAllPageRowsSelected(Boolean(value));
           }}
@@ -124,7 +129,7 @@ export const createColumns = (
         <div className='pl-2'>
           <Checkbox
             checked={row.getIsSelected()}
-            aria-label='Select row'
+            aria-label={t('library.selectRow')}
             onCheckedChange={(value) => {
               row.toggleSelected(Boolean(value));
             }}
@@ -135,7 +140,7 @@ export const createColumns = (
   },
   {
     accessorKey: 'name',
-    header: ({ column }) => <DataTableColumnHeader column={column} title='Name' />,
+    header: ({ column }) => <DataTableColumnHeader column={column} title={t('library.columnName')} />,
     cell({ row }): ReactNode {
       const { original } = row;
       return isCloudOnly(original) ? (
@@ -149,7 +154,7 @@ export const createColumns = (
   },
   {
     accessorKey: 'description',
-    header: ({ column }) => <DataTableColumnHeader column={column} title='Description' />,
+    header: ({ column }) => <DataTableColumnHeader column={column} title={t('library.columnDescription')} />,
     cell({ row }): ReactNode {
       return <div className='max-w-xs truncate'>{row.original.description}</div>;
     },
@@ -157,7 +162,7 @@ export const createColumns = (
   },
   {
     id: 'entryPath',
-    header: ({ column }) => <DataTableColumnHeader column={column} title='Entry File' />,
+    header: ({ column }) => <DataTableColumnHeader column={column} title={t('library.columnEntry')} />,
     cell({ row }): ReactNode {
       const { original } = row;
       return isCloudOnly(original) ? undefined : (
@@ -169,7 +174,7 @@ export const createColumns = (
   },
   {
     accessorKey: 'lastActivityAt',
-    header: ({ column }) => <DataTableColumnHeader column={column} title='Last Updated' />,
+    header: ({ column }) => <DataTableColumnHeader column={column} title={t('library.columnUpdated')} />,
     cell({ row }): ReactNode {
       return <div>{formatRelativeTime(row.original.lastActivityAt)}</div>;
     },

@@ -155,7 +155,7 @@ describe('piece measures interactions', () => {
     };
     setup();
     await userEvent.click(screen.getByRole('button', { name: /^Stelo/ }));
-    await userEvent.click(screen.getByRole('button', { name: 'Reset Spessore' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Ripristina Spessore' }));
     expect(source.replaceValues).toHaveBeenCalledWith('main.ts', manifest, { marquise: { lunghezza: 12 } });
   });
   it('should mark a stored value with a lock even if equal to the model default', async () => {

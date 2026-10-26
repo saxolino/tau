@@ -9,7 +9,7 @@ import { authClient } from '#lib/auth-client.js';
 import type { Handle } from '#types/matches.types.js';
 
 export const handle: Handle = { enablePageWrapper: false };
-export const meta = (): Array<{ title: string }> => [{ title: 'Authorize Tau CLI — SinopiaCAD' }];
+export const meta = (): Array<{ title: string }> => [{ title: 'Authorize SinopiaCAD CLI — SinopiaCAD' }];
 
 /** Explicit approval binds the code shown by the terminal to the signed-in account. */
 export default function AuthCliRoute(): React.JSX.Element {
@@ -53,7 +53,7 @@ export default function AuthCliRoute(): React.JSX.Element {
     <div className='flex min-h-svh items-center justify-center p-6'>
       <Card className='w-full max-w-sm'>
         <CardHeader>
-          <CardTitle>Authorize Tau CLI</CardTitle>
+          <CardTitle>Authorize SinopiaCAD CLI</CardTitle>
           <CardDescription>
             Only approve if you started sign-in in your own terminal and the codes match.
           </CardDescription>
@@ -74,8 +74,8 @@ export default function AuthCliRoute(): React.JSX.Element {
               </p>
               <p>Account: {session?.user.email ?? 'Signing in…'}</p>
               <p className='text-sm text-muted-foreground'>
-                Tau CLI will be able to access your Tau Cloud account, including your projects, backups, and paid
-                services. It receives its own session, which you can revoke with tau auth logout.
+                SinopiaCAD CLI will be able to access your SinopiaCAD Cloud account, including your projects, backups,
+                and paid services. It receives its own session, which you can revoke with tau auth logout.
               </p>
               {request.data && request.data.status !== 'pending' ? (
                 <p role='status'>This request has already been processed. Return to your terminal.</p>

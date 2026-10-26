@@ -62,7 +62,7 @@ export function GithubPermissions(): React.JSX.Element {
                   {capability.data.status === 'reconnect-required'
                     ? 'Reconnect GitHub before using Gists.'
                     : granted
-                      ? `Gist access granted · ${enabled ? 'Sharing enabled in Tau' : 'Sharing off in Tau'}`
+                      ? `Gist access granted · ${enabled ? 'Sharing enabled in SinopiaCAD' : 'Sharing off in SinopiaCAD'}`
                       : 'Gist access not granted. You’ll be asked when you first share a Gist.'}
                 </p>
               )}
@@ -129,8 +129,8 @@ export function GithubPermissions(): React.JSX.Element {
                   </p>
                 ) : (
                   <p className='text-xs text-muted-foreground'>
-                    Choose which repositories Tau can access. Enable writes for each repository before pushing. This
-                    connection is separate from sign-in and Gists.
+                    Choose which repositories SinopiaCAD can access. Enable writes for each repository before pushing.
+                    This connection is separate from sign-in and Gists.
                   </p>
                 )}
                 <Button

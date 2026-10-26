@@ -203,8 +203,8 @@ const Connection = memo(function Connection({
           <AlertDialogHeader>
             <AlertDialogTitle>Disconnect repositories for @{connection.login}?</AlertDialogTitle>
             <AlertDialogDescription>
-              Repository access and write approvals in Tau are removed. Local projects, GitHub sign-in and Gists remain.
-              This does not uninstall the App on GitHub.
+              Repository access and write approvals in SinopiaCAD are removed. Local projects, GitHub sign-in and Gists
+              remain. This does not uninstall the App on GitHub.
             </AlertDialogDescription>
           </AlertDialogHeader>
           {error ? (
@@ -322,7 +322,8 @@ export function GithubRepositorySettings(): React.JSX.Element {
         <div>
           <h2 className='text-sm font-semibold'>GitHub repositories</h2>
           <p className='mt-1 text-xs text-muted-foreground'>
-            Choose “Only select repositories” on GitHub. Writes start off in Tau and each push needs a separate action.
+            Choose “Only select repositories” on GitHub. Writes start off in SinopiaCAD and each push needs a separate
+            action.
           </p>
         </div>
         <div className='flex flex-wrap gap-2'>

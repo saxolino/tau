@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { useNavigate } from 'react-router';
 import { useSinopiaReturn, useSinopiaSession } from '#hooks/use-sinopia-session.js';
 import { SinopiaAccessRetry } from '#components/auth/sinopia/sinopia-access-retry.js';
+import { SinopiaReserved } from '#components/auth/sinopia/sinopia-reserved.js';
 import { SinopiaLogin } from '#components/auth/sinopia/sinopia-login.js';
 import { SinopiaSecondFactor } from '#components/auth/sinopia/sinopia-second-factor.js';
 import { sinopiaSession } from '#lib/sinopia-session.js';
@@ -61,6 +62,9 @@ export function SinopiaSessionGate({
     }
     case 'unverified': {
       return <SinopiaAccessRetry user={session.user} />;
+    }
+    case 'reserved': {
+      return <SinopiaReserved user={session.user} />;
     }
   }
 }

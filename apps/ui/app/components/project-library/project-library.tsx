@@ -1,4 +1,5 @@
 import { useState, useCallback, useMemo, useRef } from 'react';
+import { useTranslation } from '#i18n/translate.js';
 import { z } from 'zod';
 import type { ReactNode } from 'react';
 import {
@@ -185,6 +186,7 @@ function ManifestIssueLines({ issue }: { readonly issue: ProjectDiscoveryIssue }
  * @returns The library.
  */
 export function ProjectLibrary({ headingLevel = 1 }: { readonly headingLevel?: 1 | 2 }): React.JSX.Element {
+  const { t } = useTranslation();
   const [viewMode, setViewMode] = useCookie<'grid' | 'table'>(cookieName.projectViewMode, 'grid');
   /*
    * D1: the Trash is a place, not a menu tick. `/projects?trash=1` is what the
@@ -196,7 +198,7 @@ export function ProjectLibrary({ headingLevel = 1 }: { readonly headingLevel?: 1
   const [permanentDeleteTarget, setPermanentDeleteTarget] = useState<ProjectListItem | undefined>();
   const [repairTarget, setRepairTarget] = useState<WorkspaceBindingRepairGroup | undefined>();
   /* Everything this device holds, the Trash included — one listing under the
-     same query key — so a trashed project is never offered as Tau Cloud's alone. */
+     same query key — so a trashed project is never offered as SinopiaCAD Cloud's alone. */
   const { projects: heldProjects } = useProjects({ includeDeleted: true });
   const {
     projects,
@@ -243,7 +245,7 @@ export function ProjectLibrary({ headingLevel = 1 }: { readonly headingLevel?: 1
       try {
         await openCloudProject(entry);
       } catch (error) {
-        toast.error(`Could not open ${entry.name} from Tau Cloud`, {
+        toast.error(`Could not open ${entry.name} from SinopiaCAD Cloud`, {
           description: error instanceof Error ? error.message : undefined,
         });
       }
@@ -266,18 +268,18 @@ export function ProjectLibrary({ headingLevel = 1 }: { readonly headingLevel?: 1
         const trashed = await deleteProject(project.id);
         if (trashed) {
           if (announce) {
-            toast.success(`Moved ${project.name} to Trash`, {
-              description: 'Its files remain on disk and can be restored from Trash.',
+            toast.success(t('library.trashed', { name: project.name }), {
+              description: t('library.trashedHint'),
             });
           }
           return true;
         }
         if (announce) {
-          toast.error(`Could not move ${project.name} to Trash`);
+          toast.error(t('library.trashFailed', { name: project.name }));
         }
       } catch (error) {
         if (announce) {
-          toast.error(`Could not move ${project.name} to Trash`, {
+          toast.error(t('library.trashFailed', { name: project.name }), {
             description: error instanceof Error ? error.message : undefined,
           });
         }
@@ -372,9 +374,9 @@ export function ProjectLibrary({ headingLevel = 1 }: { readonly headingLevel?: 1
     try {
       await deleteProjectPermanently(project.id);
       setPermanentDeleteTarget(undefined);
-      toast.success(`Permanently deleted ${project.name}`);
+      toast.success(t('library.deletedForever', { name: project.name }));
     } catch (error) {
-      toast.error(`Could not permanently delete ${project.name}`, {
+      toast.error(t('library.deleteFailed', { name: project.name }), {
         description: error instanceof Error ? error.message : undefined,
       });
       console.error('Error permanently deleting project:', error);
@@ -406,16 +408,16 @@ export function ProjectLibrary({ headingLevel = 1 }: { readonly headingLevel?: 1
     async (project: ProjectListItem) => {
       try {
         await duplicateProject(project.id);
-        toast.success(`Duplicated ${project.name}`, {
+        toast.success(t('library.duplicated', { name: project.name }), {
           action: {
-            label: 'Open',
+            label: t('library.open'),
             onClick() {
               void navigate(projectUrlOr(project.slugs));
             },
           },
         });
       } catch (error) {
-        toast.error('Failed to duplicate project');
+        toast.error(t('library.duplicateFailed'));
         console.error('Error in component:', error);
       }
     },
@@ -426,9 +428,9 @@ export function ProjectLibrary({ headingLevel = 1 }: { readonly headingLevel?: 1
     async (project: ProjectListItem): Promise<void> => {
       try {
         await restoreProject(project.id);
-        toast.success(`Restored ${project.name}`);
+        toast.success(t('library.restored', { name: project.name }));
       } catch (error) {
-        toast.error(`Could not restore ${project.name}`);
+        toast.error(t('library.restoreFailed', { name: project.name }));
         console.error('Error restoring project:', error);
       }
     },
@@ -446,9 +448,9 @@ export function ProjectLibrary({ headingLevel = 1 }: { readonly headingLevel?: 1
     async (projectId: string, newName: string) => {
       try {
         await updateName(projectId, newName);
-        toast.success(`Renamed to ${newName}`);
+        toast.success(t('library.renamed', { name: newName }));
       } catch (error) {
-        toast.error('Failed to rename project', {
+        toast.error(t('library.renameFailed'), {
           description: error instanceof Error ? error.message : undefined,
         });
         console.error('Error renaming project:', error);
@@ -469,7 +471,7 @@ export function ProjectLibrary({ headingLevel = 1 }: { readonly headingLevel?: 1
     <div className='flex items-center gap-2'>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button variant='outline' size='icon' aria-label='View mode'>
+          <Button variant='outline' size='icon' aria-label={t('library.viewMode')}>
             {viewMode === 'grid' ? <Grid /> : <TableIcon />}
           </Button>
         </DropdownMenuTrigger>
@@ -480,7 +482,7 @@ export function ProjectLibrary({ headingLevel = 1 }: { readonly headingLevel?: 1
               setViewMode('grid');
             }}
           >
-            Grid
+            {t('library.grid')}
           </DropdownMenuCheckboxItem>
           <DropdownMenuCheckboxItem
             checked={viewMode === 'table'}
@@ -488,21 +490,21 @@ export function ProjectLibrary({ headingLevel = 1 }: { readonly headingLevel?: 1
               setViewMode('table');
             }}
           >
-            Table
+            {t('library.table')}
           </DropdownMenuCheckboxItem>
         </DropdownMenuContent>
       </DropdownMenu>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button variant='outline' size='icon' aria-label='Settings'>
+          <Button variant='outline' size='icon' aria-label={t('library.settings')}>
             <Cog className='size-4' />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align='end'>
-          <DropdownMenuLabel>Settings</DropdownMenuLabel>
+          <DropdownMenuLabel>{t('library.settings')}</DropdownMenuLabel>
           <DropdownMenuSeparator />
           <DropdownMenuCheckboxItem checked={showDeleted} onCheckedChange={handleToggleDeleted}>
-            Show trashed projects
+            {t('library.showTrashed')}
           </DropdownMenuCheckboxItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -512,7 +514,7 @@ export function ProjectLibrary({ headingLevel = 1 }: { readonly headingLevel?: 1
   return (
     <PageContent className='flex flex-col gap-4 pb-4'>
       <PageHeader
-        title='Projects'
+        title={t('library.title')}
         headingLevel={headingLevel}
         className='mb-0'
         action={
@@ -520,7 +522,7 @@ export function ProjectLibrary({ headingLevel = 1 }: { readonly headingLevel?: 1
             <NavLink to='/projects/new'>
               {({ isPending }) => (
                 <>
-                  New project
+                  {t('library.newProject')}
                   {isPending ? <Loader /> : null}
                 </>
               )}
@@ -671,7 +673,7 @@ export function ProjectLibrary({ headingLevel = 1 }: { readonly headingLevel?: 1
 
       {listingError && projects.length > 0 ? (
         <div role='alert' className='flex items-center justify-between gap-3 rounded-md border p-3'>
-          <span className='text-sm'>Projects could not be refreshed.</span>
+          <span className='text-sm'>{t('library.couldNotRefresh')}</span>
           <Button size='sm' variant='outline' onClick={async () => retry()}>
             Retry
           </Button>
@@ -681,7 +683,7 @@ export function ProjectLibrary({ headingLevel = 1 }: { readonly headingLevel?: 1
       {!showDeleted && isCloudFailed && auth === 'authed' ? (
         <div role='alert' className='flex flex-wrap items-center justify-between gap-3 rounded-md border p-4'>
           <span className='text-sm'>
-            Tau Cloud projects could not be loaded. Projects on this device are still available.
+            SinopiaCAD Cloud projects could not be loaded. Projects on this device are still available.
           </span>
           <Button
             variant='outline'
@@ -690,13 +692,13 @@ export function ProjectLibrary({ headingLevel = 1 }: { readonly headingLevel?: 1
               retryCloud();
             }}
           >
-            Retry Tau Cloud
+            Retry SinopiaCAD Cloud
           </Button>
         </div>
       ) : !showDeleted && auth === 'authed' && isCloudFetching ? (
         <div role='status' aria-busy='true' className='flex items-center gap-2 text-sm text-muted-foreground'>
           <Loader className='size-4' />
-          Loading Tau Cloud projects…
+          Loading SinopiaCAD Cloud projects…
         </div>
       ) : null}
       {listingError && projects.length === 0 ? (
@@ -706,8 +708,8 @@ export function ProjectLibrary({ headingLevel = 1 }: { readonly headingLevel?: 1
         >
           <PackageX className='size-8 text-muted-foreground' />
           <div>
-            <div className='font-medium'>Projects could not be loaded</div>
-            <div className='text-sm text-muted-foreground'>Check the connected workspace and try again.</div>
+            <div className='font-medium'>{t('library.couldNotLoad')}</div>
+            <div className='text-sm text-muted-foreground'>{t('library.checkWorkspace')}</div>
           </div>
           <Button variant='outline' onClick={async () => retry()}>
             Retry
@@ -740,7 +742,7 @@ export function ProjectLibrary({ headingLevel = 1 }: { readonly headingLevel?: 1
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>{t('library.cancel')}</AlertDialogCancel>
             <AlertDialogAction onClick={confirmWorkspaceBindingRepair}>
               Repair {repairTarget?.projectCount} {repairTarget?.projectCount === 1 ? 'project' : 'projects'}
             </AlertDialogAction>
@@ -757,21 +759,18 @@ export function ProjectLibrary({ headingLevel = 1 }: { readonly headingLevel?: 1
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete this project permanently?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This removes the exact project directory and its local chats and editor state. This action cannot be
-              undone.
-            </AlertDialogDescription>
+            <AlertDialogTitle>{t('library.deleteTitle')}</AlertDialogTitle>
+            <AlertDialogDescription>{t('library.deleteBody')}</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>{t('library.cancel')}</AlertDialogCancel>
             <AlertDialogAction
               className={buttonVariants({ variant: 'destructive' })}
               onClick={() => {
                 void confirmPermanentDelete();
               }}
             >
-              Delete permanently
+              {t('library.deletePermanently')}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -818,6 +817,7 @@ function UnifiedProjectList({
   isLoading,
 }: UnifiedProjectListProps) {
   'use no memo';
+  const { t } = useTranslation();
 
   const [sort, setSort] = useSearchParameter(searchParameterName.sort, sortParameter);
   const sorting = useMemo<SortingState>(() => {
@@ -833,7 +833,7 @@ function UnifiedProjectList({
   // oxlint-disable-next-line react/incompatible-library -- This component is explicitly opted out because TanStack Table returns mutable functions that cannot be compiler-memoized safely.
   const table = useReactTable({
     data: rows,
-    columns: createColumns(actions, onOpenCloudProject),
+    columns: createColumns(actions, onOpenCloudProject, t),
     /* Stable across the cloud listing arriving, so a selection follows its project. */
     getRowId: (row) => row.id,
     /* A project this device does not hold has nothing here to trash (D20). */
@@ -879,19 +879,23 @@ function UnifiedProjectList({
               <div className='flex flex-col items-center space-y-4 text-center'>
                 <PackageX className='size-16 text-muted-foreground' strokeWidth={1} />
                 <div className='space-y-2'>
-                  <h2 className='text-xl font-semibold'>No projects yet</h2>
-                  <p className='text-sm'>Start by describing what you want to build, or create from code</p>
+                  <h2 className='text-xl font-semibold'>{t('library.emptyTitle')}</h2>
+                  <p className='text-sm'>{t('library.emptyHint')}</p>
                 </div>
               </div>
               <NewProjectChatComposer enableAutoFocus={false} className='shadow-none' />
               <div className='flex items-center justify-center gap-4 text-sm text-muted-foreground'>
                 <div className='h-px flex-1 bg-border' />
-                <span>or</span>
+                <span>{t('library.or')}</span>
                 <div className='h-px flex-1 bg-border' />
               </div>
               <div className='flex justify-center'>
                 <NavLink to='/projects/new' className={buttonVariants({ variant: 'outline' })}>
-                  {({ isPending }) => <>Build from code {isPending ? <Loader /> : <ArrowRight />}</>}
+                  {({ isPending }) => (
+                    <>
+                      {t('library.buildFromCode')} {isPending ? <Loader /> : <ArrowRight />}
+                    </>
+                  )}
                 </NavLink>
               </div>
             </div>
@@ -901,11 +905,19 @@ function UnifiedProjectList({
     );
   }
 
-  const columns = createColumns(actions, onOpenCloudProject);
+  const columns = createColumns(actions, onOpenCloudProject, t);
   return (
     <div className='space-y-4'>
-      <div role='group' aria-label='Project controls' className='flex flex-wrap items-center justify-between gap-2'>
-        <DataTableSearch table={table} placeholder='Search projects…' containerClassName='min-w-40 grow basis-40' />
+      <div
+        role='group'
+        aria-label={t('library.controls')}
+        className='flex flex-wrap items-center justify-between gap-2'
+      >
+        <DataTableSearch
+          table={table}
+          placeholder={t('library.searchPlaceholder')}
+          containerClassName='min-w-40 grow basis-40'
+        />
         <div className='flex flex-wrap items-center gap-2'>
           {/* Add bulk actions when rows are selected */}
           {table.getFilteredSelectedRowModel().rows.length > 0 && (
@@ -918,11 +930,11 @@ function UnifiedProjectList({
       </div>
 
       {isLoading && viewMode === 'table' ? (
-        <div role='status' aria-label='Loading projects' aria-busy='true'>
+        <div role='status' aria-label={t('library.loading')} aria-busy='true'>
           <DataTable table={table} columns={columns} isLoading />
         </div>
       ) : isLoading ? (
-        <div role='status' aria-label='Loading projects' aria-busy='true' className={projectGridClassName}>
+        <div role='status' aria-label={t('library.loading')} aria-busy='true' className={projectGridClassName}>
           {Array.from({ length: 20 }, (_, index) => (
             <Card key={index} className='overflow-hidden pt-0'>
               <Skeleton className='aspect-4/3 w-full rounded-none' />
@@ -942,8 +954,8 @@ function UnifiedProjectList({
         <PanelEmptyState
           className='h-60'
           icon={PackageX}
-          title={isCatalogUnavailable ? 'No matches on this device' : 'No matching projects'}
-          description={isCatalogUnavailable ? 'Tau Cloud projects are not all available yet.' : undefined}
+          title={isCatalogUnavailable ? t('library.noMatchesDevice') : t('library.noMatching')}
+          description={isCatalogUnavailable ? t('library.cloudUnavailable') : undefined}
         >
           <Button
             variant='outline'
@@ -951,7 +963,7 @@ function UnifiedProjectList({
               setGlobalFilter('');
             }}
           >
-            Clear filters
+            {t('library.clearFilters')}
           </Button>
         </PanelEmptyState>
       ) : viewMode === 'table' ? (
@@ -959,7 +971,7 @@ function UnifiedProjectList({
         <DataTable table={table} columns={columns} />
       ) : (
         // Grid View
-        <ul aria-label='Projects' className={projectGridClassName}>
+        <ul aria-label={t('library.title')} className={projectGridClassName}>
           {table.getRowModel().rows.map((row) => {
             const { original } = row;
             return (
@@ -1000,6 +1012,7 @@ export function ProjectLibraryCard({
   isSelected,
   onSelect,
 }: ProjectLibraryCardProps): React.JSX.Element {
+  const { t } = useTranslation();
   const navigation = useNavigation();
   const projectUrl = projectUrlOr(project.slugs);
   const isOpening = navigation.location?.pathname === projectUrl;
@@ -1024,13 +1037,16 @@ export function ProjectLibraryCard({
     <ProjectCard
       to={projectUrl}
       isOpening={isOpening}
-      linkLabel={`${isOpening ? 'Opening…' : 'Open'} ${project.name}`}
+      linkLabel={t('library.openProject', {
+        action: isOpening ? t('library.opening') : t('library.open'),
+        name: project.name,
+      })}
       className={cn('flex flex-col', isSelected && 'ring-3 ring-primary')}
     >
       <div className='absolute top-2 left-2 z-20'>
         <Checkbox
           size='large'
-          aria-label={`Select ${project.name}`}
+          aria-label={t('library.select', { name: project.name })}
           checked={isSelected}
           onCheckedChange={() => onSelect?.()}
         />
@@ -1046,7 +1062,7 @@ export function ProjectLibraryCard({
             thumbnail.refresh();
           }}
         >
-          Retry thumbnail
+          {t('library.retryThumbnail')}
         </Button>
       ) : null}
       <ProjectCardMedia
@@ -1068,7 +1084,7 @@ export function ProjectLibraryCard({
         <div className='relative z-20 -mx-2 flex flex-1 flex-col items-start justify-start overflow-hidden py-1'>
           <InlineTextEditor
             ref={nameEditor}
-            ariaLabel='Project name'
+            ariaLabel={t('library.projectName')}
             value={project.name}
             className='h-7 w-full [&_[data-slot=button]]:w-full [&_[data-slot=button]]:max-w-full [&_[data-slot=button]]:text-base [&_[data-slot=button]]:font-semibold'
             onSave={async (value) => actions.handleRename(project.id, value)}
@@ -1077,7 +1093,7 @@ export function ProjectLibraryCard({
             <TooltipTrigger asChild>
               <div
                 className='flex w-fit max-w-full items-center gap-1.5 px-2 text-xs text-muted-foreground'
-                aria-label={`Location: ${fullLocationLabel}`}
+                aria-label={t('library.location', { location: fullLocationLabel })}
               >
                 <LocationIcon className='size-3 shrink-0' />
                 <span className='truncate'>{slugPath}</span>
@@ -1091,7 +1107,7 @@ export function ProjectLibraryCard({
       <CardFooter className='mt-auto flex items-center justify-between'>
         <Button asChild variant='outline'>
           <span aria-hidden='true' className='pointer-events-none'>
-            {isOpening ? 'Opening…' : 'Open'}
+            {isOpening ? t('library.opening') : t('library.open')}
             {isOpening ? <Loader /> : <ArrowRight />}
           </span>
         </Button>
@@ -1114,6 +1130,7 @@ type BulkActionsProps = {
 };
 
 function BulkActions({ table, deleteProject }: BulkActionsProps) {
+  const { t } = useTranslation();
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
 
@@ -1145,11 +1162,11 @@ function BulkActions({ table, deleteProject }: BulkActionsProps) {
     table.resetRowSelection();
 
     if (successCount > 0 && errorCount === 0) {
-      toast.success(`Moved ${successCount} project${successCount === 1 ? '' : 's'} to Trash`);
+      toast.success(t(successCount === 1 ? 'library.trashedOne' : 'library.trashedMany', { count: successCount }));
     } else if (successCount > 0 && errorCount > 0) {
-      toast.warning(`Moved ${successCount} project${successCount === 1 ? '' : 's'} to Trash; ${errorCount} failed`);
+      toast.warning(t('library.trashedPartial', { done: successCount, failed: errorCount }));
     } else {
-      toast.error('Could not move selected projects to Trash');
+      toast.error(t('library.trashedNone'));
     }
   };
 
@@ -1159,7 +1176,7 @@ function BulkActions({ table, deleteProject }: BulkActionsProps) {
         <AlertDialogTrigger asChild>
           <Button variant='destructive' size='sm' disabled={isDeleting}>
             <Trash className='h-4 w-4' />
-            Move to Trash
+            {t('library.moveToTrash')}
             <span className='ml-1 rounded-full bg-muted px-1.5 py-0.5 text-xs'>{selectedCount}</span>
           </Button>
         </AlertDialogTrigger>
@@ -1169,11 +1186,13 @@ function BulkActions({ table, deleteProject }: BulkActionsProps) {
         <AlertDialogHeader>
           <AlertDialogTitle className='flex items-center gap-2'>
             <AlertCircle className='h-5 w-5 text-destructive' />
-            Move {selectedCount} project{selectedCount === 1 ? '' : 's'} to Trash?
+            {t(selectedCount === 1 ? 'library.moveManyTitleOne' : 'library.moveManyTitleMany', {
+              count: selectedCount,
+            })}
           </AlertDialogTitle>
           <AlertDialogDescription className='space-y-2'>
-            <p>The following projects will be moved to the trash:</p>
-            <p>Any running agents will be stopped first. Their work so far is saved as revisions.</p>
+            <p>{t('library.moveListIntro')}</p>
+            <p>{t('library.moveAgents')}</p>
             <ul className='max-h-40 list-disc overflow-y-auto pl-6 text-sm'>
               {selectedRows.map((row) => {
                 const project = row.original;
@@ -1181,7 +1200,7 @@ function BulkActions({ table, deleteProject }: BulkActionsProps) {
                   <li key={row.id}>
                     {project.name}{' '}
                     <span className='text-muted-foreground/70 italic'>
-                      (modified {formatRelativeTime(project.lastActivityAt)})
+                      {t('library.modified', { time: formatRelativeTime(project.lastActivityAt) })}
                     </span>
                   </li>
                 );
@@ -1190,7 +1209,7 @@ function BulkActions({ table, deleteProject }: BulkActionsProps) {
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
+          <AlertDialogCancel disabled={isDeleting}>{t('library.cancel')}</AlertDialogCancel>
           <Button
             variant='destructive'
             disabled={isDeleting}
@@ -1198,7 +1217,7 @@ function BulkActions({ table, deleteProject }: BulkActionsProps) {
               void handleBulkDelete();
             }}
           >
-            Move to Trash
+            {t('library.moveToTrash')}
           </Button>
         </AlertDialogFooter>
       </AlertDialogContent>

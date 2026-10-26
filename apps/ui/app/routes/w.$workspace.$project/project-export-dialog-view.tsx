@@ -37,7 +37,10 @@ const fixMessage = (
   if (result.problem === 'invalid' && result.pieces?.length) {
     return format === 'step'
       ? t('export.surfacePieces', { names })
-      : t('export.openPieces', { count: result.pieces.length, names });
+      : t(result.pieces.length === 1 ? 'export.openPiecesOne' : 'export.openPieces', {
+          count: result.pieces.length,
+          names,
+        });
   }
   if (result.problem === 'names' && result.pieces?.length) {
     return t('export.differentNames', { names });

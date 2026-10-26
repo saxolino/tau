@@ -18,7 +18,7 @@ const renderAt = (url: string): void => {
     <MemoryRouter initialEntries={[url]}>
       <Routes>
         <Route path='/github/complete' element={<GithubConnectionCompleteRoute />} />
-        <Route path='*' element={<p>Returned to Tau</p>} />
+        <Route path='*' element={<p>Returned to SinopiaCAD</p>} />
       </Routes>
     </MemoryRouter>,
   );
@@ -41,14 +41,14 @@ describe('GithubConnectionCompleteRoute', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(
       'GitHub access was not granted. Connect GitHub again to continue.',
     );
-    expect(screen.getByRole('link', { name: 'Back to Tau' })).toHaveAttribute('href', '/w/home/part');
+    expect(screen.getByRole('link', { name: 'Back to SinopiaCAD' })).toHaveAttribute('href', '/w/home/part');
     expect(github.complete).not.toHaveBeenCalled();
   });
 
-  it('should never offer a way back that leaves Tau', () => {
+  it('should never offer a way back that leaves SinopiaCAD', () => {
     renderAt('/github/complete?error=GITHUB_CALLBACK_FAILED&returnTo=%2F%5Cevil.example');
 
-    expect(screen.getByRole('link', { name: 'Back to Tau' })).toHaveAttribute('href', '/import');
+    expect(screen.getByRole('link', { name: 'Back to SinopiaCAD' })).toHaveAttribute('href', '/import');
   });
 
   it('should return to the remembered page after GitHub App setup', async () => {
@@ -56,21 +56,21 @@ describe('GithubConnectionCompleteRoute', () => {
 
     renderAt('/github/complete?installation_id=42&setup_action=update');
 
-    expect(await screen.findByText('Returned to Tau')).toBeInTheDocument();
+    expect(await screen.findByText('Returned to SinopiaCAD')).toBeInTheDocument();
     expect(github.complete).not.toHaveBeenCalled();
   });
 
   it('should return to the remembered page only once (R10)', async () => {
     globalThis.sessionStorage.setItem('tau:github-setup-return', '/w/home/part');
     renderAt('/github/complete?installation_id=42&setup_action=update');
-    expect(await screen.findByText('Returned to Tau')).toBeInTheDocument();
+    expect(await screen.findByText('Returned to SinopiaCAD')).toBeInTheDocument();
     cleanup();
 
     /* A later install started on GitHub itself lands here with nothing remembered for it. */
     renderAt('/github/complete?installation_id=42&setup_action=install');
 
     expect(await screen.findByRole('heading', { name: 'GitHub access updated' })).toBeInTheDocument();
-    expect(screen.queryByText('Returned to Tau')).not.toBeInTheDocument();
+    expect(screen.queryByText('Returned to SinopiaCAD')).not.toBeInTheDocument();
   });
 
   it('should start a fresh attempt that returns where the expired one would have (R24)', async () => {
@@ -106,7 +106,7 @@ describe('GithubConnectionCompleteRoute', () => {
   it('should leave a desktop attempt to the desktop app', () => {
     renderAt('/github/complete?error=GITHUB_CALLBACK_EXPIRED&attempt=attempt-1&returnTo=%2Fimport&mode=desktop-poll');
 
-    expect(screen.getByRole('alert')).toHaveTextContent('Return to the Tau desktop app to try again.');
+    expect(screen.getByRole('alert')).toHaveTextContent('Return to the SinopiaCAD desktop app to try again.');
     expect(screen.queryByRole('button', { name: 'Connect GitHub again' })).not.toBeInTheDocument();
   });
 
@@ -114,6 +114,6 @@ describe('GithubConnectionCompleteRoute', () => {
     renderAt('/github/complete?installation_id=42&setup_action=install');
 
     expect(await screen.findByRole('heading', { name: 'GitHub access updated' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Back to Tau' })).toHaveAttribute('href', '/import');
+    expect(screen.getByRole('link', { name: 'Back to SinopiaCAD' })).toHaveAttribute('href', '/import');
   });
 });

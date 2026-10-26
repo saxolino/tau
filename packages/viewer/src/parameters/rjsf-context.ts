@@ -79,6 +79,12 @@ export type ParameterPresentation = Readonly<{
   fieldNote?: (path: readonly string[]) => ReactNode;
   /** Translate or replace a field description; an empty string hides it. */
   fieldDescription?: (path: readonly string[], description: string) => string;
+  /** A host that does not mark required fields (SinopiaCAD: every measure is required, so the star is noise). */
+  hideRequiredMark?: boolean;
+  /** Translate the hint of a field whose unit or meaning was guessed. */
+  inferredHint?: (kind: 'unit' | 'semantics') => string;
+  /** Translate the tooltip of the button that resets one field. */
+  resetLabel?: (fieldLabel: string) => string;
 }>;
 
 /**

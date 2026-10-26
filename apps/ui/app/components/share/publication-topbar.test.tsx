@@ -163,7 +163,7 @@ describe('PublicationTopbar', () => {
       const title = screen.getByText('Topbar fixture');
       expect(title.parentElement).not.toHaveClass('hidden');
       expect(title.parentElement).toHaveClass('order-last', 'w-full', 'sm:order-none');
-      expect(screen.getByText('Public Tau share')).toHaveClass('hidden', 'sm:block');
+      expect(screen.getByText('Public SinopiaCAD share')).toHaveClass('hidden', 'sm:block');
     });
   });
 });

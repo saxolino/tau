@@ -13,7 +13,7 @@ vi.mock('#components/code/code-viewer.js', () => ({
   CodeViewer: ({ text }: { readonly text: string }) => <pre data-testid='code-viewer'>{text}</pre>,
 }));
 
-const raw = '{"code":"BILLING_ACCOUNT_RESTRICTED","message":"This Tau billing account is restricted."}';
+const raw = '{"code":"BILLING_ACCOUNT_RESTRICTED","message":"This SinopiaCAD billing account is restricted."}';
 
 describe('ChatErrorAccountRestricted', () => {
   beforeEach(() => {
@@ -29,7 +29,7 @@ describe('ChatErrorAccountRestricted', () => {
     ]);
     expect(
       screen.getByText(
-        'Tau has paused spending on this account while we look at a billing issue. Contact support to continue.',
+        'SinopiaCAD has paused spending on this account while we look at a billing issue. Contact support to continue.',
       ),
     ).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Contact support' })).toHaveAttribute('href', 'mailto:support@tau.new');
@@ -37,7 +37,7 @@ describe('ChatErrorAccountRestricted', () => {
     expect(screen.queryByText(/restricted\./u)).not.toBeInTheDocument();
   });
 
-  it('should disclose the raw refusal only when Tau Debug is enabled', async () => {
+  it('should disclose the raw refusal only when SinopiaCAD Debug is enabled', async () => {
     debug.enabled = true;
     const user = userEvent.setup();
     render(<ChatErrorAccountRestricted raw={raw} />);

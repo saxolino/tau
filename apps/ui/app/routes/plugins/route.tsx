@@ -59,7 +59,7 @@ const featuredPlugins: StoreItem[] = [
   },
   {
     name: 'Chrome',
-    description: 'Control Chrome with Tau',
+    description: 'Control Chrome with SinopiaCAD',
     icon: Globe,
     accent: 'bg-information/10 text-information',
   },
@@ -77,12 +77,12 @@ const featuredPlugins: StoreItem[] = [
   },
   {
     name: 'Figma',
-    description: 'Design-to-code workflows powered by Tau',
+    description: 'Design-to-code workflows powered by SinopiaCAD',
     icon: PanelsTopLeft,
     accent: 'bg-success/10 text-success',
   },
   {
-    name: 'Tau Plugin Store',
+    name: 'SinopiaCAD Plugin Store',
     description: 'Shared plugins curated for CAD workflows',
     icon: Store,
     status: 'installed',
@@ -329,7 +329,7 @@ export default function PluginsRoute(): React.JSX.Element {
               <Input aria-label='Search plugins' className='pl-8' placeholder='Search plugins…' />
             </div>
             <Button variant='secondary' size='sm'>
-              Built by Tau
+              Built by SinopiaCAD
             </Button>
             <Button variant='secondary' size='sm'>
               All
@@ -402,7 +402,7 @@ export default function PluginsRoute(): React.JSX.Element {
       <section className='flex items-center gap-3 rounded-md border border-dashed px-4 py-3'>
         <PackagePlus className='size-4 shrink-0 text-muted-foreground' />
         <div className='min-w-0 flex-1'>
-          <p className='text-sm font-medium'>Install from the Tau Plugin Store</p>
+          <p className='text-sm font-medium'>Install from the SinopiaCAD Plugin Store</p>
           <p className='truncate text-xs text-muted-foreground'>
             Shared plugin and skill packs will install into the workspace filesystem.
           </p>

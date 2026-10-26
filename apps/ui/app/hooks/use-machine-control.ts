@@ -218,7 +218,7 @@ export const useMachineControl = ({
         setError(receipt.message);
       } else if (receipt.status === 'unknown') {
         setError(
-          `${entry.name} did not answer, so Tau cannot tell whether it took “${descriptor.label}”. Nothing is resent; History shows it once the machine reports.`,
+          `${entry.name} did not answer, so SinopiaCAD cannot tell whether it took “${descriptor.label}”. Nothing is resent; History shows it once the machine reports.`,
         );
       }
       return receipt.status === 'accepted';

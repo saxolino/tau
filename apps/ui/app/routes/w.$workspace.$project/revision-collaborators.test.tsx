@@ -88,7 +88,7 @@ describe('RevisionCollaborators', () => {
 
     expect(link.value).toBe(`${globalThis.location.origin}/invitations/tok_abcdef`);
     expect(screen.getByRole('status', { name: 'Invitation created' }).classList.contains('ph-no-capture')).toBe(true);
-    expect(screen.getByText('Tau does not email this link. Send it to them yourself.')).toBeDefined();
+    expect(screen.getByText('SinopiaCAD does not email this link. Send it to them yourself.')).toBeDefined();
   });
 
   it('should mint the invitation from the web origin on desktop, never app://tau', async () => {
@@ -118,8 +118,8 @@ describe('RevisionCollaborators', () => {
        browser and the project arrives on their next cloud listing (Finding 5,
        ruling Q4). */
     expect(
-      screen.getByText('This link opens in the browser. Once they accept, the project appears in their Tau.'),
+      screen.getByText('This link opens in the browser. Once they accept, the project appears in their SinopiaCAD.'),
     ).toBeDefined();
-    expect(screen.queryByText('Tau does not email this link. Send it to them yourself.')).toBeNull();
+    expect(screen.queryByText('SinopiaCAD does not email this link. Send it to them yourself.')).toBeNull();
   });
 });

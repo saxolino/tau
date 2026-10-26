@@ -32,11 +32,14 @@ export type RevisionFailureSubject =
 
 /** What Tau Cloud's own budgets answer (D22, I11): one sentence each, each saying when to try again. */
 const hostedRemoteCopy: ReadonlyArray<readonly [string, string]> = [
-  ['GIT_RATE_LIMITED', 'Tau Cloud is getting too many requests for this project. Wait a minute, then try again.'],
-  ['GIT_LEASE_OWNER_BUSY', 'Tau Cloud is still busy with this account’s other projects. Try again in a moment.'],
+  [
+    'GIT_RATE_LIMITED',
+    'SinopiaCAD Cloud is getting too many requests for this project. Wait a minute, then try again.',
+  ],
+  ['GIT_LEASE_OWNER_BUSY', 'SinopiaCAD Cloud is still busy with this account’s other projects. Try again in a moment.'],
   [
     'GIT_HYDRATE_BUDGET_EXHAUSTED',
-    'This account has reached today’s limit for opening projects on Tau Cloud. Try again tomorrow.',
+    'This account has reached today’s limit for opening projects on SinopiaCAD Cloud. Try again tomorrow.',
   ],
 ];
 
@@ -156,13 +159,13 @@ export const revisionFailureCopy: Readonly<
       /* Terminal (W2a): no retry and no verb clears it; only a repair of the cloud copy does. */
       [
         'REMOTE_DAMAGED',
-        'SinopiaCAD has to repair this project’s copy on Tau Cloud before it can back it up again. Nothing on this device is lost.',
+        'SinopiaCAD has to repair this project’s copy on SinopiaCAD Cloud before it can back it up again. Nothing on this device is lost.',
       ],
     ]),
   },
   removeName: {
     title: 'That name was not removed',
-    fallback: 'Tau Cloud could not remove that name. Try again.',
+    fallback: 'SinopiaCAD Cloud could not remove that name. Try again.',
     codes: new Map([
       ...hostedRemoteCopy,
       ['GIT_REF_REMOVAL_OWNER_ONLY', 'Only the project’s owner can remove a version name.'],
@@ -171,11 +174,11 @@ export const revisionFailureCopy: Readonly<
   },
   removeConflictLine: {
     title: 'That decision was not removed',
-    fallback: 'Tau Cloud could not remove that decision. Try again.',
+    fallback: 'SinopiaCAD Cloud could not remove that decision. Try again.',
     codes: new Map([
       ...hostedRemoteCopy,
       ['GIT_REF_REMOVAL_OWNER_ONLY', 'Only the project’s owner can remove another device’s decision.'],
-      ['GIT_REF_NOT_REMOVABLE', 'Tau Cloud cannot remove that decision.'],
+      ['GIT_REF_NOT_REMOVABLE', 'SinopiaCAD Cloud cannot remove that decision.'],
     ]),
   },
   turn: {

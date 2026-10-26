@@ -497,7 +497,7 @@ describe('SinopiaHome', () => {
     renderHome();
     await userEvent.click(await screen.findByRole('button', { name: 'Spring necklace' }));
     await userEvent.click(await screen.findByRole('button', { name: 'Seleziona tutte' }));
-    await userEvent.click(screen.getByRole('button', { name: 'Usa 1 immagini' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Usa 1 immagine' }));
     await waitFor(() => {
       expect(addDraftAttachment).toHaveBeenCalledOnce();
     });

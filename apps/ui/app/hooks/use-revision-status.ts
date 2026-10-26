@@ -1482,7 +1482,7 @@ export const useRevisionClientLifecycle = (): RevisionClient | undefined => {
         return;
       }
       if (!bound) {
-        client.remoteCredential(withdrawnGithubCredential(projectId, 'Sign in to Tau to sync with GitHub.'));
+        client.remoteCredential(withdrawnGithubCredential(projectId, 'Sign in to SinopiaCAD to sync with GitHub.'));
       }
       recovered = !minted;
       client.open();
@@ -1491,7 +1491,9 @@ export const useRevisionClientLifecycle = (): RevisionClient | undefined => {
       credentialAbort.abort();
       unsubscribe();
       stopGithubCredential(projectId);
-      client.remoteCredential(withdrawnGithubCredential(projectId, 'Open this project in Tau to sync with GitHub.'));
+      client.remoteCredential(
+        withdrawnGithubCredential(projectId, 'Open this project in SinopiaCAD to sync with GitHub.'),
+      );
       client.close();
     };
   }, [client, projectId, sessionUser]);

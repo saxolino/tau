@@ -9,6 +9,8 @@ import { AxisLabel } from '#cad/section-tool-row.jsx';
 import { CopyButton } from '@taucad/ui/components/copy-button';
 import { MeasureOperationIcon } from '#cad/measure-operation-icon.jsx';
 import { useGraphics, useGraphicsSelector } from '#hooks/use-graphics.jsx';
+import { useViewerLabels } from '#environment/viewer-environment.jsx';
+import type { MeasurementLabels } from '#environment/viewer-environment.jsx';
 
 const deltaAxes = [
   ['x', 0],
@@ -25,26 +27,6 @@ const formatAngle = (radians: number): string => {
   return degrees !== 0 && Math.abs(degrees) < 0.005 ? degrees.toPrecision(3) : degrees.toFixed(2);
 };
 
-const operationLabels = {
-  'point-distance': 'Point distance',
-  'minimum-distance': 'Minimum distance',
-  'center-distance': 'Center distance',
-  'plane-spacing': 'Plane spacing',
-  'edge-length': 'Edge length',
-  radius: 'Radius',
-  diameter: 'Diameter',
-  angle: 'Angle',
-  'extent-x': 'X extent',
-  'extent-y': 'Y extent',
-  'extent-z': 'Z extent',
-} as const;
-const qualityLabels = {
-  mesh: 'Mesh',
-  fitted: 'Fitted',
-  cad: 'CAD geometry',
-  snapshot: 'Snapshot',
-} as const;
-
 /** Secondary source and accuracy evidence, available to hover, keyboard and touch. */
 function MeasurementEvidence({
   quality,
@@ -55,6 +37,7 @@ function MeasurementEvidence({
   details?: string;
   label: string;
 }>): React.JSX.Element {
+  const m = useViewerLabels().measurement;
   const [open, setOpen] = useState(false);
   return (
     <Tooltip open={open} onOpenChange={setOpen}>
@@ -62,7 +45,7 @@ function MeasurementEvidence({
         <Button
           variant='ghost'
           size='icon-xs'
-          aria-label={`Measurement source and accuracy for ${label}`}
+          aria-label={m.evidenceFor(label)}
           onClick={() => {
             setOpen(true);
           }}
@@ -71,7 +54,7 @@ function MeasurementEvidence({
         </Button>
       </TooltipTrigger>
       <TooltipContent className='max-w-64 break-words whitespace-normal'>
-        {quality}: {details ?? 'Source accuracy information is unavailable.'}
+        {quality}: {details ?? m.noEvidence}
       </TooltipContent>
     </Tooltip>
   );
@@ -83,6 +66,8 @@ function MeasurementEvidence({
  * @public
  */
 export function MeasurementList({ onEmptied }: Readonly<{ onEmptied: () => void }>): React.JSX.Element {
+  const labels = useViewerLabels();
+  const m = labels.measurement;
   const graphicsRef = useGraphics();
   const measurements = useGraphicsSelector((state) => state.context.measurements);
   const hoveredId = useGraphicsSelector((state) => state.context.hoveredMeasurementId);
@@ -98,7 +83,9 @@ export function MeasurementList({ onEmptied }: Readonly<{ onEmptied: () => void 
 
   const remove = (id: string, event: React.MouseEvent<HTMLButtonElement>): void => {
     const row = event.currentTarget.closest('li');
-    const done = row?.closest('[data-tool-bar]')?.querySelector<HTMLButtonElement>('[aria-label="Done with measure"]');
+    const done = row
+      ?.closest('[data-tool-bar]')
+      ?.querySelector<HTMLButtonElement>(`[aria-label="${labels.doneWith(labels.measureLabel)}"]`);
     const neighbour = (row?.nextElementSibling ?? row?.previousElementSibling)?.querySelector<HTMLElement>(
       '[data-measurement-summary]',
     );
@@ -114,18 +101,14 @@ export function MeasurementList({ onEmptied }: Readonly<{ onEmptied: () => void 
   };
 
   return (
-    <ul aria-label='Measurements' className='grid max-h-64 max-w-full min-w-0 gap-1 overflow-y-auto border-b pb-1'>
+    <ul aria-label={m.list} className='grid max-h-64 max-w-full min-w-0 gap-1 overflow-y-auto border-b pb-1'>
       {sorted.map((measurement) => {
         const value =
           measurement.operation === 'angle'
             ? `${formatAngle(measurement.distance)}°`
             : `${formatLength(measurement.distance, metersPerUnit)} ${symbol}`;
         const label =
-          measurement.status === 'pending'
-            ? 'Resolving distance'
-            : measurement.status === 'unavailable'
-              ? 'Distance unavailable'
-              : value;
+          measurement.status === 'pending' ? m.resolving : measurement.status === 'unavailable' ? m.unavailable : value;
         const operation = measurement.operation ?? 'point-distance';
         const name = measurement.name?.trim();
         return (
@@ -155,12 +138,12 @@ export function MeasurementList({ onEmptied }: Readonly<{ onEmptied: () => void 
               <CollapsibleTrigger
                 data-measurement-summary=''
                 className='group/measurement flex min-h-7 w-full min-w-0 items-center gap-2 rounded-md px-2 text-left text-sm hover:bg-accent'
-                aria-label={`${operationLabels[operation]}: ${label}${measurement.status === 'out-of-date' ? ', out of date' : ''}`}
+                aria-label={m.summary(m.operations[operation], label, measurement.status === 'out-of-date')}
               >
                 <MeasureOperationIcon operation={operation} aria-hidden className='size-4 shrink-0' />
                 <span className='min-w-0 flex-1 truncate tabular-nums'>{label}</span>
                 {measurement.status === 'out-of-date' ? (
-                  <span className='text-xs text-muted-foreground'>Out of date</span>
+                  <span className='text-xs text-muted-foreground'>{m.outOfDate}</span>
                 ) : null}
                 <ChevronUp
                   aria-hidden
@@ -169,12 +152,12 @@ export function MeasurementList({ onEmptied }: Readonly<{ onEmptied: () => void 
               </CollapsibleTrigger>
               <CollapsibleContent className='min-w-0 px-2 pb-1 text-xs text-muted-foreground'>
                 <div className='flex min-w-0 flex-wrap items-center gap-1'>
-                  <span className='mr-auto min-w-0 break-words'>{operationLabels[operation]}</span>
+                  <span className='mr-auto min-w-0 break-words'>{m.operations[operation]}</span>
                   {name ? <span className='min-w-0 break-words'>{name}</span> : null}
                   <Button
                     variant='ghost'
                     size='icon-xs'
-                    aria-label={`Pin ${label}`}
+                    aria-label={m.pin(label)}
                     aria-pressed={Boolean(measurement.isPinned)}
                     className={measurement.isPinned ? 'text-foreground' : 'text-muted-foreground'}
                     onClick={() => {
@@ -188,8 +171,8 @@ export function MeasurementList({ onEmptied }: Readonly<{ onEmptied: () => void 
                   </Button>
                   <CopyButton
                     size='icon-xs'
-                    tooltip={`Copy full precision for ${label}`}
-                    aria-label={`Copy full precision for ${label}`}
+                    tooltip={m.copyFull(label)}
+                    aria-label={m.copyFull(label)}
                     disabled={measurement.status === 'pending' || measurement.status === 'unavailable'}
                     getText={() =>
                       measurement.operation === 'angle'
@@ -200,7 +183,7 @@ export function MeasurementList({ onEmptied }: Readonly<{ onEmptied: () => void 
                   <Button
                     variant='ghost'
                     size='icon-xs'
-                    aria-label={`Remove ${label}`}
+                    aria-label={m.remove(label)}
                     className='text-muted-foreground hover:text-destructive'
                     onClick={(event) => {
                       remove(measurement.id, event);
@@ -210,8 +193,8 @@ export function MeasurementList({ onEmptied }: Readonly<{ onEmptied: () => void 
                   </Button>
                 </div>
                 <div className='flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 tabular-nums'>
-                  {measurement.status === 'pending' ? <span>Pending</span> : null}
-                  {measurement.status === 'unavailable' ? <span>Unavailable</span> : null}
+                  {measurement.status === 'pending' ? <span>{m.pending}</span> : null}
+                  {measurement.status === 'unavailable' ? <span>{m.unavailable}</span> : null}
                   {measurement.unavailableReason ? (
                     <span className='break-words'>{measurement.unavailableReason}</span>
                   ) : null}
@@ -231,9 +214,9 @@ export function MeasurementList({ onEmptied }: Readonly<{ onEmptied: () => void 
                       )}
                     </span>
                   ))}
-                  <span>{measurement.frameId === 'tau:root' ? 'Root frame' : 'Selected feature frame'}</span>
+                  <span>{measurement.frameId === 'tau:root' ? m.rootFrame : m.featureFrame}</span>
                   <MeasurementEvidence
-                    quality={qualityLabels[measurement.quality ?? 'snapshot']}
+                    quality={m.qualities[measurement.quality ?? 'snapshot']}
                     details={measurement.evidenceDetails}
                     label={label}
                   />
@@ -247,12 +230,8 @@ export function MeasurementList({ onEmptied }: Readonly<{ onEmptied: () => void 
   );
 }
 
-const countLabelOf = (count: number, mode: 'auto' | 'point'): string =>
-  count === 0
-    ? mode === 'auto'
-      ? 'Choose a feature or two points'
-      : 'Click two points'
-    : `${count} ${count === 1 ? 'measurement' : 'measurements'}`;
+const countLabelOf = (count: number, mode: 'auto' | 'point', m: MeasurementLabels): string =>
+  count === 0 ? (mode === 'auto' ? m.chooseHint : m.clickTwoPoints) : m.count(count);
 
 /**
  * The Measuring row's options: the count, which expands the inline list, and Clear all. A polite live region
@@ -266,6 +245,7 @@ export function MeasureOptions({
   expanded: boolean;
   onExpandedChange: (expanded: boolean) => void;
 }>): React.JSX.Element {
+  const m = useViewerLabels().measurement;
   const graphicsRef = useGraphics();
   const count = useGraphicsSelector((state) => state.context.measurements.length);
   const mode = useGraphicsSelector((state) => state.context.measureMode);
@@ -283,7 +263,7 @@ export function MeasureOptions({
   const previewSymbol = useGraphicsSelector((state) => state.context.displayUnits.length.symbol);
   const anchorRef = useRef<HTMLSpanElement>(null);
   const catalogRequestedRef = useRef(false);
-  const countLabel = countLabelOf(count, mode);
+  const countLabel = countLabelOf(count, mode, m);
   const activeLabel = candidates.find((candidate) => candidate.id === activeCandidateId)?.label;
 
   // With nothing left to list or clear, the row's next control is Done.
@@ -307,21 +287,24 @@ export function MeasureOptions({
       >
         <PopoverTrigger asChild>
           <Button variant='ghost' size='xs' className='max-w-40 truncate'>
-            Targets: {mode === 'auto' ? 'Auto' : 'Points'} · {filter === 'auto' ? 'All' : filter}
+            {m.targets(
+              mode === 'auto' ? m.modeAuto : m.modePoints,
+              filter === 'auto' ? m.filterAll : m.filters[filter],
+            )}
           </Button>
         </PopoverTrigger>
         <PopoverContent
           side='top'
           align='start'
           className='w-72 max-w-[calc(100vw-2rem)] p-3'
-          aria-label='Measurement targets'
+          aria-label={m.targetsName}
         >
           <div className='grid gap-2'>
             <label className='text-xs'>
-              Mode
+              {m.mode}
               <select
                 className='mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground focus-visible:focus-outline'
-                aria-label='Measurement mode'
+                aria-label={m.modeName}
                 value={mode}
                 onChange={(event) => {
                   graphicsRef.send({
@@ -333,14 +316,14 @@ export function MeasureOptions({
                   }
                 }}
               >
-                <option value='auto'>Auto features</option>
-                <option value='point'>Points</option>
+                <option value='auto'>{m.modeAuto}</option>
+                <option value='point'>{m.modePoints}</option>
               </select>
             </label>
             <Button
               variant='outline'
               size='sm'
-              aria-label={snapEnabled ? 'Turn snapping off' : 'Turn snapping on'}
+              aria-label={snapEnabled ? m.snapTurnOff : m.snapTurnOn}
               aria-pressed={!snapEnabled}
               onClick={() => {
                 graphicsRef.send({
@@ -349,13 +332,13 @@ export function MeasureOptions({
                 });
               }}
             >
-              {snapEnabled ? 'Snap on' : 'Snap off'}
+              {snapEnabled ? m.snapOn : m.snapOff}
             </Button>
             <label className='text-xs'>
-              Filter
+              {m.filter}
               <select
                 className='mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground focus-visible:focus-outline'
-                aria-label='Feature filter'
+                aria-label={m.filterName}
                 value={filter}
                 onChange={(event) => {
                   graphicsRef.send({
@@ -367,19 +350,19 @@ export function MeasureOptions({
                   }
                 }}
               >
-                <option value='auto'>All features</option>
-                <option value='point'>Points</option>
-                <option value='edge'>Edges</option>
-                <option value='face'>Faces</option>
-                <option value='circle'>Circles</option>
-                <option value='body'>Bodies</option>
+                <option value='auto'>{m.filterAll}</option>
+                {(['point', 'edge', 'face', 'circle', 'body'] as const).map((kind) => (
+                  <option key={kind} value={kind}>
+                    {m.filters[kind]}
+                  </option>
+                ))}
               </select>
             </label>
             <label className='text-xs'>
-              Operation
+              {m.operation}
               <select
                 className='mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground focus-visible:focus-outline'
-                aria-label='Measurement operation'
+                aria-label={m.operationName}
                 value={operation}
                 onChange={(event) => {
                   graphicsRef.send({
@@ -388,24 +371,18 @@ export function MeasureOptions({
                   });
                 }}
               >
-                <option value='point-distance'>Point distance</option>
-                <option value='minimum-distance'>Minimum distance</option>
-                <option value='center-distance'>Center distance</option>
-                <option value='plane-spacing'>Plane spacing</option>
-                <option value='edge-length'>Edge length</option>
-                <option value='radius'>Radius</option>
-                <option value='diameter'>Diameter</option>
-                <option value='angle'>Angle</option>
-                <option value='extent-x'>X extent</option>
-                <option value='extent-y'>Y extent</option>
-                <option value='extent-z'>Z extent</option>
+                {(Object.keys(m.operations) as Array<keyof typeof m.operations>).map((kind) => (
+                  <option key={kind} value={kind}>
+                    {m.operations[kind]}
+                  </option>
+                ))}
               </select>
             </label>
             <label className='text-xs'>
-              Frame
+              {m.frame}
               <select
                 className='mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground focus-visible:focus-outline'
-                aria-label='Measurement frame'
+                aria-label={m.frameName}
                 value={frame}
                 onChange={(event) => {
                   graphicsRef.send({
@@ -414,15 +391,15 @@ export function MeasureOptions({
                   });
                 }}
               >
-                <option value='tau:root'>Root</option>
-                <option value='selected-local'>Selected feature local</option>
+                <option value='tau:root'>{m.frameRoot}</option>
+                <option value='selected-local'>{m.frameLocal}</option>
               </select>
             </label>
             <label className='text-xs'>
-              Choose target
+              {m.chooseTarget}
               <select
                 className='mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground focus-visible:focus-outline'
-                aria-label='Choose target'
+                aria-label={m.chooseTarget}
                 value={activeCandidateId ?? ''}
                 onFocus={() => {
                   if (!catalogRequestedRef.current) {
@@ -437,7 +414,7 @@ export function MeasureOptions({
                   });
                 }}
               >
-                <option value=''>Select a visible target</option>
+                <option value=''>{m.selectTarget}</option>
                 {candidates.map((candidate) => (
                   <option key={candidate.id} value={candidate.id}>
                     {candidate.label}
@@ -456,7 +433,7 @@ export function MeasureOptions({
                   });
                 }}
               >
-                Load more targets
+                {m.loadMore}
               </Button>
             )}
             <Button
@@ -471,7 +448,7 @@ export function MeasureOptions({
               }}
               aria-pressed={Boolean(lockedTargetId)}
             >
-              {lockedTargetId ? 'Unlock target' : 'Lock target'}
+              {lockedTargetId ? m.unlock : m.lock}
             </Button>
             <Button
               variant='default'
@@ -481,7 +458,7 @@ export function MeasureOptions({
                 graphicsRef.send({ type: 'requestMeasureCandidateCommit' });
               }}
             >
-              Use target
+              {m.useTarget}
             </Button>
           </div>
         </PopoverContent>
@@ -529,13 +506,13 @@ export function MeasureOptions({
           focusRow();
         }}
       >
-        Clear all
+        {m.clearAll}
       </Button>
       {activeLabel !== undefined || message !== undefined || previewDistance !== undefined ? (
         <div className='order-last flex min-w-0 basis-full items-center gap-2 text-xs text-muted-foreground'>
           {activeLabel ? (
             <span className='min-w-0 flex-1 truncate' title={activeLabel}>
-              {lockedTargetId ? 'Locked: ' : ''}
+              {lockedTargetId ? m.locked : ''}
               {activeLabel}
             </span>
           ) : null}
@@ -545,7 +522,7 @@ export function MeasureOptions({
             </span>
           ) : null}
           {previewDistance === undefined ? null : (
-            <output aria-label='Live measurement preview' className='shrink-0 tabular-nums'>
+            <output aria-label={m.previewName} className='shrink-0 tabular-nums'>
               {formatLength(previewDistance, previewMetersPerUnit)} {previewSymbol}
             </output>
           )}

@@ -563,12 +563,12 @@ const transportLabel = ({ transport }: MachineManifest['connection']): string =>
 const jobsSummary = (jobs: MachineManifest['jobs']): string =>
   jobs.type === 'unsupported'
     ? 'Not supported'
-    : `${jobs.delivery === 'stored' ? 'Stored' : 'Streamed'} · ${jobs.start === 'remote' ? 'Started by Tau' : 'Started at the machine'}`;
+    : `${jobs.delivery === 'stored' ? 'Stored' : 'Streamed'} · ${jobs.start === 'remote' ? 'Started by SinopiaCAD' : 'Started at the machine'}`;
 
 /** How programs reach the machine and start, and what a person vouches for first. */
 function JobFacts({ jobs }: { readonly jobs: MachineManifest['jobs'] }): React.JSX.Element {
   if (jobs.type === 'unsupported') {
-    return <p className='text-xs text-muted-foreground'>Tau cannot send programs to this machine.</p>;
+    return <p className='text-xs text-muted-foreground'>SinopiaCAD cannot send programs to this machine.</p>;
   }
   return (
     <dl>
@@ -578,7 +578,7 @@ function JobFacts({ jobs }: { readonly jobs: MachineManifest['jobs'] }): React.J
           : 'Streamed by this computer, which must stay connected until the run ends'}
       </Fact>
       <Fact label='Start'>
-        {jobs.start === 'remote' ? 'Tau starts the run' : 'A person presses start at the machine'}
+        {jobs.start === 'remote' ? 'SinopiaCAD starts the run' : 'A person presses start at the machine'}
       </Fact>
       <Fact label='Accepts'>{jobs.accepts.map(({ mediaType }) => mediaType).join(', ')}</Fact>
       {/* A person approves every job; an agent may only ask for one. */}
@@ -792,7 +792,7 @@ export const MachineDetails = memo(function MachineDetails({
         {fff === undefined ? null : <FffProcessFacts process={fff} />}
         {milling === undefined ? null : <MillingProcessFacts process={milling} />}
         {fff === undefined && milling === undefined ? (
-          <p className='text-xs text-muted-foreground'>This machine declares no process Tau knows.</p>
+          <p className='text-xs text-muted-foreground'>This machine declares no process SinopiaCAD knows.</p>
         ) : null}
       </Part>
       <Part id='jobs' title='Jobs' summary={jobsSummary(jobs)}>

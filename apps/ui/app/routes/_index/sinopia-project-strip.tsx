@@ -270,7 +270,9 @@ function SinopiaImagesSheet({ project, onOpenChange, onChoose }: SheetProperties
               void useImages();
             }}
           >
-            {isUsing ? t('sinopiaImages.using') : t('sinopiaImages.use', { count: selected.size })}
+            {isUsing
+              ? t('sinopiaImages.using')
+              : t(selected.size === 1 ? 'sinopiaImages.useOne' : 'sinopiaImages.use', { count: selected.size })}
           </Button>
         </div>
       </SheetContent>

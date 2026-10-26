@@ -52,7 +52,7 @@ describe('ChatSwitcher', () => {
     resetLanguageForTests();
   });
 
-  it('should list the project’s conversations, Tau’s placeholder names as «Assistente», then the archived ones', async () => {
+  it('should list the project’s conversations, SinopiaCAD’s placeholder names as «Assistente», then the archived ones', async () => {
     setLanguage('it');
     const user = userEvent.setup();
     renderSwitcher();

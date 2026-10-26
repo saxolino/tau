@@ -971,7 +971,7 @@ describe('Activities', () => {
     expect(again.fixture.applyAction).not.toHaveBeenCalled();
   });
 
-  it('shows a flow-ratio result read-only, since Tau cannot keep it yet', async () => {
+  it('shows a flow-ratio result read-only, since SinopiaCAD cannot keep it yet', async () => {
     const user = userEvent.setup();
     const { fixture } = renderControl(
       activity({
@@ -991,7 +991,9 @@ describe('Activities', () => {
     );
     const card = screen.getByRole('region', { name: 'Flow-ratio calibration' });
     expect(card).toHaveTextContent('Flow ratio 0.980');
-    expect(card).toHaveTextContent('Tau can’t keep this result yet. Enter it in your slicer’s filament settings.');
+    expect(card).toHaveTextContent(
+      'SinopiaCAD can’t keep this result yet. Enter it in your slicer’s filament settings.',
+    );
     expect(within(card).queryByRole('button', { name: /^Save as a profile/u })).not.toBeInTheDocument();
     expect(within(card).queryByRole('textbox', { name: 'Profile name' })).not.toBeInTheDocument();
     await user.click(within(card).getByRole('button', { name: 'Discard' }));

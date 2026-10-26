@@ -275,8 +275,8 @@ export function describeGitHubImport(target: GitHubRepoInfo): { title: string; d
   const folder = target.path ? `/${target.path}` : '';
   const repo = `${target.owner}/${target.repo}${folder} ${target.ref === 'main' ? '' : `@ ${target.ref}`}`;
   return {
-    title: `Import ${repo} from GitHub into Tau`,
-    description: `Get started with ${repo} by importing it into Tau.`,
+    title: `Import ${repo} from GitHub into SinopiaCAD`,
+    description: `Get started with ${repo} by importing it into SinopiaCAD.`,
   };
 }
 

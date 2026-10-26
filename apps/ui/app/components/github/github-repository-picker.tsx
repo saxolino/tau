@@ -291,7 +291,7 @@ export const GithubRepositoryPicker = memo(function GithubRepositoryPicker({
         }
         refreshing.current = undefined;
         if (keptRepository !== undefined) {
-          setNotice(`Tau can no longer reach ${keptRepository.fullName} on GitHub. Choose another repository.`);
+          setNotice(`SinopiaCAD can no longer reach ${keptRepository.fullName} on GitHub. Choose another repository.`);
         }
         setRepositoryId('');
         setBranches([]);
@@ -706,10 +706,10 @@ export const GithubRepositoryPicker = memo(function GithubRepositoryPicker({
       <AlertDialog open={disconnectOpen} onOpenChange={setDisconnectOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Disconnect {connection?.login} from Tau?</AlertDialogTitle>
+            <AlertDialogTitle>Disconnect {connection?.login} from SinopiaCAD?</AlertDialogTitle>
             <AlertDialogDescription>
-              Tau removes this account and asks GitHub to revoke its access. Projects linked through it stop syncing
-              until you connect GitHub again.
+              SinopiaCAD removes this account and asks GitHub to revoke its access. Projects linked through it stop
+              syncing until you connect GitHub again.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -724,7 +724,7 @@ export const GithubRepositoryPicker = memo(function GithubRepositoryPicker({
         <div className='rounded-md border p-3 text-sm'>
           <p>No personal or organization installation is available for this account.</p>
           <Button className='mt-2' size='sm' variant='outline' onClick={configure}>
-            Install Tau on GitHub
+            Install SinopiaCAD on GitHub
           </Button>
         </div>
       ) : undefined}
@@ -735,7 +735,9 @@ export const GithubRepositoryPicker = memo(function GithubRepositoryPicker({
         getValue={(item) => String(item.id)}
         render={(item) => item.owner.login}
         disabledReason={(item) =>
-          item.suspended ? 'Suspended on GitHub. An owner must unsuspend the Tau app for this account.' : undefined
+          item.suspended
+            ? 'Suspended on GitHub. An owner must unsuspend the SinopiaCAD app for this account.'
+            : undefined
         }
         onSelect={(value) => {
           catalogGeneration.current += 1;

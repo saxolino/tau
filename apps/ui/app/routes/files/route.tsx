@@ -408,7 +408,7 @@ function WorkspaceConnectionStatus({
     state.phase === 'failed'
       ? ['Could not finish connecting', state.message]
       : state.phase === 'mounting'
-        ? ['Preparing workspace…', 'Making local files available to Tau']
+        ? ['Preparing workspace…', 'Making local files available to SinopiaCAD']
         : state.phase === 'browsing'
           ? ['Workspace connected', 'Loading folders and projects']
           : state.phase === 'discovering'

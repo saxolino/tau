@@ -856,7 +856,7 @@ describe('project route session identity', () => {
     ).rejects.toThrow('project save failed');
   });
 
-  it('connects a Tau Cloud library open through the project-scoped client', async () => {
+  it('connects a SinopiaCAD Cloud library open through the project-scoped client', async () => {
     getProjectRouteAccess.mockResolvedValue(ready(projectA));
     revisionStatus.mockReturnValue(
       mock<RevisionStatusProjection>({

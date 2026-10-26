@@ -301,7 +301,7 @@ describe('FileSystemSettings workspace disconnect', () => {
 });
 
 /** D20: materialize on sign-in is off by default and names one workspace when on. */
-describe('FileSystemSettings Tau Cloud projects', () => {
+describe('FileSystemSettings SinopiaCAD Cloud projects', () => {
   const workspace = {
     workspaceId: 'wsp_aaaaaaaaaaaaaaaaaaaaa',
     name: 'Parts',
@@ -321,11 +321,11 @@ describe('FileSystemSettings Tau Cloud projects', () => {
   it('should leave materialize on sign-in off by default', async () => {
     render(<FileSystemSettings />);
 
-    const group = await screen.findByRole('group', { name: 'Workspace for Tau Cloud projects' });
+    const group = await screen.findByRole('group', { name: 'Workspace for SinopiaCAD Cloud projects' });
     expect(within(group).getByRole('radio', { name: 'Off' })).toBeChecked();
   });
 
-  it('should remember the one workspace that receives Tau Cloud projects', async () => {
+  it('should remember the one workspace that receives SinopiaCAD Cloud projects', async () => {
     const { materializeOnSignIn } = await import('#hooks/use-cloud-projects.js');
     render(<FileSystemSettings />);
 
@@ -341,7 +341,7 @@ describe('FileSystemSettings Tau Cloud projects', () => {
     render(<FileSystemSettings />);
 
     await screen.findAllByText('Parts');
-    expect(screen.queryByRole('group', { name: 'Workspace for Tau Cloud projects' })).not.toBeInTheDocument();
-    expect(screen.queryByText('Tau Cloud Projects')).not.toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: 'Workspace for SinopiaCAD Cloud projects' })).not.toBeInTheDocument();
+    expect(screen.queryByText('SinopiaCAD Cloud Projects')).not.toBeInTheDocument();
   });
 });

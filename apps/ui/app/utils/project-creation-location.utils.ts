@@ -1,4 +1,6 @@
 import { idPrefix } from '@taucad/types/constants';
+import { translate } from '#i18n/translate.js';
+import { getLanguage } from '#i18n/language.js';
 import type { WorkspaceDirectoryRequiredCode } from '#filesystem/workspace-errors.js';
 import type { ProjectCreationLocation } from '#types/project-creation-location.types.js';
 import { isDesktopTarget } from '#lib/build-target.js';
@@ -36,20 +38,29 @@ export const projectCreationLocationsEqual = (left: ProjectCreationLocation, rig
 
 export const projectLocationDescriptor = (location: ProjectLocationDisplay): ProjectLocationDescriptor => {
   if (location.kind === 'workspace') {
-    return { label: location.workspaceName ?? 'Connected folder', detail: 'on your disk' };
+    return {
+      label: location.workspaceName ?? translate(getLanguage(), 'library.locationConnected'),
+      detail: translate(getLanguage(), 'library.locationOnDisk'),
+    };
   }
   if (location.kind === 'temporary') {
-    return { label: 'Temporary', detail: 'cleared when this session ends' };
+    return {
+      label: translate(getLanguage(), 'library.locationTemporary'),
+      detail: translate(getLanguage(), 'library.locationTemporaryDetail'),
+    };
   }
   /* Desktop's Home is a folder in Tau's app data; the web's lives in browser storage. */
-  return { label: 'Home', detail: isDesktopTarget() ? 'on your computer' : 'in this browser' };
+  return {
+    label: translate(getLanguage(), 'library.locationHome'),
+    detail: translate(getLanguage(), isDesktopTarget() ? 'library.locationOnComputer' : 'library.locationInBrowser'),
+  };
 };
 
 export const projectLocationFullLabel = (descriptor: ProjectLocationDescriptor): string =>
   `${descriptor.label} ${descriptor.detail}`;
 
 export const projectCreationLocationAccessibleName = (descriptor: ProjectLocationDescriptor): string =>
-  `Create in ${descriptor.label}`;
+  translate(getLanguage(), 'library.createIn', { location: descriptor.label });
 
 export const projectCreationLocationErrorCopy = (
   code: WorkspaceDirectoryRequiredCode,

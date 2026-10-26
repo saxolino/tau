@@ -54,7 +54,7 @@ export type GithubTreeFile = z.infer<typeof treeFileSchema>;
 const apiUrl = (path: string): string => `${ENV.TAU_API_URL.replace(/\/$/u, '')}/v1/github${path}`;
 
 const notFoundMessage =
-  "GitHub didn't find this repository, or this connection can't access it. Check the Tau app's repository access on GitHub.";
+  "GitHub didn't find this repository, or this connection can't access it. Check the SinopiaCAD app's repository access on GitHub.";
 const rateLimitedMessage = "GitHub's rate limit was reached. Try again in a few minutes.";
 
 /**
@@ -108,7 +108,7 @@ const codeMessages: ReadonlyMap<string, string> = new Map([
   ],
   [
     'GITHUB_REPOSITORY_READ_DENIED',
-    'This repository is no longer shared with Tau. Review repository access on GitHub.',
+    'This repository is no longer shared with SinopiaCAD. Review repository access on GitHub.',
   ],
   ['GITHUB_SCOPED_TOKEN_INVALID', 'GitHub could not provide the requested repository access. Try reconnecting.'],
   ['GITHUB_AUTHORIZATION_CHANGED', 'GitHub access changed. Check this repository’s access, then try again.'],
@@ -116,7 +116,7 @@ const codeMessages: ReadonlyMap<string, string> = new Map([
   ['GITHUB_REFRESH_CONFLICT', 'GitHub access changed while it was being renewed. Try again.'],
   ['GITHUB_RATE_LIMITED', rateLimitedMessage],
   ['GITHUB_SSO_REQUIRED', 'This organization requires single sign-on. Start an SSO session on GitHub, then try again.'],
-  ['GITHUB_ACCESS_REFUSED', "GitHub refused access. Check the Tau app's repository access on GitHub."],
+  ['GITHUB_ACCESS_REFUSED', "GitHub refused access. Check the SinopiaCAD app's repository access on GitHub."],
   ['GITHUB_NOT_FOUND_OR_DENIED', notFoundMessage],
   ['GITHUB_UPSTREAM_FAILED', 'GitHub returned an error. Try again shortly.'],
   ['GITHUB_UPSTREAM_UNAVAILABLE', "SinopiaCAD couldn't reach GitHub. Try again shortly."],

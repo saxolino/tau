@@ -533,7 +533,9 @@ function ProjectsLabel(): React.JSX.Element {
       <SidebarGroupLabel className='min-w-0 flex-1'>
         {t('shell.projects.recent')}
         {projects > 0 ? (
-          <span className='ml-1.5 font-normal tabular-nums'>{t('shell.projects.live', { count: projects })}</span>
+          <span className='ml-1.5 font-normal tabular-nums'>
+            {t(projects === 1 ? 'shell.projects.liveOne' : 'shell.projects.live', { count: projects })}
+          </span>
         ) : null}
       </SidebarGroupLabel>
       {idleProjectIds.length > 0 ? (

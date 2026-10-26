@@ -129,14 +129,14 @@ describe('normalizeRepositoryFolder', () => {
 describe('describeGitHubImport', () => {
   it('names the repository without a redundant @main suffix', () => {
     expect(describeGitHubImport({ owner: 'taucad', repo: 'tau', ref: 'main', path: '', mainFile: '' })).toStrictEqual({
-      title: 'Import taucad/tau  from GitHub into Tau',
-      description: 'Get started with taucad/tau  by importing it into Tau.',
+      title: 'Import taucad/tau  from GitHub into SinopiaCAD',
+      description: 'Get started with taucad/tau  by importing it into SinopiaCAD.',
     });
   });
 
   it('carries a non-default ref into the title', () => {
     expect(describeGitHubImport({ owner: 'taucad', repo: 'tau', ref: 'next', path: '', mainFile: '' }).title).toBe(
-      'Import taucad/tau @ next from GitHub into Tau',
+      'Import taucad/tau @ next from GitHub into SinopiaCAD',
     );
   });
 
@@ -149,6 +149,6 @@ describe('describeGitHubImport', () => {
         path: 'public/kcl-samples',
         mainFile: '',
       }).title,
-    ).toBe('Import KittyCAD/modeling-app/public/kcl-samples  from GitHub into Tau');
+    ).toBe('Import KittyCAD/modeling-app/public/kcl-samples  from GitHub into SinopiaCAD');
   });
 });

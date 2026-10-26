@@ -103,7 +103,7 @@ export function RevisionConflictChat(): undefined {
            * which Rule 1 forbids showing; the console is where it belongs. */
           console.error('[revisions] resolve with chat', error);
           toast.error('Could not start a chat to resolve this', {
-            description: 'Tau could not start that chat. Try again.',
+            description: 'SinopiaCAD could not start that chat. Try again.',
           });
         }
       })();

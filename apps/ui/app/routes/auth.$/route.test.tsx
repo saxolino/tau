@@ -244,7 +244,7 @@ describe('Auth session continuation', () => {
   });
   it('should never mount the form while pending or when the session arrives', () => {
     const view = render(<AuthPage />);
-    expect(screen.getByRole('status', { name: 'Opening Tau' })).toBeInTheDocument();
+    expect(screen.getByRole('status', { name: 'Opening SinopiaCAD' })).toBeInTheDocument();
     expect(screen.queryByText('auth:sign-in')).not.toBeInTheDocument();
     routeMocks.session = { user: { id: 'returning' } };
     routeMocks.isFetching = false;

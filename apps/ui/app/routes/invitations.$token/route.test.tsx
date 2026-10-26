@@ -193,12 +193,12 @@ describe('AcceptInvitation', () => {
 
   /* The page does its own job first and offers the app second (R4): the offer
      is beside the sign-in hold, never instead of it. */
-  it('offers Tau Desktop beside the sign-in hold without replacing it', async () => {
+  it('offers SinopiaCAD Desktop beside the sign-in hold without replacing it', async () => {
     mockSession.mockReturnValue({ data: undefined, isPending: false });
     mountRoute();
 
     expect(await screen.findByText('Sign in to accept this invitation')).toBeDefined();
-    expect(screen.getByRole('button', { name: 'Open in Tau Desktop' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Open in SinopiaCAD Desktop' })).toBeDefined();
     expect(screen.getByRole('link', { name: 'Sign in' })).toBeDefined();
   });
 });

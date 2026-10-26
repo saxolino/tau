@@ -100,8 +100,8 @@ const expectations = {
   },
   'native-kernel': {
     state: { kind: 'native-kernel', projectId, project, kernelName: 'PicoGK' },
-    title: 'PicoGK needs Tau Desktop',
-    primaryAction: 'Get Tau Desktop',
+    title: 'PicoGK needs SinopiaCAD Desktop',
+    primaryAction: 'Get SinopiaCAD Desktop',
     live: undefined,
   },
   'access-error': {
@@ -279,16 +279,16 @@ describe('ProjectRouteNotice', () => {
     vi.stubEnv('TAU_DESKTOP_RELEASED', 'false');
     render(<ProjectRouteNotice state={{ kind: 'native-kernel', projectId, project, kernelName: 'PicoGK' }} />);
 
-    expect(screen.queryByRole('button', { name: 'Get Tau Desktop' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Get SinopiaCAD Desktop' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Go to projects' })).toBeInTheDocument();
   });
 
-  it('should open Tau Desktop in a new tab for a native kernel', async () => {
+  it('should open SinopiaCAD Desktop in a new tab for a native kernel', async () => {
     const open = vi.spyOn(globalThis, 'open').mockReturnValue(null);
     try {
       render(<ProjectRouteNotice state={{ kind: 'native-kernel', projectId, project, kernelName: 'PicoGK' }} />);
 
-      await userEvent.click(screen.getByRole('button', { name: 'Get Tau Desktop' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Get SinopiaCAD Desktop' }));
 
       expect(open).toHaveBeenCalledWith(
         'https://github.com/taucad/tau/releases/latest',

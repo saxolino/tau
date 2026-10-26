@@ -108,7 +108,7 @@ describe.each<Language>(['it', 'en'])('export dialog in %s', (language) => {
     expect(within(screen.getByRole('region', { name: 'GLB' })).getByRole('status')).toHaveTextContent(
       t('export.ready'),
     );
-    expect(screen.getByText(t('export.openPieces', { count: 1, names: 'Anellino' }))).toBeInTheDocument();
+    expect(screen.getByText(t('export.openPiecesOne', { count: 1, names: 'Anellino' }))).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: t('export.anyway') }));
     expect(download).toHaveBeenCalledWith([file], { singleFileName: 'Collana.stl', archiveName: 'Collana-stl.zip' });
     await user.click(screen.getByRole('button', { name: t('export.ask') }));

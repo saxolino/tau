@@ -830,7 +830,9 @@ export function ManualEditPanel({
                   <p className='text-sm font-medium break-words'>{selectedName ?? t('manualEdit.selectPiece')}</p>
                   {edgeMode && directControls.selected ? (
                     <p className='text-xs text-muted-foreground'>
-                      {t('manualEdit.edgeCount', { count: directControls.selected.edgeCount })}
+                      {t(directControls.selected.edgeCount === 1 ? 'manualEdit.edgeCountOne' : 'manualEdit.edgeCount', {
+                        count: directControls.selected.edgeCount,
+                      })}
                     </p>
                   ) : null}
                 </div>

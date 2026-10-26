@@ -85,7 +85,7 @@ export default function ConnectGithubGistRoute(): React.JSX.Element {
             <div className='mb-2 flex size-10 items-center justify-center rounded-full bg-primary/10 text-primary'>
               <Spinner className='size-5' />
             </div>
-            <CardTitle className='text-xl font-semibold'>Checking your Tau account</CardTitle>
+            <CardTitle className='text-xl font-semibold'>Checking your SinopiaCAD account</CardTitle>
           </CardHeader>
         </Card>
       </div>
@@ -122,14 +122,14 @@ export default function ConnectGithubGistRoute(): React.JSX.Element {
           </CardTitle>
           <CardDescription>
             {granted
-              ? 'You can return to Tau. Nothing has been published.'
+              ? 'You can return to SinopiaCAD. Nothing has been published.'
               : verification.data === 'disabled'
-                ? 'Gist access is granted, but sharing is off in Tau. Enable it in Security settings when you need it.'
+                ? 'Gist access is granted, but sharing is off in SinopiaCAD. Enable it in Security settings when you need it.'
                 : verification.error
                   ? 'GitHub access could not be verified. Try again before sharing.'
                   : (authorizationReturn?.failure ?? (
                       <>
-                        Tau shares projects as GitHub Gists. This adds Gist access to the Tau account{' '}
+                        SinopiaCAD shares projects as GitHub Gists. This adds Gist access to the SinopiaCAD account{' '}
                         <strong className='break-all'>{session.user.email}</strong>.
                       </>
                     ))}
@@ -165,7 +165,7 @@ export default function ConnectGithubGistRoute(): React.JSX.Element {
               </Button>
             )}
             <Button asChild variant='ghost' className='w-full'>
-              <Link to={signOut}>Use a different Tau account</Link>
+              <Link to={signOut}>Use a different SinopiaCAD account</Link>
             </Button>
           </CardContent>
         )}

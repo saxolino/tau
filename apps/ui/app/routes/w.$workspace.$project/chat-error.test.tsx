@@ -339,7 +339,7 @@ describe('ChatError', () => {
     projected({
       category: errorCategory.rateLimit,
       title: 'Rate limit exceeded',
-      message: 'The model provider asked Tau to wait.',
+      message: 'The model provider asked SinopiaCAD to wait.',
       code: 'RATE_LIMITED',
       httpStatus: 429,
       details: { retryAfterSeconds: 30 },
@@ -357,7 +357,7 @@ describe('ChatError', () => {
     persisted({
       category: errorCategory.overloaded,
       title: 'Service Temporarily Unavailable',
-      message: 'Tau is finalizing earlier work on this chat.',
+      message: 'SinopiaCAD is finalizing earlier work on this chat.',
       code: 'BILLING_RECOVERY_UNAVAILABLE',
       httpStatus: 503,
     });
@@ -371,7 +371,7 @@ describe('ChatError', () => {
 
   /* The masked in-stream failure arrives on an HTTP 200, so its category reads
    * `generic`; only the code says the turn survived it (S1, S2, S7, S10). */
-  it('should keep a lost connection concise and disclose the provider words only in Tau Debug', async () => {
+  it('should keep a lost connection concise and disclose the provider words only in SinopiaCAD Debug', async () => {
     debug.enabled = true;
     const user = userEvent.setup();
     projected({
@@ -422,7 +422,7 @@ describe('ChatError', () => {
   it('should word a paused model route itself and offer a model switch without Resume', async () => {
     debug.enabled = true;
     const user = userEvent.setup();
-    const gatewaySentence = "This model route is paused by Tau's operators.";
+    const gatewaySentence = "This model route is paused by SinopiaCAD's operators.";
     projected({
       category: errorCategory.overloaded,
       title: 'Service Temporarily Unavailable',
@@ -466,7 +466,7 @@ describe('ChatError', () => {
   it('should point a restricted account to support without Resume or a model switch', async () => {
     debug.enabled = true;
     const user = userEvent.setup();
-    const gatewaySentence = 'This Tau billing account is restricted.';
+    const gatewaySentence = 'This SinopiaCAD billing account is restricted.';
     projected({
       category: errorCategory.generic,
       title: 'Error',
@@ -481,7 +481,7 @@ describe('ChatError', () => {
     expect(card).toHaveTextContent('This account needs attention');
     expect(
       screen.getByText(
-        'Tau has paused spending on this account while we look at a billing issue. Contact support to continue.',
+        'SinopiaCAD has paused spending on this account while we look at a billing issue. Contact support to continue.',
       ),
     ).toBeInTheDocument();
     expect(card).not.toHaveTextContent(gatewaySentence);
@@ -506,7 +506,7 @@ describe('ChatError', () => {
     ],
     [
       'TOOL_RESULT_PERSISTENCE_FAILED',
-      'Tau could not save a tool result. Resume to check the current project before continuing.',
+      'SinopiaCAD could not save a tool result. Resume to check the current project before continuing.',
     ],
   ])('explains %s and resumes the saved run from its projected log', async (code, message) => {
     const user = userEvent.setup();
@@ -585,7 +585,7 @@ describe('ChatError', () => {
     persisted({
       category: errorCategory.generic,
       title: 'Error',
-      message: 'Model request is larger than Tau accepts.',
+      message: 'Model request is larger than SinopiaCAD accepts.',
       code: 'REQUEST_TOO_LARGE',
       httpStatus: 413,
     });
@@ -597,7 +597,7 @@ describe('ChatError', () => {
     expect(screen.getAllByRole('button').map((button) => button.textContent)).toEqual(['New chat']);
   });
 
-  it('should keep the host compaction sentence reachable in Tau Debug', async () => {
+  it('should keep the host compaction sentence reachable in SinopiaCAD Debug', async () => {
     debug.enabled = true;
     const user = userEvent.setup();
     const hostSentence = 'Model invocation attempt-overflow has no durable result; it will not be sent again.';
@@ -605,7 +605,7 @@ describe('ChatError', () => {
     persisted({
       category: errorCategory.generic,
       title: 'Error',
-      message: 'This chat hit a problem while Tau was tidying its history.',
+      message: 'This chat hit a problem while SinopiaCAD was tidying its history.',
       code: 'SUMMARY_REQUIRED',
       raw: hostSentence,
     });
@@ -707,12 +707,12 @@ describe('ChatError', () => {
 
   /* Resume everywhere: an external agent left waiting for approval when Tau closed is abandoned resumably; the card
    * names that cause and Resume reattaches the session, where the agent asks again. */
-  it('should offer Resume for an approval Tau closed on, saying the agent asks again', async () => {
+  it('should offer Resume for an approval SinopiaCAD closed on, saying the agent asks again', async () => {
     const user = userEvent.setup();
     projected({
       category: errorCategory.generic,
       title: 'Error',
-      message: 'Tau closed while the agent waited for your approval. Resume the turn and the agent asks again.',
+      message: 'SinopiaCAD closed while the agent waited for your approval. Resume the turn and the agent asks again.',
       code: 'RUN_ABANDONED',
       details: { cause: 'awaiting-approval' },
     });
@@ -797,7 +797,7 @@ describe('ChatError', () => {
     persisted({
       category: errorCategory.generic,
       title: 'Error',
-      message: 'The agent owner speaks another wire version; update Tau on that host.',
+      message: 'The agent owner speaks another wire version; update SinopiaCAD on that host.',
       code: 'WIRE_VERSION_UNSUPPORTED',
     });
 
@@ -894,7 +894,7 @@ describe('ChatError', () => {
     expect(screen.queryByTestId('code-viewer')).not.toBeInTheDocument();
   });
 
-  it('should disclose generic diagnostics only after Tau Debug is enabled and opened', async () => {
+  it('should disclose generic diagnostics only after SinopiaCAD Debug is enabled and opened', async () => {
     debug.enabled = true;
     persisted({
       category: errorCategory.generic,
@@ -1002,7 +1002,7 @@ describe('ChatError', () => {
     const error: ChatErrorPayload = {
       category: errorCategory.credits,
       title: 'Credit Limit Reached',
-      message: 'Insufficient Tau credit for this model request.',
+      message: 'Insufficient SinopiaCAD credit for this model request.',
       code: 'INSUFFICIENT_CREDIT',
       httpStatus: 402,
       details: {
@@ -1024,7 +1024,7 @@ describe('ChatError', () => {
     });
 
     expect(
-      screen.getByText('Tau paused this turn: 13 more credits needed for openai-gpt-6-astra.'),
+      screen.getByText('SinopiaCAD paused this turn: 13 more credits needed for openai-gpt-6-astra.'),
     ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Resume' })).toBeInTheDocument();
   });
@@ -1035,7 +1035,7 @@ describe('ChatError', () => {
     persisted({
       category: errorCategory.credits,
       title: 'Credit Limit Reached',
-      message: 'Insufficient Tau credit for this model request.',
+      message: 'Insufficient SinopiaCAD credit for this model request.',
       details: {
         requiredCreditAtoms: '3084332',
         availableCreditAtoms: '2960000',
@@ -1065,7 +1065,7 @@ describe('ChatError', () => {
       JSON.stringify({
         category: errorCategory.credits,
         title: 'Credit Limit Reached',
-        message: 'Insufficient Tau credit for this model request.',
+        message: 'Insufficient SinopiaCAD credit for this model request.',
         code: 'INSUFFICIENT_CREDIT',
         httpStatus: 402,
         details: { requiredCreditAtoms: '3084332', availableCreditAtoms: '2960000', routeId: 'openai-gpt-6-astra' },
@@ -1098,7 +1098,7 @@ describe('ChatError', () => {
   /* The funded boundary's own 402 copy is credit-denominated and reaches the
    * banner verbatim — the chat never restates a charge in dollars (B4 R2). */
   it('should keep an unretained credit refusal in the funding and send flow', async () => {
-    const creditMessage = 'Insufficient Tau credit for this model request.';
+    const creditMessage = 'Insufficient SinopiaCAD credit for this model request.';
     const creditError: ChatErrorPayload = {
       category: errorCategory.credits,
       title: 'Credit Limit Reached',

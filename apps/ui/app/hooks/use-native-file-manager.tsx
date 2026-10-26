@@ -73,7 +73,7 @@ export function useOpenProjectInFileManager(
 export const revealProjectPathInFileManager = async (projectId: string, path: string): Promise<void> => {
   const directories = desktopBridge()?.directories;
   if (!directories) {
-    throw new Error('This build of Tau cannot open the file manager.');
+    throw new Error('This build of SinopiaCAD cannot open the file manager.');
   }
   const config = await getProjectFileSystemConfig(projectId);
   if (config?.backend !== 'node') {

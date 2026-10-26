@@ -46,7 +46,7 @@ describe('ChatExecutionSelector', () => {
     globalThis.HTMLElement.prototype.scrollIntoView = vi.fn();
   });
 
-  it('offers one Tau Host row per discovered daemon, naming its workspace root', async () => {
+  it('offers one SinopiaCAD Host row per discovered daemon, naming its workspace root', async () => {
     hostPlacements = [
       { hostId: 'origin', rung: 1, label: 'studio-mini', workspaceRoot: '/Users/x/tau-workspace/lamp', online: true },
       { hostId: 'device-1', rung: 2, label: 'workshop', workspaceRoot: '/srv/tau', online: false },
@@ -60,12 +60,12 @@ describe('ChatExecutionSelector', () => {
 
     await user.click(screen.getByRole('button', { name: 'Select agent: SinopiaCAD' }));
 
-    expect(await screen.findByRole('option', { name: /Tau Host · studio-mini/u })).toBeInTheDocument();
+    expect(await screen.findByRole('option', { name: /SinopiaCAD Host · studio-mini/u })).toBeInTheDocument();
     expect(screen.getByText('/Users/x/tau-workspace/lamp')).toBeInTheDocument();
     // An offline daemon is listed so the reason is visible on its own row.
     expect(screen.getByText('Offline')).toBeInTheDocument();
 
-    await user.click(screen.getByRole('option', { name: /Tau Host · studio-mini/u }));
+    await user.click(screen.getByRole('option', { name: /SinopiaCAD Host · studio-mini/u }));
     expect(setActiveExecution).toHaveBeenCalledWith({ kind: 'tau', model: 'gpt-test', hostId: 'origin' });
   });
 
@@ -77,7 +77,7 @@ describe('ChatExecutionSelector', () => {
       {
         hostId: 'agent_cloud',
         rung: 2,
-        label: 'Tau Cloud',
+        label: 'SinopiaCAD Cloud',
         workspaceRoot: '/workspace',
         online: true,
         cloudProjectId: 'project-a',
@@ -91,7 +91,7 @@ describe('ChatExecutionSelector', () => {
     );
 
     await user.click(screen.getByRole('button', { name: 'Select agent: SinopiaCAD' }));
-    expect(await screen.findByRole('option', { name: /Tau Host · Tau Cloud/u })).toBeInTheDocument();
+    expect(await screen.findByRole('option', { name: /SinopiaCAD Host · SinopiaCAD Cloud/u })).toBeInTheDocument();
     expect(screen.queryByText(/keeps working when you close the tab/u)).not.toBeInTheDocument();
     expect(screen.getAllByRole('option')).toHaveLength(2);
   });
@@ -109,7 +109,7 @@ describe('ChatExecutionSelector', () => {
   });
 
   /* Q12.6: one agent is not a choice — the composer drops the control. */
-  it('is not offered when Tau is the only agent, and is offered once a host appears', () => {
+  it('is not offered when SinopiaCAD is the only agent, and is offered once a host appears', () => {
     const { unmount } = render(<OfferedProbe />);
     expect(screen.getByText('hidden:SinopiaCAD')).toBeInTheDocument();
     unmount();
@@ -119,7 +119,7 @@ describe('ChatExecutionSelector', () => {
     expect(screen.getByText('offered:SinopiaCAD')).toBeInTheDocument();
   });
 
-  it('should offer a switch to Tau when the saved Codex host is absent from discovery', async () => {
+  it('should offer a switch to SinopiaCAD when the saved Codex host is absent from discovery', async () => {
     activeExecution = { kind: 'acp', hostId: 'desktop', agentId: 'codex', model: 'gpt-6-sol' };
     render(
       <>
@@ -138,7 +138,7 @@ describe('ChatExecutionSelector', () => {
     expect(setActiveExecution).toHaveBeenCalledExactlyOnceWith({ kind: 'tau', model: 'gpt-test' });
   });
 
-  it('should offer browser Tau when the saved Tau host is absent from discovery', () => {
+  it('should offer browser SinopiaCAD when the saved SinopiaCAD host is absent from discovery', () => {
     activeExecution = { kind: 'tau', hostId: 'desktop', model: 'gpt-test' };
     render(<OfferedProbe />);
 
@@ -204,7 +204,7 @@ describe('ChatExecutionSelector', () => {
   });
 
   it('lists a refused agent with its code, and refuses to place a turn on it', async () => {
-    /* V9: the row exists so the user can tell "Tau does not do this" from
+    /* V9: the row exists so the user can tell "SinopiaCAD does not do this" from
      * "your Codex CLI is too old". */
     hostPlacements = [
       {
@@ -254,12 +254,12 @@ describe('ChatExecutionSelector', () => {
     );
 
     await user.click(screen.getByRole('button', { name: 'Select agent: SinopiaCAD' }));
-    await user.click(await screen.findByRole('option', { name: /Tau Host · workshop/u }));
+    await user.click(await screen.findByRole('option', { name: /SinopiaCAD Host · workshop/u }));
 
     expect(setActiveExecution).not.toHaveBeenCalled();
   });
 
-  it('names the Electron in-process launcher "Tau"', async () => {
+  it('names the Electron in-process launcher "SinopiaCAD"', async () => {
     hostPlacements = [
       { hostId: 'desktop', rung: 1, label: 'tau-desktop', workspaceRoot: '/Users/x/Documents/tau', online: true },
     ];
@@ -306,13 +306,13 @@ describe('ChatExecutionSelector', () => {
 
     // The trigger names the daemon, never a bare "Tau" for a turn this browser
     // will not run.
-    await user.click(screen.getByRole('button', { name: 'Select agent: Tau Host · studio-mini' }));
+    await user.click(screen.getByRole('button', { name: 'Select agent: SinopiaCAD Host · studio-mini' }));
     await user.click(await screen.findByRole('option', { name: /^SinopiaCAD$/u }));
 
     expect(setActiveExecution).toHaveBeenCalledWith({ kind: 'tau', model: 'gpt-test' });
   });
 
-  it('offers exactly one Tau target when no daemon is discovered', async () => {
+  it('offers exactly one SinopiaCAD target when no daemon is discovered', async () => {
     const user = userEvent.setup();
     render(
       <ChatExecutionSelector>
@@ -322,12 +322,12 @@ describe('ChatExecutionSelector', () => {
 
     await user.click(screen.getByRole('button', { name: 'Select agent: SinopiaCAD' }));
 
-    expect(screen.queryByText('Tau (Browser)')).not.toBeInTheDocument();
+    expect(screen.queryByText('SinopiaCAD (Browser)')).not.toBeInTheDocument();
     await user.click(await screen.findByRole('option', { name: /^SinopiaCAD$/u }));
     expect(setActiveExecution).toHaveBeenCalledWith({ kind: 'tau', model: 'gpt-test' });
   });
 
-  it('states the reason on the Tau row when this project cannot host the agent', async () => {
+  it('states the reason on the SinopiaCAD row when this project cannot host the agent', async () => {
     // No coordinator fallback exists any more, so an unavailable placement is
     // surfaced, never silently rerouted.
     browserHostAvailability = {

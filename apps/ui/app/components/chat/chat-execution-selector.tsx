@@ -65,7 +65,7 @@ const tauHostKey = (hostId: TauAgentHostId): string => `tau-host:${encodeURIComp
  * two of them apart.
  */
 const tauHostLabel = (placement: AgentHostPlacementTarget): string =>
-  placement.hostId === 'desktop' ? 'SinopiaCAD' : `Tau Host · ${placement.label}`;
+  placement.hostId === 'desktop' ? 'SinopiaCAD' : `SinopiaCAD Host · ${placement.label}`;
 
 const tauHostTarget = (placement: AgentHostPlacementTarget): TauHostTarget => ({
   key: tauHostKey(placement.hostId),
@@ -302,7 +302,7 @@ export const ChatExecutionSelector = memo(function ({
       }}
       value={selectedTarget}
       title='Select an agent'
-      description={`Choose SinopiaCAD ${isDesktopTarget() ? 'on this computer' : 'in this browser'}, or a Tau Host workspace.`}
+      description={`Choose SinopiaCAD ${isDesktopTarget() ? 'on this computer' : 'in this browser'}, or a SinopiaCAD Host workspace.`}
       searchPlaceHolder='Search agents…'
       emptyListMessage='No agents discovered.'
       onClose={onClose}

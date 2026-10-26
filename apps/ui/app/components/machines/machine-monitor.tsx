@@ -707,7 +707,7 @@ export function RunBlock({
           )}
         </p>
         {run.state === 'unknown' ? (
-          <p>{entry.name} did not report how this run ended, and Tau did not stop it. Check the machine.</p>
+          <p>{entry.name} did not report how this run ended, and SinopiaCAD did not stop it. Check the machine.</p>
         ) : null}
       </section>
     );
@@ -729,7 +729,9 @@ export function RunBlock({
           </>
         )}
         {describeRun(entry)}
-        {run.origin === 'external' ? <span className='text-muted-foreground'> · not started from Tau</span> : null}
+        {run.origin === 'external' ? (
+          <span className='text-muted-foreground'> · not started from SinopiaCAD</span>
+        ) : null}
       </p>
       {progress.fraction === undefined ? null : (
         <Progress
@@ -753,7 +755,7 @@ export function RunBlock({
       )}
       {run.delivery === 'streamed' ? (
         <p className='text-xs text-muted-foreground'>
-          Tau feeds this program line by line: keep this computer awake and Tau open until it ends.
+          SinopiaCAD feeds this program line by line: keep this computer awake and SinopiaCAD open until it ends.
         </p>
       ) : null}
       {isConfirmingCancel ? (
@@ -1084,8 +1086,8 @@ export function InspectStage({
         <dt className='text-muted-foreground'>Jobs</dt>
         <dd>
           {jobs.type === 'unsupported'
-            ? 'Not from Tau'
-            : `${jobs.delivery === 'stored' ? 'Stored on the machine' : 'Fed by Tau'} · started ${jobs.start === 'remote' ? 'from Tau' : 'at the machine'}`}
+            ? 'Not from SinopiaCAD'
+            : `${jobs.delivery === 'stored' ? 'Stored on the machine' : 'Fed by SinopiaCAD'} · started ${jobs.start === 'remote' ? 'from SinopiaCAD' : 'at the machine'}`}
         </dd>
         <dt className='text-muted-foreground'>Stop</dt>
         <dd>{describeOutcome(capabilities.stop)} Not an emergency stop.</dd>

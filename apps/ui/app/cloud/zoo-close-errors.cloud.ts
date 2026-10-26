@@ -9,7 +9,7 @@ export const zooCloseMessages = {
 /** Must match apps/api billing.constants.ts `zooCloseCodes`. */
 export const zooCloseErrors: Readonly<Record<string, string>> = {
   1013: zooCloseMessages.unavailable,
-  4401: 'Sign in to Tau to use the Zoo kernel.',
+  4401: 'Sign in to SinopiaCAD to use the Zoo kernel.',
   4402: zooCloseMessages.credits,
   4403: zooCloseMessages.pro,
 };

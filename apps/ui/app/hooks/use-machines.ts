@@ -52,7 +52,7 @@ const noRefresh = (): void => undefined;
 
 /** What a person reads when another Tau app on this computer holds the printers (blueprint D6). @public */
 export const printersInUseElsewhere =
-  'Printers are in use by another Tau app on this computer. Quit it to use them here.';
+  'Printers are in use by another SinopiaCAD app on this computer. Quit it to use them here.';
 
 /* The host's name for a machine store another process holds, and the lock's own code it wraps. */
 const inUseElsewhereCodes: ReadonlySet<string> = new Set(['MACHINE_STORE_OWNED_ELSEWHERE', 'AUTHORITY_ALREADY_OWNED']);

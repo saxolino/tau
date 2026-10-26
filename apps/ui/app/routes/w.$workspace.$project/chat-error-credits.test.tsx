@@ -146,7 +146,7 @@ describe('ChatErrorCredits', () => {
     );
 
     // 3,084,332 - 2,960,000 = 124,332 atoms -> 13 whole credits (rounded up).
-    expect(screen.getByText('Tau paused this turn: 13 more credits needed for Astra.')).toBeInTheDocument();
+    expect(screen.getByText('SinopiaCAD paused this turn: 13 more credits needed for Astra.')).toBeInTheDocument();
     expect(
       screen.queryByText('Your available monthly and purchased credits do not cover this turn.'),
     ).not.toBeInTheDocument();

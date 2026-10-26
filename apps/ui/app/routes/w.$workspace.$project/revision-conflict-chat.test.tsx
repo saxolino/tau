@@ -101,7 +101,7 @@ describe('RevisionConflictChat', () => {
     });
     expect(errors[0]).toEqual({
       title: 'Could not start a chat to resolve this',
-      description: 'Tau could not start that chat. Try again.',
+      description: 'SinopiaCAD could not start that chat. Try again.',
     });
     expect(logged).toHaveBeenCalled();
     logged.mockRestore();

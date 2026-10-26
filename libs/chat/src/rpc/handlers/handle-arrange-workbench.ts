@@ -127,7 +127,7 @@ const decode = <T>(
   return result.status === 'current' ? result.record : result.code === 'NEWER_RECORD' ? 'newer' : 'invalid';
 };
 const newer = (name: string): Failure =>
-  failure('INVALID_RECORD', `The ${name} record was written by a newer Tau. Update Tau to use it.`);
+  failure('INVALID_RECORD', `The ${name} record was written by a newer SinopiaCAD. Update SinopiaCAD to use it.`);
 const namedViewIds = (input: ArrangeWorkbenchInput): Set<string> =>
   new Set([
     ...(input.views ?? []).map((view) => view.id),

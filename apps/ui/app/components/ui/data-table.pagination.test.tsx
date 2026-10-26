@@ -44,16 +44,16 @@ describe('DataTablePagination', () => {
     const user = userEvent.setup();
     render(<Harness withSelectedCount={false} />);
 
-    expect(screen.getByText('1–20 of 31 examples')).toBeInTheDocument();
+    expect(screen.getByText('1–20 of 31')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Go to next page' }));
-    expect(screen.getByText('21–31 of 31 examples')).toBeInTheDocument();
+    expect(screen.getByText('21–31 of 31')).toBeInTheDocument();
     expect(screen.getByText('Page 2 of 2')).toBeInTheDocument();
   });
 
   it('should keep the selection count when it is requested', () => {
     render(<Harness />);
 
-    expect(screen.getByText('0 of 31 example(s) selected.')).toBeInTheDocument();
+    expect(screen.getByText('0 of 31 selected.')).toBeInTheDocument();
   });
 
   it('should wrap its controls and size them from the Button and Select owners', () => {

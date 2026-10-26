@@ -174,7 +174,9 @@ const reconnectCopy = (remote: RemoteFacet): string => {
     return 'GitHub needs a connected account to reach this repository. Reconnect GitHub, then pick it from your repositories.';
   }
   /* D94: every other Git remote is anonymous, so it had no saved credentials to reject. */
-  return remote.error ?? 'This remote asked for a sign-in Tau does not have, or has no repository at this address.';
+  return (
+    remote.error ?? 'This remote asked for a sign-in SinopiaCAD does not have, or has no repository at this address.'
+  );
 };
 
 /**
@@ -260,7 +262,7 @@ const connectingCopy = (remote: RemoteFacet): string =>
   remote.phase === 'disconnecting'
     ? 'Disconnecting…'
     : remote.kind === 'tau'
-      ? 'Connecting to Tau Cloud…'
+      ? 'Connecting to SinopiaCAD Cloud…'
       : 'Connecting…';
 
 /**
@@ -375,7 +377,7 @@ function GitRemoteForm({
       {/*
         Large objects do not cross this wire, and the port refuses the push by
         name before anything is offered (P20). Saying so here is the difference
-        between a person choosing Tau Cloud now and meeting `LFS_REMOTE_UNSUPPORTED`
+        between a person choosing SinopiaCAD Cloud now and meeting `LFS_REMOTE_UNSUPPORTED`
         at the first push.
       */}
       <p className='text-xs text-muted-foreground'>
@@ -644,10 +646,11 @@ export function RevisionSyncRegion({
           .split('/')
           .map((segment) => encodeURIComponent(segment))
           .join('/')}`;
-  const connectedLabel = remote.kind === 'tau' ? 'Tau Cloud' : gitRemoteLabel(remote.url, isGithubRemote(remote));
+  const connectedLabel =
+    remote.kind === 'tau' ? 'SinopiaCAD Cloud' : gitRemoteLabel(remote.url, isGithubRemote(remote));
   const labelOf = (pending: PendingConnection): string =>
     pending.kind === 'tau'
-      ? 'Tau Cloud'
+      ? 'SinopiaCAD Cloud'
       : pending.kind === 'github'
         ? pending.repository.fullName
         : gitRemoteLabel(pending.url, isGithubRemoteUrl(pending.url));
@@ -816,7 +819,11 @@ export function RevisionSyncRegion({
   const facts: ReadonlyArray<readonly [string, ReactNode]> = [
     [
       'Backup',
-      remote.kind === 'tau' ? 'Tau Cloud' : remote.provider === 'github' ? 'GitHub repository' : 'Git repository',
+      remote.kind === 'tau'
+        ? 'SinopiaCAD Cloud'
+        : remote.provider === 'github'
+          ? 'GitHub repository'
+          : 'Git repository',
     ],
     ...(remote.kind === 'git' && remote.url !== undefined
       ? ([
@@ -835,9 +842,9 @@ export function RevisionSyncRegion({
         : role === 'read'
           ? 'View only'
           : remote.fetchOnly
-            ? 'Read-only link · Tau will not push'
+            ? 'Read-only link · SinopiaCAD will not push'
             : remote.provider === 'github'
-              ? 'Read access · writes require approval in Tau'
+              ? 'Read access · writes require approval in SinopiaCAD'
               : 'Read and write',
     ],
     ['Includes', `${includes.slice(0, -1).join(', ')} and ${includes.at(-1) ?? ''}`],
@@ -866,7 +873,7 @@ export function RevisionSyncRegion({
           {/* A push this viewer cannot make is said on the line, not discovered after a gesture (F1). */}
           {showsAccess ? (
             <span className='text-muted-foreground'>
-              {remote.fetchOnly ? 'Read-only link · Tau will not push' : 'View only'}
+              {remote.fetchOnly ? 'Read-only link · SinopiaCAD will not push' : 'View only'}
             </span>
           ) : undefined}
           {remote.storage === undefined || !hasFigure ? undefined : (
@@ -1058,7 +1065,7 @@ export function RevisionSyncRegion({
             <RadioGroupItem id='remote-tau' value='tau' disabled={!canSyncFiles} />
             <Cloud aria-hidden className='size-4 shrink-0 text-muted-foreground' />
             <Label htmlFor='remote-tau' className={cn('font-normal', !canSyncFiles && 'text-muted-foreground')}>
-              Tau Cloud
+              SinopiaCAD Cloud
             </Label>
             {canSyncFiles ? (
               storageLimitBytes === undefined ? null : (
@@ -1079,7 +1086,7 @@ export function RevisionSyncRegion({
       )}
 
       {changingBackup && choice === 'tau' ? (
-        <p className='text-xs text-muted-foreground'>Files and history are backed up to your Tau account.</p>
+        <p className='text-xs text-muted-foreground'>Files and history are backed up to your SinopiaCAD account.</p>
       ) : null}
 
       {changingBackup && choice === 'tau' ? (
@@ -1396,7 +1403,7 @@ export function RevisionSyncRegion({
         Who else may work on this project (D27, charter W5).
 
         The owner alone: every route behind the panel needs `owner`, so a
-        collaborator would only meet a refusal. Tau Cloud alone, too (N4) — a
+        collaborator would only meet a refusal. SinopiaCAD Cloud alone, too (N4) — a
         GitHub-backed project has an owner but no cloud project to invite
         anybody to, and a project with no remote has neither.
       */}

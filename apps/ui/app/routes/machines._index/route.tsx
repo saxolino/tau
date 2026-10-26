@@ -229,11 +229,13 @@ export default function MachinesRoute(): React.JSX.Element {
       <PageHeader title='Machines' />
       <PanelEmptyState
         icon={Printer}
-        title={machines.reason === 'not-granted' ? 'Machine access is not granted' : 'Open Machines in Tau desktop'}
+        title={
+          machines.reason === 'not-granted' ? 'Machine access is not granted' : 'Open Machines in SinopiaCAD desktop'
+        }
         description='The desktop app connects to machines on this computer. Your project files stay available here.'
       >
         <Button asChild>
-          <a href={`${scheme}://machines`}>Open Tau desktop</a>
+          <a href={`${scheme}://machines`}>Open SinopiaCAD desktop</a>
         </Button>
       </PanelEmptyState>
     </div>

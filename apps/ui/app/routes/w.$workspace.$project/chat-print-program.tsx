@@ -333,7 +333,7 @@ export function ProgramStage({
       )}
       {jobs.delivery === 'streamed' ? (
         <p className='text-xs text-muted-foreground'>
-          Keep this computer awake: Tau feeds the program for the whole run.
+          Keep this computer awake: SinopiaCAD feeds the program for the whole run.
         </p>
       ) : null}
       {sendError === undefined ? null : <PrintNotice tone='error'>{sendError}</PrintNotice>}

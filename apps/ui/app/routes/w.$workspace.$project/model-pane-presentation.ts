@@ -53,7 +53,7 @@ function partPropertiesLabels(t: Translate, language: Language): PartPropertiesL
     weightNeedsDensity: t('pieces.quantity.weightNeedsDensity'),
     estimate: t('pieces.quantity.estimate'),
     appearanceUnavailable: t('pieces.quantity.appearanceUnavailable'),
-    surfaceMaterials: (count) => t('pieces.quantity.finishes', { count }),
+    surfaceMaterials: (count) => t(count === 1 ? 'pieces.quantity.finishesOne' : 'pieces.quantity.finishes', { count }),
     unnamedMaterial: t('pieces.quantity.unnamedFinish'),
     noPartSelected: t('pieces.properties.none'),
     kind: (kind) => t(kindKey(kind)),

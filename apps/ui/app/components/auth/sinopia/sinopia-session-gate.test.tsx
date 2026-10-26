@@ -117,6 +117,19 @@ describe('SinopiaSessionGate', () => {
     expect(screen.queryByText('Workspace')).not.toBeInTheDocument();
   });
 
+  it('should show the reserved page, and no workspace, to an account that is not an administrator', () => {
+    sinopia.state = { status: 'reserved', user: account };
+
+    renderGate();
+
+    expect(screen.getByRole('heading', { level: 1, name: 'SinopiaCAD è in anteprima riservata' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Torna a Sinopia' })).toHaveAttribute(
+      'href',
+      'https://sinopialab.com/dashboard',
+    );
+    expect(screen.queryByText('Workspace')).not.toBeInTheDocument();
+  });
+
   it('should offer «Riprova» when the access check could not be read', async () => {
     sinopia.state = { status: 'unverified', user: account };
     const user = userEvent.setup();

@@ -114,6 +114,9 @@ const PieceGroup = memo(function PieceGroup({
     () => ({
       locale: languageLocales[language],
       embedFirstLevel: true,
+      hideRequiredMark: true,
+      inferredHint: (kind) => t(kind === 'unit' ? 'measures.inferredUnit' : 'measures.inferredSemantics'),
+      resetLabel: (name) => t('measures.reset', { name }),
       fieldDescription: (_path, description) => (description.startsWith('[sinopia:assumed]') ? '' : description),
       // A flat measure inside its piece drops the piece's name: «Larghezza» under Marquise, not «Marquise larghezza».
       fieldLabel: (path, fallback) => {

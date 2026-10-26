@@ -16,6 +16,7 @@ import { versionsMessages } from '#i18n/messages/versions.js';
 import { sinopiaImagesMessages } from '#i18n/messages/sinopia-images.js';
 import { sinopiaSendMessages } from '#i18n/messages/sinopia-send.js';
 import { sinopiaSyncMessages } from '#i18n/messages/sinopia-sync.js';
+import { libraryMessages } from '#i18n/messages/library.js';
 import { manualEditMessages } from '#i18n/messages/manual-edit.js';
 
 /**
@@ -42,6 +43,7 @@ export const areas = {
   sinopiaSend: sinopiaSendMessages,
   sinopiaSync: sinopiaSyncMessages,
   manualEdit: manualEditMessages,
+  library: libraryMessages,
 } as const;
 
 /** The Italian catalog, the source of every key. */

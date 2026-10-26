@@ -89,7 +89,7 @@ function PresenceRow({
         label='I am at the machine'
         description={
           presence.attended
-            ? 'Controls that need someone watching are enabled. Tau asks again after 10 minutes without a control being used.'
+            ? 'Controls that need someone watching are enabled. SinopiaCAD asks again after 10 minutes without a control being used.'
             : 'Moving the machine and starting a job need someone who can see it.'
         }
       >
@@ -344,7 +344,7 @@ export function MachineWorkbenchContent({
         <PresenceRow control={control} presence={presence} />
         {isJobWatchStalled ? (
           <PrintNotice tone='neutral' role='status'>
-            Job updates from {entry.name} stopped. Tau keeps retrying; the jobs shown here may be out of date.
+            Job updates from {entry.name} stopped. SinopiaCAD keeps retrying; the jobs shown here may be out of date.
           </PrintNotice>
         ) : null}
         {selectedJobId && !jobs.some((job) => job.jobId === selectedJobId) ? (

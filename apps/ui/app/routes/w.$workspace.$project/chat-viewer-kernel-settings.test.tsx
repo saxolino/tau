@@ -99,7 +99,7 @@ describe('viewer kernel settings', () => {
 
     expect(disclosure).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByRole('group', { name: 'Tessellation' })).toBeInTheDocument();
-    expect(screen.getByRole('menuitem', { name: 'Linear tolerance, 0.02mm' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Linear tolerance, 0.02 mm' })).toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: 'Angular tolerance, 20°' })).toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: 'Reset to defaults' })).toHaveAttribute('aria-disabled', 'true');
   });
@@ -163,7 +163,7 @@ describe('viewer kernel settings', () => {
     expect(disclosure).toHaveTextContent('1 changed from its default');
     fireEvent.click(disclosure);
     // A saved value past the drag window still shows as it is.
-    expect(screen.getByRole('menuitem', { name: 'Linear tolerance, 5mm' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Linear tolerance, 5 mm' })).toBeInTheDocument();
 
     // Changing the other setting keeps a value past the drag window as it is.
     fireEvent.keyDown(screen.getByRole('menuitem', { name: /^Angular tolerance/ }), { key: 'ArrowRight' });

@@ -87,13 +87,13 @@ const confirmationCopy = (
     reset: {
       title: `Reset “${name}” to defaults?`,
       description:
-        'Its print settings return to the printer’s defaults. Other profiles, and settings Tau does not recognise, stay as they are.',
+        'Its print settings return to the printer’s defaults. Other profiles, and settings SinopiaCAD does not recognise, stay as they are.',
       action: 'Reset profile',
     },
     'reset-all': {
       title: 'Reset all profiles for this printer type?',
       description:
-        'Every profile’s print settings return to the printer’s defaults. Names, the chosen profile and settings Tau does not recognise stay as they are.',
+        'Every profile’s print settings return to the printer’s defaults. Names, the chosen profile and settings SinopiaCAD does not recognise stay as they are.',
       action: 'Reset all profiles',
     },
     delete: {

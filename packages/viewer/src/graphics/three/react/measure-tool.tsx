@@ -63,15 +63,15 @@ export function describeMeasurementTarget(
   const metadata = mesh.userData['measurementFeatures'] as { componentId?: string; kind?: string } | undefined;
   const owner =
     [metadata?.componentId ? manifest?.nodesById[metadata.componentId]?.name : undefined, mesh.name].find(Boolean) ??
-    'Model';
+    'Modello';
   const graph =
     metadata?.kind === 'line' ? getLineMeasurementFeatures(mesh) : getCachedMeshMeasurementFeatures(mesh as THREE.Mesh);
   const endpoint =
     target.kind === 'endpoint'
       ? target.id.endsWith(':start')
-        ? ' · start'
+        ? ' · inizio'
         : target.id.endsWith(':end')
-          ? ' · end'
+          ? ' · fine'
           : ''
       : '';
   if (!graph) {
@@ -739,7 +739,7 @@ export function MeasureTool(): React.JSX.Element {
         occurrenceId: target?.occurrenceId ?? source?.mesh.uuid,
         featureId: target?.featureId,
         featureKind: target?.feature.kind ?? 'point',
-        label: target?.label ?? 'Surface point',
+        label: target?.label ?? 'Punto sulla superficie',
         quality: target?.evidence ?? 'mesh',
       };
       const basisMesh = selectedTargetRef.current?.mesh ?? source?.mesh;

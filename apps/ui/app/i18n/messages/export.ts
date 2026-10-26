@@ -23,6 +23,7 @@ export const exportMessages = defineMessages({
     pieces: 'Pezzi',
     all: 'Tutti',
     openPieces: '{count} pezzi non chiusi: {names}',
+    openPiecesOne: '{count} pezzo non chiuso: {names}',
     differentNames:
       'Questi nomi non corrispondono tra il file e il modello: {names}. Chiedi all’agente di assegnare un nome diverso a ogni pezzo.',
     ask: 'Chiedi all’agente di chiuderli',
@@ -73,6 +74,7 @@ export const exportMessages = defineMessages({
     pieces: 'Pieces',
     all: 'All',
     openPieces: '{count} pieces not closed: {names}',
+    openPiecesOne: '{count} piece not closed: {names}',
     differentNames:
       'These names don’t match between the file and the model: {names}. Ask the agent to give each piece a different name.',
     ask: 'Ask the agent to close them',

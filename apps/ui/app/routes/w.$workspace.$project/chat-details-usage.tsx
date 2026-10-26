@@ -144,7 +144,7 @@ export function ChatDetailsUsage({ enabled = true }: { readonly enabled?: boolea
       </Table>
       <p className='border-t px-3 py-2 text-xs text-muted-foreground'>
         {operationIds.length === 0 ? (
-          'No Tau-funded turns in this project.'
+          'No SinopiaCAD-funded turns in this project.'
         ) : (
           <>
             <span className='font-mono text-foreground'>{formatCredits(total.creditAtoms)}</span> charged

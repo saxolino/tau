@@ -133,7 +133,7 @@ export function BillingSettings(): React.JSX.Element {
               <div className='flex flex-col gap-1'>
                 {entitlements.isResolved ? (
                   <span className='font-medium'>
-                    Tau{' '}
+                    SinopiaCAD{' '}
                     {entitlements.tier === 'pro' ? 'Pro' : entitlements.tier === 'enterprise' ? 'Enterprise' : 'Free'}
                   </span>
                 ) : (
@@ -171,7 +171,7 @@ export function BillingSettings(): React.JSX.Element {
                 <span>Custom plan — contact enterprise@tau.new for changes.</span>
                 <div>
                   <Button asChild variant='outline' size='sm'>
-                    <a href='mailto:enterprise@tau.new'>Contact your Tau team</a>
+                    <a href='mailto:enterprise@tau.new'>Contact your SinopiaCAD team</a>
                   </Button>
                 </div>
               </>

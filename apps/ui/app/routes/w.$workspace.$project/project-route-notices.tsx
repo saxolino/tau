@@ -210,12 +210,12 @@ export const describeProjectRouteNotice = (
       return {
         icon: MonitorDown,
         tone: 'neutral',
-        title: `${state.kernelName} needs Tau Desktop`,
+        title: `${state.kernelName} needs SinopiaCAD Desktop`,
         description:
-          'This project runs native code that the web runtime does not include. Open it in Tau Desktop to continue.',
+          'This project runs native code that the web runtime does not include. Open it in SinopiaCAD Desktop to continue.',
         /* The download is offered only once a non-prerelease exists (Q56, DSK-7). */
         actions: isTauDesktopReleased()
-          ? [{ label: 'Get Tau Desktop', run: 'desktop', icon: MonitorDown, isPrimary: true }, projectsAction]
+          ? [{ label: 'Get SinopiaCAD Desktop', run: 'desktop', icon: MonitorDown, isPrimary: true }, projectsAction]
           : [{ ...projectsAction, isPrimary: true }],
       };
     }

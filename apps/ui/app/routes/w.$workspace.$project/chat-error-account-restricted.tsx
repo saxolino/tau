@@ -34,7 +34,7 @@ export const ChatErrorAccountRestricted = memo(function ({
       icon={CircleAlert}
       className={className}
       title='This account needs attention'
-      description='Tau has paused spending on this account while we look at a billing issue. Contact support to continue.'
+      description='SinopiaCAD has paused spending on this account while we look at a billing issue. Contact support to continue.'
       actions={
         <Button asChild variant='outline' size='xs'>
           <a href='mailto:support@tau.new'>

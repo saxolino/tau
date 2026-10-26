@@ -79,13 +79,13 @@ export function GithubRepositoryWriteSettings({
                   <p className='text-xs text-muted-foreground'>
                     {access.data.canRead
                       ? 'Read files and history; import branch designs.'
-                      : 'This repository is no longer available to Tau.'}
+                      : 'This repository is no longer available to SinopiaCAD.'}
                   </p>
                 </div>
               </div>
               <div className='flex flex-wrap items-center gap-3 border-t p-4'>
                 <div className='min-w-0 flex-1 basis-52'>
-                  <p className='text-sm font-medium'>Writes from Tau</p>
+                  <p className='text-sm font-medium'>Writes from SinopiaCAD</p>
                   <p className='text-xs text-muted-foreground'>
                     {enabled
                       ? 'Enabled for this repository. Each push is a separate action.'
@@ -111,7 +111,7 @@ export function GithubRepositoryWriteSettings({
           </Card>
           <p className='text-xs text-muted-foreground'>
             {access.data.canWrite
-              ? 'GitHub permits read and write access. Turning off writes in Tau blocks new write credentials; it does not revoke the GitHub grant or credentials already issued.'
+              ? 'GitHub permits read and write access. Turning off writes in SinopiaCAD blocks new write credentials; it does not revoke the GitHub grant or credentials already issued.'
               : 'GitHub has not granted write access to this repository. Review the installation and your repository role on GitHub.'}
           </p>
           {onPush ? (
@@ -148,8 +148,9 @@ export function GithubRepositoryWriteSettings({
           <AlertDialogHeader>
             <AlertDialogTitle>Enable writes to {access.data?.fullName}?</AlertDialogTitle>
             <AlertDialogDescription>
-              GitHub already permits writes for this repository. This lets Tau request write credentials until you turn
-              it off. Nothing is pushed now. Each push still needs a separate action, and protected branches apply.
+              GitHub already permits writes for this repository. This lets SinopiaCAD request write credentials until
+              you turn it off. Nothing is pushed now. Each push still needs a separate action, and protected branches
+              apply.
             </AlertDialogDescription>
           </AlertDialogHeader>
           {change.error ? (

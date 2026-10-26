@@ -236,7 +236,9 @@ export function ChatMessageQueueView({
                 </span>
                 {attachments > 0 ? (
                   <span
-                    aria-label={t('agent.queue.count', { count: attachments })}
+                    aria-label={t(attachments === 1 ? 'agent.queue.countOne' : 'agent.queue.count', {
+                      count: attachments,
+                    })}
                     className='flex shrink-0 items-center gap-1 text-xs text-muted-foreground'
                   >
                     <Paperclip aria-hidden='true' className='size-3.5' />

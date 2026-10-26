@@ -183,19 +183,19 @@ describe('RevisionSyncRegion', () => {
     renderRegion(facet());
 
     expect(screen.getByRole('radio', { name: 'No remote' })).toBeChecked();
-    expect(screen.getByRole('radio', { name: 'Tau Cloud' })).not.toBeChecked();
+    expect(screen.getByRole('radio', { name: 'SinopiaCAD Cloud' })).not.toBeChecked();
     expect(screen.getByRole('radio', { name: 'Git remote' })).not.toBeChecked();
     expect(screen.getByRole('button', { name: 'Connect backup' })).toBeInTheDocument();
   });
 
-  it('asks to connect when Tau Cloud is picked', async () => {
+  it('asks to connect when SinopiaCAD Cloud is picked', async () => {
     const user = userEvent.setup();
     const { connect, setSyncChats } = renderRegion(facet());
 
-    await user.click(screen.getByRole('radio', { name: 'Tau Cloud' }));
+    await user.click(screen.getByRole('radio', { name: 'SinopiaCAD Cloud' }));
 
     expect(connect).not.toHaveBeenCalled();
-    expect(screen.getByText('Files and history are backed up to your Tau account.')).toBeInTheDocument();
+    expect(screen.getByText('Files and history are backed up to your SinopiaCAD account.')).toBeInTheDocument();
     expect(screen.getByRole('switch', { name: 'Sync chats' })).toBeInTheDocument();
     await user.click(screen.getByRole('switch', { name: 'Sync chats' }));
     expect(setSyncChats).toHaveBeenCalledWith(false);
@@ -207,7 +207,7 @@ describe('RevisionSyncRegion', () => {
     const user = userEvent.setup();
     const { cancel } = renderRegion(facet({ kind: 'tau', phase: 'connecting' }));
 
-    expect(screen.getByRole('status')).toHaveTextContent('Connecting to Tau Cloud…');
+    expect(screen.getByRole('status')).toHaveTextContent('Connecting to SinopiaCAD Cloud…');
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
 
     expect(cancel).toHaveBeenCalledTimes(1);
@@ -226,7 +226,7 @@ describe('RevisionSyncRegion', () => {
     /* Round 18: under 75 % the figure rides the backup line; the meter waits until storage is worth watching. */
     expect(screen.getByText('2.1 GB of 10 GB')).toBeInTheDocument();
     expect(screen.queryByRole('meter', { name: 'Storage used against your plan' })).not.toBeInTheDocument();
-    expect(screen.getByText('Tau Cloud')).toBeInTheDocument();
+    expect(screen.getByText('SinopiaCAD Cloud')).toBeInTheDocument();
     expect(screen.queryByText('https://api.tau.new/v1/git/p1.git')).not.toBeInTheDocument();
   });
 
@@ -240,7 +240,7 @@ describe('RevisionSyncRegion', () => {
         provider: 'github',
       }),
     );
-    expect(screen.getByText('Read-only link · Tau will not push')).toBeInTheDocument();
+    expect(screen.getByText('Read-only link · SinopiaCAD will not push')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Sync now' })).not.toBeInTheDocument();
   });
 
@@ -317,7 +317,9 @@ describe('RevisionSyncRegion', () => {
     await user.click(screen.getByRole('button', { name: 'Pick GitHub repository' }));
 
     expect(connect).not.toHaveBeenCalled();
-    expect(screen.getByText('Replace Tau Cloud with o/r? Every revision stays on this device.')).toBeInTheDocument();
+    expect(
+      screen.getByText('Replace SinopiaCAD Cloud with o/r? Every revision stays on this device.'),
+    ).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Replace backup' }));
     await waitFor(() => {
       expect(connect).toHaveBeenCalledWith(
@@ -359,7 +361,7 @@ describe('RevisionSyncRegion', () => {
     expect(screen.queryByRole('alert', { name: 'Backup change refused' })).not.toBeInTheDocument();
   });
 
-  it('should offer the plan when Tau Cloud refuses to replace a Git backup on the owner’s plan (R2)', async () => {
+  it('should offer the plan when SinopiaCAD Cloud refuses to replace a Git backup on the owner’s plan (R2)', async () => {
     const user = userEvent.setup();
     const { upgrade } = renderRegion(
       facet({
@@ -368,7 +370,7 @@ describe('RevisionSyncRegion', () => {
         url: 'https://gitlab.example.com/o/r.git',
         refusedReplacement: {
           kind: 'tau',
-          error: 'Syncing files to Tau Cloud is a paid plan feature.',
+          error: 'Syncing files to SinopiaCAD Cloud is a paid plan feature.',
           reason: 'notEntitled',
           attempt: 1,
         },
@@ -378,7 +380,7 @@ describe('RevisionSyncRegion', () => {
 
     const alert = screen.getByRole('alert', { name: 'Backup change refused' });
     expect(alert).toHaveTextContent(
-      'Syncing files to Tau Cloud is a paid plan feature. gitlab.example.com/o/r is still this project’s backup.',
+      'Syncing files to SinopiaCAD Cloud is a paid plan feature. gitlab.example.com/o/r is still this project’s backup.',
     );
     expect(within(alert).getAllByRole('button')).toHaveLength(1);
     expect(within(alert).queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
@@ -484,7 +486,7 @@ describe('RevisionSyncRegion', () => {
 
     // The first press asks; nothing has happened yet.
     expect(disconnect).not.toHaveBeenCalled();
-    expect(screen.getByText('Disconnect Tau Cloud? Every revision stays on this device.')).toBeInTheDocument();
+    expect(screen.getByText('Disconnect SinopiaCAD Cloud? Every revision stays on this device.')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Keep it' }));
     expect(disconnect).not.toHaveBeenCalled();
@@ -492,7 +494,7 @@ describe('RevisionSyncRegion', () => {
     await chooseChangeBackup(user);
     await user.click(screen.getByRole('radio', { name: 'No remote' }));
     await user.click(screen.getByRole('button', { name: 'Apply backup change' }));
-    await user.click(screen.getByRole('button', { name: 'Disconnect Tau Cloud' }));
+    await user.click(screen.getByRole('button', { name: 'Disconnect SinopiaCAD Cloud' }));
     expect(disconnect).toHaveBeenCalledTimes(1);
   });
 
@@ -844,7 +846,7 @@ describe('RevisionSyncRegion', () => {
   /* D18: a host that is not GitHub is offered neither GitHub nor Tau copy.
    * D94: and, being anonymous, is never told it had saved credentials.
    * R11: nor is the alert named for credentials it does not hold. */
-  it('should say the remote asked for a sign-in Tau does not have, and retry, for a host that is not GitHub', async () => {
+  it('should say the remote asked for a sign-in SinopiaCAD does not have, and retry, for a host that is not GitHub', async () => {
     const user = userEvent.setup();
     const region = renderRegion(
       facet({ kind: 'git', phase: 'reconnectRequired', url: 'https://gitlab.example.com/o/r.git' }),
@@ -852,7 +854,7 @@ describe('RevisionSyncRegion', () => {
 
     const alert = screen.getByRole('alert', { name: 'Remote sign-in' });
     expect(alert).toHaveTextContent(
-      'This remote asked for a sign-in Tau does not have, or has no repository at this address.',
+      'This remote asked for a sign-in SinopiaCAD does not have, or has no repository at this address.',
     );
     expect(alert).not.toHaveTextContent(/saved credentials/u);
     expect(screen.queryByRole('button', { name: 'Reconnect GitHub' })).not.toBeInTheDocument();
@@ -880,7 +882,7 @@ describe('RevisionSyncRegion', () => {
     expect(screen.getByRole('button', { name: 'Reconnect GitHub' })).toBeInTheDocument();
   });
 
-  it('should offer a non-GitHub remote Retry rather than a Tau sign-in on a refused push', () => {
+  it('should offer a non-GitHub remote Retry rather than a SinopiaCAD sign-in on a refused push', () => {
     renderRegion(
       facet({ kind: 'git', phase: 'connected', url: 'https://gitlab.example.com/o/r.git' }),
       syncFacet({
@@ -907,12 +909,12 @@ describe('RevisionSyncRegion', () => {
         phase: 'failed',
         url: 'https://github.com/o/r.git',
         error:
-          'Large files cannot be backed up to a Git remote: models/housing.step. Connect Tau Cloud instead, or remove them from the project.',
+          'Large files cannot be backed up to a Git remote: models/housing.step. Connect SinopiaCAD Cloud instead, or remove them from the project.',
       }),
     );
 
     expect(screen.getByRole('alert')).toHaveTextContent('models/housing.step');
-    expect(screen.getByRole('alert')).toHaveTextContent('Connect Tau Cloud instead');
+    expect(screen.getByRole('alert')).toHaveTextContent('Connect SinopiaCAD Cloud instead');
   });
 
   it('moves focus onto the disconnect confirmation, not to the document', async () => {
@@ -930,7 +932,7 @@ describe('RevisionSyncRegion', () => {
     await user.click(screen.getByRole('button', { name: 'Apply backup change' }));
 
     // The button the click came from unmounted; focus must not fall to <body>.
-    expect(screen.getByRole('button', { name: 'Disconnect Tau Cloud' })).toHaveFocus();
+    expect(screen.getByRole('button', { name: 'Disconnect SinopiaCAD Cloud' })).toHaveFocus();
   });
 
   /*
@@ -996,7 +998,7 @@ describe('RevisionSyncRegion', () => {
         state: 'failed',
         reason: 'unauthorized',
         pendingCount,
-        error: 'Sign in to Tau to sync with GitHub.',
+        error: 'Sign in to SinopiaCAD to sync with GitHub.',
       }),
       { isSignedOut: true },
     );
@@ -1141,7 +1143,7 @@ describe('RevisionSyncRegion with a moved GitHub repository (D11)', () => {
     const row = screen.getByRole('status', { name: 'Backup status' });
     expect(
       await within(row).findByText(
-        "GitHub didn't find this repository, or this connection can't access it. Check the Tau app's repository access on GitHub.",
+        "GitHub didn't find this repository, or this connection can't access it. Check the SinopiaCAD app's repository access on GitHub.",
       ),
     ).toBeInTheDocument();
     expect(within(row).getByRole('button', { name: 'Reconnect GitHub' })).toBeInTheDocument();
@@ -1190,7 +1192,7 @@ describe('RevisionSyncRegion refusals and plan gates', () => {
     const region = renderRegion(connected);
     expect(screen.getByRole('button', { name: 'Backup settings' })).toBeInTheDocument();
 
-    region.show(facet({ kind: 'tau', phase: 'failed', error: 'Sign in to back this project up to Tau Cloud.' }));
+    region.show(facet({ kind: 'tau', phase: 'failed', error: 'Sign in to back this project up to SinopiaCAD Cloud.' }));
 
     /* Before the fix this rendered three radios and *zero* buttons, so the
      * region was an inert dead end and focus fell to `<body>`. */
@@ -1216,11 +1218,16 @@ describe('RevisionSyncRegion refusals and plan gates', () => {
     { reason: 'unknown', action: 'Retry' },
   ] as const)('classifies a refused connect as $reason and offers $action (rule 19)', ({ reason, action }) => {
     renderRegion(
-      facet({ kind: 'tau', phase: 'failed', error: 'Syncing files to Tau Cloud is a paid plan feature.', reason }),
+      facet({
+        kind: 'tau',
+        phase: 'failed',
+        error: 'Syncing files to SinopiaCAD Cloud is a paid plan feature.',
+        reason,
+      }),
     );
 
     const alert = screen.getByRole('alert', { name: 'Backup connection error' });
-    expect(alert).toHaveTextContent('Syncing files to Tau Cloud is a paid plan feature.');
+    expect(alert).toHaveTextContent('Syncing files to SinopiaCAD Cloud is a paid plan feature.');
     const actions = within(alert)
       .getAllByRole(action === 'Sign in' ? 'link' : 'button')
       .map((element) => element.textContent.trim());
@@ -1228,10 +1235,10 @@ describe('RevisionSyncRegion refusals and plan gates', () => {
   });
 
   it('answers a failed connect in the vocabulary rule 19 allows (C4)', () => {
-    renderRegion(facet({ kind: 'tau', phase: 'failed', error: 'Tau Cloud has no project with this id.' }));
+    renderRegion(facet({ kind: 'tau', phase: 'failed', error: 'SinopiaCAD Cloud has no project with this id.' }));
 
     const alert = screen.getByRole('alert', { name: 'Backup connection error' });
-    expect(alert).toHaveTextContent('Tau Cloud has no project with this id.');
+    expect(alert).toHaveTextContent('SinopiaCAD Cloud has no project with this id.');
     const actions = within(alert)
       .getAllByRole('button')
       .map((button) => button.textContent.trim());
@@ -1266,11 +1273,11 @@ describe('RevisionSyncRegion refusals and plan gates', () => {
     expect(within(row).queryByRole('button')).not.toBeInTheDocument();
   });
 
-  it('offers Available on Pro for Tau Cloud and a Git remote on every plan (C5, N4)', async () => {
+  it('offers Available on Pro for SinopiaCAD Cloud and a Git remote on every plan (C5, N4)', async () => {
     const user = userEvent.setup();
     const region = renderRegion(facet(), syncFacet(), { canSyncFiles: false });
 
-    expect(screen.getByRole('radio', { name: 'Tau Cloud' })).toBeDisabled();
+    expect(screen.getByRole('radio', { name: 'SinopiaCAD Cloud' })).toBeDisabled();
     expect(screen.getByRole('radio', { name: 'Git remote' })).toBeEnabled();
     const upgrades = screen.getAllByRole('button', { name: /Available on Pro/u });
     expect(upgrades).toHaveLength(1);
@@ -1282,10 +1289,10 @@ describe('RevisionSyncRegion refusals and plan gates', () => {
   });
 
   /* D16: an entitled account is told what its plan includes, not what it withholds. */
-  it('should name the included allowance on the Tau Cloud choice instead of a plan gate', () => {
+  it('should name the included allowance on the SinopiaCAD Cloud choice instead of a plan gate', () => {
     renderRegion(facet(), syncFacet(), { storageLimitBytes: 1024 ** 3 });
 
-    expect(screen.getByRole('radio', { name: 'Tau Cloud' })).toBeEnabled();
+    expect(screen.getByRole('radio', { name: 'SinopiaCAD Cloud' })).toBeEnabled();
     expect(screen.getByText('1 GB included')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Available on Pro/u })).not.toBeInTheDocument();
   });
@@ -1516,7 +1523,7 @@ describe('RevisionSyncRegion collaborators', () => {
 
   /* N4: collaboration is a Tau Cloud fact. A GitHub-backed project has an owner
      but no cloud project to invite anybody to, so the panel is not offered. */
-  it('shows the owner no panel when the remote is not Tau Cloud', () => {
+  it('shows the owner no panel when the remote is not SinopiaCAD Cloud', () => {
     renderRegion(
       facet({ kind: 'git', phase: 'connected', url: 'https://github.com/o/r.git', provider: 'github' }),
       syncFacet({ state: 'backedUp' }),
@@ -1596,7 +1603,7 @@ describe('RevisionSyncRegion collaborators', () => {
 
     const link = await screen.findByRole('textbox', { name: 'Invitation link for teammate@example.test' });
     expect((link as HTMLInputElement).value).toContain('/invitations/tok_abcdef');
-    expect(screen.getByText('Tau does not email this link. Send it to them yourself.')).toBeDefined();
+    expect(screen.getByText('SinopiaCAD does not email this link. Send it to them yourself.')).toBeDefined();
     expect(screen.getByRole('button', { name: /Copy link/u })).toBeDefined();
     /* F5: the link is the whole product of the gesture, so it is announced and
        it takes focus — a keyboard person must not have to hunt for it. */
@@ -1644,7 +1651,7 @@ describe('RevisionSyncRegion backup line', () => {
   const tau = facet({ kind: 'tau', phase: 'connected', url: 'https://api.tau.new/v1/git/p1.git' });
 
   /* W2a, I12: a damaged cloud copy is terminal; the one honest thing to offer is the truth. */
-  it('says a damaged Tau Cloud copy stopped backing up, and offers no action it cannot keep', () => {
+  it('says a damaged SinopiaCAD Cloud copy stopped backing up, and offers no action it cannot keep', () => {
     renderRegion(
       tau,
       syncFacet({ state: 'failed', pendingCount: 2, reason: 'damaged', error: 'GIT_REPOSITORY_INCOMPLETE' }),
@@ -1652,7 +1659,7 @@ describe('RevisionSyncRegion backup line', () => {
 
     const backup = screen.getByRole('status', { name: 'Backup status' });
     expect(backup).toHaveTextContent(
-      'SinopiaCAD has to repair this project’s copy on Tau Cloud before it can back it up again. Nothing on this device is lost.',
+      'SinopiaCAD has to repair this project’s copy on SinopiaCAD Cloud before it can back it up again. Nothing on this device is lost.',
     );
     expect(backup).not.toHaveTextContent('GIT_REPOSITORY_INCOMPLETE');
     expect(within(backup).queryByRole('button')).toBeNull();
@@ -1666,7 +1673,7 @@ describe('RevisionSyncRegion backup line', () => {
     const end = document.querySelector('[data-slot="sync-status-line"] [data-slot="actions-end"]');
     expect(within(end as HTMLElement).getByRole('button', { name: 'Backup settings' })).toBeInTheDocument();
     await user.click(within(end as HTMLElement).getByRole('button', { name: 'Details' }));
-    const facts = document.querySelector('dl[aria-label="Details for Tau Cloud"]');
+    const facts = document.querySelector('dl[aria-label="Details for SinopiaCAD Cloud"]');
     expect(facts).toHaveTextContent('Read and write');
     expect(facts).toHaveTextContent('Files, history and chats');
   });
@@ -1676,9 +1683,9 @@ describe('RevisionSyncRegion backup line', () => {
     const { disconnect } = renderRegion(tau, syncFacet({ state: 'backedUp' }));
 
     await user.click(screen.getByRole('button', { name: 'Backup settings' }));
-    await user.click(screen.getByRole('menuitem', { name: 'Disconnect Tau Cloud…' }));
-    expect(screen.getByText('Disconnect Tau Cloud? Every revision stays on this device.')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Disconnect Tau Cloud' })).toHaveFocus();
+    await user.click(screen.getByRole('menuitem', { name: 'Disconnect SinopiaCAD Cloud…' }));
+    expect(screen.getByText('Disconnect SinopiaCAD Cloud? Every revision stays on this device.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Disconnect SinopiaCAD Cloud' })).toHaveFocus();
     await user.click(screen.getByRole('button', { name: 'Keep it' }));
     expect(disconnect).not.toHaveBeenCalled();
     expect(screen.getByRole('button', { name: 'Backup settings' })).toHaveFocus();

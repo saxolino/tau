@@ -196,7 +196,7 @@ export const turnRevisionDetail = (state: TurnRevisionState): string => {
     }
     case 'unconfirmed': {
       const name = baseName(state.base);
-      return `Tau could not reach the host to confirm this save.${name === undefined || state.base.kind === 'first' ? '' : ` ${name} is the last confirmed revision.`}`;
+      return `SinopiaCAD could not reach the host to confirm this save.${name === undefined || state.base.kind === 'first' ? '' : ` ${name} is the last confirmed revision.`}`;
     }
     case 'saved': {
       return '';

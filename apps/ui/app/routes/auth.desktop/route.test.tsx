@@ -93,10 +93,10 @@ describe('AuthDesktopRoute', () => {
     vi.stubEnv('TAU_DESKTOP_RELEASED', 'false');
     render(<AuthDesktopRoute />);
 
-    await userEvent.click(screen.getByRole('button', { name: /connect to tau desktop/i }));
-    await userEvent.click(await screen.findByRole('button', { name: 'Tau Desktop didn’t open' }));
+    await userEvent.click(screen.getByRole('button', { name: /connect to sinopiacad desktop/i }));
+    await userEvent.click(await screen.findByRole('button', { name: 'SinopiaCAD Desktop didn’t open' }));
 
-    expect(screen.queryByRole('link', { name: 'Get Tau Desktop' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Get SinopiaCAD Desktop' })).not.toBeInTheDocument();
   });
 
   // MAJOR 2: any site can navigate a signed-in browser here. Minting on mount
@@ -105,7 +105,7 @@ describe('AuthDesktopRoute', () => {
   it('mints nothing until the user confirms, even with a valid request', async () => {
     render(<AuthDesktopRoute />);
 
-    expect(screen.getByRole('button', { name: /connect to tau desktop/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /connect to sinopiacad desktop/i })).toBeInTheDocument();
     await waitFor(() => {
       expect(mocks.authFetch).not.toHaveBeenCalled();
     });
@@ -116,7 +116,7 @@ describe('AuthDesktopRoute', () => {
     render(<AuthDesktopRoute />);
 
     expect(
-      screen.getByText('Only continue if you just started sign-in from Tau Desktop on this computer.'),
+      screen.getByText('Only continue if you just started sign-in from SinopiaCAD Desktop on this computer.'),
     ).toBeInTheDocument();
     expect(screen.getByText('This request expires in 5 minutes.')).toBeInTheDocument();
   });
@@ -124,13 +124,13 @@ describe('AuthDesktopRoute', () => {
   it('mints a one-time token and navigates to the app scheme on confirmation', async () => {
     render(<AuthDesktopRoute />);
 
-    await userEvent.click(screen.getByRole('button', { name: /connect to tau desktop/i }));
+    await userEvent.click(screen.getByRole('button', { name: /connect to sinopiacad desktop/i }));
 
     await waitFor(() => {
       expect(assign).toHaveBeenCalledWith('tau://auth/callback?ott=ott-value&state=abcd1234efgh');
     });
     expect(mocks.authFetch).toHaveBeenCalledWith('/one-time-token/generate');
-    expect(screen.getByText('Opening Tau Desktop')).toBeInTheDocument();
+    expect(screen.getByText('Opening SinopiaCAD Desktop')).toBeInTheDocument();
   });
 
   /* The fallback is a visible button, never a timer, and sign-in is the one
@@ -138,16 +138,16 @@ describe('AuthDesktopRoute', () => {
   it('offers a way out of opening, and re-offers the same unspent token', async () => {
     render(<AuthDesktopRoute />);
 
-    await userEvent.click(screen.getByRole('button', { name: /connect to tau desktop/i }));
-    await userEvent.click(await screen.findByRole('button', { name: 'Tau Desktop didn’t open' }));
+    await userEvent.click(screen.getByRole('button', { name: /connect to sinopiacad desktop/i }));
+    await userEvent.click(await screen.findByRole('button', { name: 'SinopiaCAD Desktop didn’t open' }));
 
-    expect(screen.getByText('Tau Desktop didn’t open')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Get Tau Desktop' })).toHaveAttribute(
+    expect(screen.getByText('SinopiaCAD Desktop didn’t open')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Get SinopiaCAD Desktop' })).toHaveAttribute(
       'href',
       'https://github.com/taucad/tau/releases/latest',
     );
     expect(
-      screen.getByText('To sign in without the desktop app, close this tab and use Tau in the browser.'),
+      screen.getByText('To sign in without the desktop app, close this tab and use SinopiaCAD in the browser.'),
     ).toBeInTheDocument();
 
     assign.mockClear();
@@ -163,7 +163,7 @@ describe('AuthDesktopRoute', () => {
     render(<AuthDesktopRoute />);
 
     expect(screen.getByText('This sign-in link is not valid')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /connect to tau desktop/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /connect to sinopiacad desktop/i })).not.toBeInTheDocument();
     await waitFor(() => {
       expect(mocks.authFetch).not.toHaveBeenCalled();
     });
@@ -180,15 +180,15 @@ describe('AuthDesktopRoute', () => {
     await waitFor(() => {
       expect(mocks.authFetch).not.toHaveBeenCalled();
     });
-    expect(screen.queryByRole('button', { name: /connect to tau desktop/i })).not.toBeInTheDocument();
-    expect(screen.getByText('Signing you in to Tau Desktop')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /connect to sinopiacad desktop/i })).not.toBeInTheDocument();
+    expect(screen.getByText('Signing you in to SinopiaCAD Desktop')).toBeInTheDocument();
   });
 
   it('reports a failure instead of navigating when the token cannot be minted', async () => {
     mocks.authFetch.mockResolvedValue({ data: null, error: { status: 401 } });
 
     render(<AuthDesktopRoute />);
-    await userEvent.click(screen.getByRole('button', { name: /connect to tau desktop/i }));
+    await userEvent.click(screen.getByRole('button', { name: /connect to sinopiacad desktop/i }));
 
     await waitFor(() => {
       expect(screen.getByText("We couldn't complete the sign-in")).toBeInTheDocument();

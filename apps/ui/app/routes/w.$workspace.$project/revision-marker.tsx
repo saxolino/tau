@@ -617,7 +617,7 @@ function PublishRevisionDialog({
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>
-            A published link always points at a named version that is backed up on Tau Cloud.
+            A published link always points at a named version that is backed up on SinopiaCAD Cloud.
           </DialogDescription>
         </DialogHeader>
         {link === undefined ? (
@@ -1092,7 +1092,7 @@ export function RevisionRow({
                     {isCurrent ? <span className='text-foreground'>Current</span> : null}
                     {actor === undefined ? null : (
                       <span className='flex min-w-0 items-center gap-1'>
-                        {actor === 'Tau agent' ? <Bot aria-hidden className='size-3 shrink-0' /> : null}
+                        {actor === 'SinopiaCAD agent' ? <Bot aria-hidden className='size-3 shrink-0' /> : null}
                         <span className='min-w-0'>{actor}</span>
                       </span>
                     )}

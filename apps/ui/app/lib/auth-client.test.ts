@@ -47,7 +47,9 @@ describe('authClient runtime environment', () => {
     const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ user: null, session: null }));
     const { authClient } = await import('#lib/auth-client.js');
 
-    await expect(authClient.getSession()).rejects.toThrow('SinopiaCAD signs in with Sinopia, not with a Tau account.');
+    await expect(authClient.getSession()).rejects.toThrow(
+      'SinopiaCAD signs in with Sinopia, not with a SinopiaCAD account.',
+    );
     expect(fetch).not.toHaveBeenCalled();
   });
 });

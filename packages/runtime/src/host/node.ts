@@ -235,7 +235,7 @@ const providerUnservedAlert: MachineAlert = {
   severity: 'serious',
   message: 'This Tau does not serve the provider this machine was bound with.',
   blocks: 'everything',
-  remedies: [{ type: 'person', instruction: 'Update Tau, or remove this machine and bind it again.' }],
+  remedies: [{ type: 'person', instruction: 'Update SinopiaCAD, or remove this machine and bind it again.' }],
 };
 
 // Two descriptors name the same installation when they differ only in incarnation.

@@ -258,7 +258,7 @@ describe('ProjectSharePanel', () => {
     expect(selected.querySelector('use')).toHaveAttribute('href', '#github');
   });
 
-  it('creates an unencrypted direct link by default without contacting Tau', async () => {
+  it('creates an unencrypted direct link by default without contacting SinopiaCAD', async () => {
     const collectSnapshot = vi.fn(
       async () =>
         ({
@@ -386,7 +386,7 @@ describe('ProjectSharePanel', () => {
     expect(screen.getByRole('region', { name: 'Share project' })).toHaveClass('min-h-0', 'min-w-0');
     await userEvent.click(screen.getByRole('button', { name: 'Share with Direct link' }));
     await userEvent.click(screen.getByRole('option', { name: 'GitHub Gist' }));
-    expect(await screen.findByText(/tau needs gist access/i)).toBeInTheDocument();
+    expect(await screen.findByText(/sinopiacad needs gist access/i)).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Allow Gist access' }));
     expect(connectGithubGist).toHaveBeenCalledWith({
       returnUrl: globalThis.location.href,
@@ -661,12 +661,12 @@ describe('ProjectSharePanel', () => {
     expect(screen.queryByText('GitHub authorization returned. Checking Gist access…')).not.toBeInTheDocument();
   });
 
-  it('presents signed-out Tau persistence as a normal state', async () => {
+  it('presents signed-out SinopiaCAD persistence as a normal state', async () => {
     globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 401 } as Response);
 
     renderPanel(<ProjectSharePanel projectId='proj_signed_out' projectName='Demo' entryPath='main.ts' />);
 
-    expect(await screen.findByText('Sign in to persist this project with Tau.')).toBeInTheDocument();
+    expect(await screen.findByText('Sign in to persist this project with SinopiaCAD.')).toBeInTheDocument();
     expect(screen.getByText(/keeps this hosted share available over time/i)).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Sign in' })).toHaveAttribute(
       'href',
@@ -687,12 +687,12 @@ describe('ProjectSharePanel', () => {
     );
   });
 
-  it('presents offline Tau persistence without an exceptional error state', async () => {
+  it('presents offline SinopiaCAD persistence without an exceptional error state', async () => {
     globalThis.fetch = vi.fn().mockRejectedValue(new TypeError('offline'));
 
     renderPanel(<ProjectSharePanel projectId='proj_offline' projectName='Demo' entryPath='main.ts' />);
 
-    expect(await screen.findByText('Tau-hosted sharing is unavailable right now.')).toBeInTheDocument();
+    expect(await screen.findByText('SinopiaCAD-hosted sharing is unavailable right now.')).toBeInTheDocument();
     expect(screen.getByText('Check your connection and try again.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
   });
@@ -956,7 +956,7 @@ describe('ProjectSharePanel', () => {
   });
 
   it('offers sign-in only when the sentence asks for it', async () => {
-    publishFacet({ phase: 'error', error: 'Sign in to publish to Tau Cloud.' });
+    publishFacet({ phase: 'error', error: 'Sign in to publish to SinopiaCAD Cloud.' });
     renderPanel(<ProjectSharePanel projectId='proj_signin' projectName='Demo' entryPath='main.ts' />);
 
     const alert = await screen.findByRole('alert');

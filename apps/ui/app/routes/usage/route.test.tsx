@@ -214,8 +214,8 @@ describe('UsagePage', () => {
   it('renders the server snapshot without any local chat or project source', () => {
     renderPage();
 
-    expect(screen.getByRole('heading', { name: 'Tau usage' })).toBeInTheDocument();
-    expect(screen.getByText(/Usage through the Tau LLM provider/)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'SinopiaCAD usage' })).toBeInTheDocument();
+    expect(screen.getByText(/Usage through the SinopiaCAD LLM provider/)).toBeInTheDocument();
     expect(screen.getByTestId('credits-used')).toHaveTextContent('1 credit used');
     expect(screen.getByText('Across 1 action in the selected range')).toBeInTheDocument();
     expect(screen.getByTestId('purchased-balance')).toHaveTextContent('4 credits available');
@@ -383,11 +383,11 @@ describe('UsagePage', () => {
   });
 
   it.each([
-    { state: { status: 'loading' }, label: 'Loading your Tau usage…' },
+    { state: { status: 'loading' }, label: 'Loading your SinopiaCAD usage…' },
     { state: { status: 'refreshing', snapshot }, label: 'Refreshing…' },
     { state: { status: 'unable-to-refresh', snapshot }, label: 'Showing saved usage; unable to refresh' },
     { state: { status: 'unavailable' }, label: 'No saved usage for this view' },
-    { state: { status: 'signed-out' }, label: 'Sign in to see your Tau usage.' },
+    { state: { status: 'signed-out' }, label: 'Sign in to see your SinopiaCAD usage.' },
   ])('labels the $state.status page state', ({ state, label }) => {
     useUsageSnapshot.mockReturnValue({ ...state, retry: vi.fn() });
     renderPage();
@@ -423,7 +423,7 @@ describe('UsagePage', () => {
     expect(useUsageSnapshot).toHaveBeenCalledWith(expect.any(Object), { minimum, saved: undefined });
     expect(useCredits).toHaveBeenCalledWith(minimum);
     expect(screen.getByText('No saved usage for this view')).toBeInTheDocument();
-    expect(screen.queryByText('Sign in to see your Tau usage.')).not.toBeInTheDocument();
+    expect(screen.queryByText('Sign in to see your SinopiaCAD usage.')).not.toBeInTheDocument();
   });
 
   // ── Saved snapshots (C10-U4) ─────────────────────────────────────────────

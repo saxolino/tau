@@ -265,7 +265,7 @@ beforeEach(() => {
 });
 
 describe('seeded first turn execution', () => {
-  it('runs the external agent the consumed row selected, not the cookie Tau fallback', async () => {
+  it('runs the external agent the consumed row selected, not the cookie SinopiaCAD fallback', async () => {
     const command = await dispatchSeededTurn({ kind: 'acp', hostId: 'desktop', agentId: 'codex' });
 
     expect(command).toMatchObject({
@@ -283,7 +283,7 @@ describe('seeded first turn execution', () => {
     expect(command.payload.config).not.toHaveProperty('model');
   });
 
-  it('keeps the consumed row’s Tau host and model instead of rebuilding them from the cookie', async () => {
+  it('keeps the consumed row’s SinopiaCAD host and model instead of rebuilding them from the cookie', async () => {
     const command = await dispatchSeededTurn({ kind: 'tau', hostId: 'origin', model: 'openai-gpt-5.5' });
 
     expect(command).toMatchObject({
@@ -318,7 +318,7 @@ describe('seeded first turn execution', () => {
    * override displaces: pinning its shape here is what makes the pair of
    * assertions above meaningful for *both* providers.
    */
-  it('fabricates the same Tau-from-cookie value under the cookie-only provider', () => {
+  it('fabricates the same SinopiaCAD-from-cookie value under the cookie-only provider', () => {
     let observed: CadAgentExecution | undefined;
     function Composer(): React.JSX.Element {
       observed = useChatComposer().execution.execution;
