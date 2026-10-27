@@ -21,6 +21,7 @@ import {
   inferSinopiaCadEngine,
   patchSinopiaCadThumbnail,
   moveSinopiaCadModel,
+  reconcileSinopiaCadLink,
   sourceFromRecognition,
 } from '#services/sinopia-cad.js';
 import { leggiRecordRiconoscimento, percorsoRiconoscimento } from '#services/riconoscimento-record.js';
@@ -107,7 +108,12 @@ function useLinkQuery() {
       if (link !== undefined && link.userId !== userId) {
         throw new Error('SINOPIA_OWNER_MISMATCH');
       }
-      return link ?? null;
+      if (link === undefined) {
+        return null;
+      }
+      // A model moved to another project (an interrupted «cambia», another device): the link follows the row. Offline
+      // the link stays as it is; the next open checks again.
+      return reconcileSinopiaCadLink(recordFiles, `/projects/${projectId}`, link).catch(() => link);
     },
     staleTime: Infinity,
   });
