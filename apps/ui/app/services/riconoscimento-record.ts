@@ -1,8 +1,6 @@
 import { z } from 'zod';
-import { famiglie } from '@taucad/smlib/famiglie';
-import type { IdFamiglia } from '@taucad/smlib/famiglie';
 import { schedaParteSchema, schedaRiconoscimentoSchema } from '@taucad/smlib/riconoscimento';
-import { vistaSenzaFaccia } from '@taucad/smlib/verifica';
+import { completaFaccia } from '#services/riconoscimento-faccia.js';
 
 /**
  * The recognition's record in the project (SinopiaCAD D2 §2.7, T-D2-07): `.tau/workbench/riconoscimento.json`, with
@@ -93,7 +91,7 @@ export function aggiornaRecord(grezzo: unknown): unknown {
   if (typeof grezzo !== 'object' || grezzo === null || Array.isArray(grezzo)) {
     return grezzo;
   }
-  const record = completaFaccia(grezzo as Record<string, unknown>);
+  const record = completaFacciaRecord(grezzo as Record<string, unknown>);
   if (record['version'] !== undefined) {
     return record;
   }
@@ -110,29 +108,16 @@ export function aggiornaRecord(grezzo: unknown): unknown {
 }
 
 /**
- * Records written before the sheet named the face (`vista.faccia`): the face comes from the view name of the family
- * built, and its angles (absolute then, offsets now) are replaced by the name's offsets.
+ * Records written before the sheet named the face: completed from the view name of the family built.
  *
  * @param record - The parsed record.
- * @returns The record with the face, or the input when it has one or cannot be completed.
+ * @returns The record with the face in its sheet.
  */
-function completaFaccia(record: Record<string, unknown>): Record<string, unknown> {
-  const scheda: unknown = record['scheda'];
+function completaFacciaRecord(record: Record<string, unknown>): Record<string, unknown> {
   const famiglia: unknown = record['famiglia'];
-  if (typeof scheda !== 'object' || scheda === null || typeof famiglia !== 'object' || famiglia === null) {
-    return record;
-  }
-  const vista: unknown = Reflect.get(scheda, 'vista');
-  if (typeof vista !== 'object' || vista === null || Reflect.get(vista, 'faccia') !== undefined) {
-    return record;
-  }
-  const id: unknown = Reflect.get(famiglia, 'id');
-  const viste = typeof id === 'string' ? famiglie[id as IdFamiglia]?.viste : undefined;
-  const nome: unknown = Reflect.get(vista, 'nome');
-  const completa = viste
-    ? vistaSenzaFaccia(viste, typeof nome === 'string' ? nome : undefined)
-    : { faccia: 'sopra', azimuth: 0, elevation: 0 };
-  return { ...record, scheda: { ...scheda, vista: { ...vista, ...completa } } };
+  const idFamiglia: unknown =
+    typeof famiglia === 'object' && famiglia !== null ? Reflect.get(famiglia, 'id') : undefined;
+  return record['scheda'] === undefined ? record : { ...record, scheda: completaFaccia(record['scheda'], idFamiglia) };
 }
 
 /**
