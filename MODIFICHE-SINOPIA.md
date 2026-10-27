@@ -1019,3 +1019,17 @@ Blocchi C1, C2, C5 e D4 del piano di Claude (`PIANO-CLAUDE-2026-10-26.md`), dall
   `apps/ui/desktop/vite.config.ts`: nei bundle dei worker il guardiano ha un chunk suo (`smlibwasm-guard-*`), che non
   aspetta il kernel. Il controllo passa da 30 571 ms a circa 550 ms; la prova chiede al worker delle varianti il
   controllo vero di una fibbia e fallisce oltre 15 s o con l'avviso del worker di sonda.
+
+## 27 ottobre 2026 — il salvataggio su Sinopia di un progetto con immagini
+
+- **Causa.** Il salvataggio su Sinopia legge l'ultima revisione come istantanea (`snapshot` del worker del file
+  manager, `apps/ui/app/machines/file-manager.worker.revisions.ts`), con ogni file in Base64. `uint8ArrayToBase64` di
+  `uint8array-extras` passa 65 535 byte per chiamata come argomenti (`String.fromCodePoint.apply`): lo stack di un worker
+  del browser è più piccolo di quello della pagina e trabocca già sopra i 30 000 argomenti («Maximum call stack size
+  exceeded»). Un progetto creato dal riconoscimento contiene la foto e la maschera della parte (`riferimenti/`): non si
+  salvava mai; uno creato dalla chat, con soli file piccoli, sì.
+- **Correzione.** `apps/ui/app/utils/base64.utils.ts` (nuovo): `bytesToBase64` usa `Uint8Array.prototype.toBase64`
+  dove c'è, altrimenti blocchi di 6 KiB (multipli di 3 byte), senza ricorsione né liste di argomenti grandi. Il worker
+  lo usa per l'istantanea. Le revisioni locali non cambiano: il salvataggio riparte da solo al prossimo tentativo.
+- **Prove.** `base64.utils.test.ts` codifica 6 MB in un worker con uno stack da 0,5 MB, dove la chiamata da 65 535
+  argomenti trabocca; `file-manager.worker.revisions.test.ts` fa l'istantanea di una revisione con un'immagine di 4 MB.

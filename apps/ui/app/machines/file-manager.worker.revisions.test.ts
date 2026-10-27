@@ -1338,6 +1338,29 @@ describe('the file-manager worker revision root (north star S48 jsdom 1–4)', (
     await expect(root.snapshot('unknown-revision')).rejects.toThrow('unavailable');
   });
 
+  /* 27 ott: the save to Sinopia reads the head as a snapshot; a project from the recognition holds the part's photo. */
+  it('should snapshot a revision holding a picture of several megabytes', async () => {
+    const fixture = harness(['alpha']);
+    const project = fixture.service.createRootedFileSystem('/projects/alpha');
+    const picture = Uint8Array.from(
+      { length: 4 * 1024 * 1024 },
+      (_, index) => (index * 7 + Math.floor(index / 997)) % 256,
+    );
+    await project.writeFile('main.scad', 'cube(10);');
+    await project.writeFile('riferimenti/parte.png', picture);
+    const alpha = await fixture.open('alpha');
+    const root = await fixture.root('alpha');
+    const session = await root.placementSession();
+    await place(session, turnKey(1));
+    await project.writeFile('main.scad', 'cube(20);');
+    await finish(session, turnKey(1));
+    await turnFinalized(alpha, 'turn-1');
+    const [head] = await root.log();
+    const files = await root.snapshot(head!.revisionId);
+    expect(files['riferimenti/parte.png']).toBe(Buffer.from(picture).toString('base64'));
+    expect(files['main.scad']).toBe(Buffer.from('cube(20);').toString('base64'));
+  });
+
   /* W1b: a History row's Publish names the revision it was opened on, not the head. */
   it('should name the revision a Publish was opened on, not the branch head', async () => {
     const fixture = harness(['alpha']);
