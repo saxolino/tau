@@ -28,3 +28,37 @@ describe('authored parameter assumptions', () => {
     expect(annotateParameterAssumptions(schema, undefined)).toEqual(schema);
   });
 });
+
+describe('extended assumption marker (D2 §2.7)', () => {
+  it('should carry confidence, source and band inside the marker from a string or an object', async () => {
+    const { parseAssumptionDescription } = await import('#parameter-assumptions.js');
+    const annotated = annotateParameterAssumptions(schema, {
+      ipotesi: {
+        'stelo.spessore': '[c=0.62 f=proporzione min=78 max=92] Read on the visible part',
+        'stelo.lunghezza': { motivo: 'Hidden', confidenza: 0.3, fonte: 'non_visibile' },
+      },
+    });
+    const spessore = (annotated.properties?.['stelo'] as JSONSchema7).properties?.['spessore'] as JSONSchema7;
+    const lunghezza = (annotated.properties?.['stelo'] as JSONSchema7).properties?.['lunghezza'] as JSONSchema7;
+    expect(spessore.description).toBe('[sinopia:assumed c=0.62 f=proporzione min=78 max=92] Read on the visible part');
+    expect(lunghezza.description).toBe('[sinopia:assumed c=0.3 f=non_visibile] Hidden');
+    expect(parseAssumptionDescription(spessore.description)).toStrictEqual({
+      confidence: 0.62,
+      source: 'proporzione',
+      min: 78,
+      max: 92,
+      reason: 'Read on the visible part',
+    });
+  });
+
+  it('should read the plain marker as before and ignore malformed attributes', async () => {
+    const { parseAssumptionDescription } = await import('#parameter-assumptions.js');
+    expect(parseAssumptionDescription('[sinopia:assumed] Hidden thickness')).toStrictEqual({
+      reason: 'Hidden thickness',
+    });
+    expect(parseAssumptionDescription('[sinopia:assumed c=7 f=Nope min=x] Why')).toStrictEqual({ reason: 'Why' });
+    expect(parseAssumptionDescription('[sinopia:assumedX] no')).toBeUndefined();
+    expect(parseAssumptionDescription('An ordinary description')).toBeUndefined();
+    expect(parseAssumptionDescription(undefined)).toBeUndefined();
+  });
+});

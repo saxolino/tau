@@ -45,7 +45,8 @@
     "./package.json": "./package.json",
     "./model": "./src/model.ts",
     "./manual-operations": "./src/manual-operations.ts",
-    "./famiglie": "./src/famiglie/index.ts"
+    "./famiglie": "./src/famiglie/index.ts",
+    "./riconoscimento": "./src/riconoscimento/index.ts"
   },
   "publishConfig": {
     "access": "public",
@@ -75,6 +76,11 @@
         "types": "./dist/famiglie/index.d.mts",
         "import": "./dist/famiglie/index.mjs",
         "default": "./dist/famiglie/index.mjs"
+      },
+      "./riconoscimento": {
+        "types": "./dist/riconoscimento/index.d.mts",
+        "import": "./dist/riconoscimento/index.mjs",
+        "default": "./dist/riconoscimento/index.mjs"
       }
     },
     "imports": {}

@@ -15,6 +15,10 @@
     "**/__email-snapshots__/**",
     "**/__evidence-snapshots__/**",
     "**/__shader-snapshots__/**",
+    // The recognition contract and its shared code are byte-twinned with Sinopia's `sinopiacad` function (fingerprints
+    // in both repositories' tests): a formatter must not touch their bytes.
+    "/packages/plugins/smlib/src/riconoscimento/riconoscimento.contratto.json",
+    "/packages/plugins/smlib/src/riconoscimento/condiviso.ts",
     // Generated license inventory preserves the dependency-license source text.
     "/docs/licensing/third-party-licenses.md",
     // Legal documents keep their reviewed bytes; open-source.md must equal its generator's output.

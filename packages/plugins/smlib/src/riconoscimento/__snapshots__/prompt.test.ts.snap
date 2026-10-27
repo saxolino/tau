@@ -1,0 +1,199 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`prompt del classificatore > should describe the family anello with every critical parameter and stay under 6k tokens 1`] = `
+"## Family \`anello\` (recipe v1)
+Variants: griffe | chiuso | fascia
+part_type: — (jewellery and accessories, by shape)
+Parameters (key — unit — range — default — flags — meaning in Italian):
+- taglia.sistema — enum — it | us | eu_iso | diametro — default "it" — Sistema di taglie
+- taglia.valore — n — 1…76 — default 14 — CRITICAL — Taglia (IT 1–35 · US 3–15 · ISO 41–76 · mm 13–24)
+- taglia.diametroInterno — mm — — — default 17.19 — DERIVED (do not output) — Diametro interno dalla taglia
+- gambo.profilo — enum — tondo | mezzotondo | piatto | d | comfort — default "mezzotondo" — Profilo del gambo
+- gambo.larghezza — mm — 1.5…10 — default 3 — CRITICAL, silhouette — Larghezza del gambo in alto
+- gambo.spessore — mm — 1…4 — default 1.8 — silhouette — Spessore del gambo in alto
+- gambo.rastremazione — frazione — 0.5…1 — default 0.8 — Gambo in basso / in alto
+- castone.tipo — enum — chiuso | griffe | nessuno — default "griffe" — Castone
+- castone.parete — mm — 0.5…1.5 — default 0.8 — Parete del castone
+- castone.labbro — mm — 0.3…0.8 — default 0.4 — Labbro del castone chiuso
+- castone.sede — frazione — 0.3…0.6 — default 0.45 — Cintura della pietra sotto il bordo (frazione della sua altezza)
+- castone.altezza — mm — — — default 3.25 — DERIVED (do not output) — 0,9 × altezza della pietra + 0,5 (il chiuso quanto basta al padiglione)
+- pietra.taglio — enum — tondo — default "tondo" — Taglio (fase 1: brillante tondo)
+- pietra.diametro — mm — 1.5…14 — default 5 — CRITICAL, silhouette — Diametro della pietra calibrata
+- pietra.altezza — mm — — — default 3.05 — DERIVED (do not output) — 0,61 × diametro (brillante)
+- griffe.numero — n — 3…8 — default 4 — Numero di griffe
+- griffe.diametro — mm — 0.7…1.6 — default 1 — Diametro delle griffe
+- griffe.altezzaSopraCintura — mm — 0.5…1.5 — default 0.8 — Quanto le griffe salgono sopra la cintura
+- lega — enum — oro_18kt_giallo | oro_18kt_rosa | oro_18kt_bianco | oro_14kt | oro_9kt | argento_925 | platino_950 | titanio — default "oro_18kt_giallo" — Lega"
+`;
+
+exports[`prompt del classificatore > should describe the family borchia with every critical parameter and stay under 6k tokens 1`] = `
+"## Family \`borchia\` (recipe v1)
+Variants: cupola | piramide | piatta | cono
+part_type: stud
+Parameters (key — unit — range — default — flags — meaning in Italian):
+- testa.forma — enum — cupola | piramide | piatta | cono — default "cupola" — Forma della testa
+- testa.diametro — mm — 4…25 — default 8 — CRITICAL, silhouette — Diametro della testa
+- testa.altezza — mm — 1…12 — default 3 — silhouette — Altezza della testa
+- testa.lati — n — 3…8 — default 4 — Lati della piramide
+- gambo.diametro — mm — 1.5…4 — default 2.5 — Diametro del gambo
+- gambo.lunghezza — mm — 3…12 — default 6 — Lunghezza del gambo
+- costruzione.processo — enum — pressofusione_zama | cnc — default "pressofusione_zama" — Processo
+- costruzione.materiale — enum — zama | ottone — default "zama" — Materiale
+- costruzione.cava — bool — true | false — default false — Testa svuotata da sotto
+- costruzione.parete — mm — 0.8…2 — default 1 — Parete della testa cava
+- costruzione.sformo — deg — 0.5…2 — default 1 — Sformo del gambo"
+`;
+
+exports[`prompt del classificatore > should describe the family fibbia with every critical parameter and stay under 6k tokens 1`] = `
+"## Family \`fibbia\` (recipe v1)
+Variants: rettangolare | ovale | a_d | doppia
+part_type: buckle
+Parameters (key — unit — range — default — flags — meaning in Italian):
+- cinturino.larghezza — mm — 8…60 — default 20 — CRITICAL, silhouette — Larghezza del cinturino che passa nella fibbia
+- cinturino.spessore — mm — 1.5…5 — default 3 — Spessore del cinturino
+- telaio.luce — mm — — — default 21 — DERIVED (do not output) — Luce interna: cinturino + 1 mm di gioco
+- telaio.altezzaInterna — mm — 6…40 — default 12 — silhouette — Apertura interna lungo il cinturino: max(10, 2 × spessore cinturino + 6)
+- telaio.sezioneLarghezza — mm — 1.5…8 — default 3 — silhouette — Larghezza della sezione del telaio
+- telaio.sezioneSpessore — mm — 1.2…6 — default 2.5 — Spessore della sezione del telaio
+- telaio.raggioAngoli — mm — 0…20 — default 3 — silhouette — Raggio degli angoli interni (esterni = raggio + sezione)
+- telaio.profilo — enum — piatto | bombato | tondo — default "bombato" — Profilo della sezione
+- telaio.raggioBordo — mm — 0…3 — default 0.75 — Raccordo dei bordi del profilo piatto (0,3 × spessore)
+- ardiglione.diametro — mm — 1.5…4.5 — default 2.5 — Diametro del filo dell’ardiglione
+- ardiglione.lunghezza — mm — — — default 16.5 — DERIVED (do not output) — Lunghezza dell’ardiglione: apertura + sezione + 1,5 mm
+- ardiglione.gioco — mm — 0.2…0.6 — default 0.3 — Gioco dell’occhio dell’ardiglione attorno alla barra
+- ardiglione.materiale — enum — acciaio | inox | ottone — default "acciaio" — Materiale del filo
+- traversino.abilitato — bool — true | false — default false — Barra centrale (l’ardiglione vi si avvolge)
+- traversino.larghezza — mm — 1.5…6 — default 2.5 — Larghezza del traversino
+- traversino.profilo — enum — piatto | tondo — default "piatto" — Sezione del traversino: piatta (90 % dello spessore) o tonda di diametro = larghezza
+- costruzione.processo — enum — pressofusione_zama | fusione_cera_persa | cnc — default "pressofusione_zama" — Processo produttivo del telaio
+- costruzione.sformo — deg — 0.5…2 — default 1 — Sformo dei fianchi in pressofusione"
+`;
+
+exports[`prompt del classificatore > should describe the family fondo_semplice with every critical parameter and stay under 6k tokens 1`] = `
+"## Family \`fondo_semplice\` (recipe v1)
+Variants: platform | zeppa | cuoio_liscio
+part_type: sole, midsole_wedge, welt
+Parameters (key — unit — range — default — flags — meaning in Italian):
+- pianta.taglia — n — 35…47 — default 37 — CRITICAL, silhouette — Taglia EU
+- pianta.lunghezza — mm — — — default 258.7 — DERIVED (do not output) — Taglia × 6,667 + 12 (ipotesi dichiarata)
+- pianta.rapportoPianta — frazione — 0.3…0.45 — default 0.37 — silhouette — Larghezza in pianta / lunghezza
+- pianta.rapportoTallone — frazione — 0.2…0.32 — default 0.25 — Larghezza al tallone / lunghezza
+- pianta.larghezzaPianta — mm — — — default 95.7 — DERIVED (do not output) — Larghezza in pianta
+- pianta.larghezzaTallone — mm — — — default 64.7 — DERIVED (do not output) — Larghezza al tallone
+- pianta.sormonto — mm — 0…12 — default 2.5 — Sormonto oltre la forma (2,5 montato · 8 guardolo)
+- spessore.punta — mm — 3…60 — default 12 — CRITICAL, silhouette — Spessore in punta
+- spessore.tallone — mm — 3…120 — default 12 — CRITICAL, silhouette — Spessore al tallone
+- spessore.puntaRialzo — mm — 0…25 — default 10 — silhouette — Rialzo di punta (toe spring)
+- fianco.sformo — deg — 0…6 — default 1.5 — Sformo dei fianchi (TR/TPU 1,5 · gomma 4 · cuoio 0)
+- bordo.raggioSuperiore — mm — 0…6 — default 2 — Raccordo del bordo superiore
+- bordo.raggioInferiore — mm — 0…3 — default 1 — Raccordo del bordo inferiore
+- costruzione.materiale — enum — tr | tpu | gomma | eva | pu_espanso | cuoio | sughero — default "tr" — Materiale
+- costruzione.lato — enum — dx | sx | coppia — default "coppia" — Destro, sinistro o la coppia"
+`;
+
+exports[`prompt del classificatore > should describe the family occhiello with every critical parameter and stay under 6k tokens 1`] = `
+"## Family \`occhiello\` (recipe v1)
+Variants: standard
+part_type: eyelet
+Parameters (key — unit — range — default — flags — meaning in Italian):
+- foro.diametro — mm — 3…12 — default 5 — CRITICAL, silhouette — Diametro del foro
+- flangia.diametro — mm — 6…20 — default 9 — silhouette — Diametro della flangia (foro + 3 … foro + 8)
+- flangia.spessore — mm — 0.4…1 — default 0.6 — Spessore della flangia
+- flangia.raggio — mm — 0.2…1 — default 0.4 — Raggio del bordo della flangia
+- gambo.altezza — mm — 2…8 — default 4 — Altezza del gambo: pelle + 1 mm di ribattitura
+- parete.spessore — mm — 0.3…0.8 — default 0.5 — Parete della lamiera
+- rondella.abilitata — bool — true | false — default false — Rondella di ribattitura
+- rondella.diametro — mm — — — default 8 — DERIVED (do not output) — Flangia − 1 mm
+- costruzione.materiale — enum — ottone | alluminio — default "ottone" — Materiale"
+`;
+
+exports[`prompt del classificatore > should describe the family pendente with every critical parameter and stay under 6k tokens 1`] = `
+"## Family \`pendente\` (recipe v1)
+Variants: disco | cuore | goccia | placchetta
+part_type: — (jewellery and accessories, by shape)
+Parameters (key — unit — range — default — flags — meaning in Italian):
+- corpo.forma — enum — disco | cuore | goccia | placchetta — default "disco" — Forma del pendente
+- corpo.lunghezza — mm — 5…60 — default 15 — CRITICAL, silhouette — Altezza del pendente (senza anellino)
+- corpo.larghezza — mm — 5…60 — default 15 — silhouette — Larghezza
+- corpo.spessore — mm — 0.8…3 — default 1.2 — Spessore al bordo
+- corpo.bombatura — mm — 0…3 — default 0.6 — Bombatura della faccia a vista
+- anellino.diametroInterno — mm — 2…6 — default 3 — Diametro interno dell’anellino
+- anellino.filo — mm — 0.6…1.5 — default 0.9 — Filo dell’anellino
+- anellino.orientamento — enum — in_piano | di_traverso — default "in_piano" — Anellino nel piano del pendente (0°) o di traverso (90°)
+- occhiello.foro — mm — 0…3 — default 0 — Foro sotto l’anellino (0 = nessuno, 1–3)
+- lega — enum — argento_925 | oro_18kt_giallo | oro_18kt_rosa | oro_18kt_bianco | oro_14kt | oro_9kt | ottone — default "argento_925" — Lega"
+`;
+
+exports[`prompt del classificatore > should describe the family placca with every critical parameter and stay under 6k tokens 1`] = `
+"## Family \`placca\` (recipe v1)
+Variants: rettangolo | ovale | cerchio | scudo
+part_type: ornament
+Parameters (key — unit — range — default — flags — meaning in Italian):
+- piastra.forma — enum — rettangolo | ovale | cerchio | scudo | contorno — default "rettangolo" — Forma della piastra
+- piastra.lunghezza — mm — 6…120 — default 30 — CRITICAL, silhouette — Lunghezza (diametro per il cerchio)
+- piastra.larghezza — mm — 4…60 — default 12 — CRITICAL, silhouette — Larghezza
+- piastra.spessore — mm — 0.6…5 — default 1.5 — Spessore (zama 1,5 · ottone tranciato 0,8)
+- piastra.raggioAngoli — mm — 0…20 — default 2 — silhouette — Raggio degli angoli
+- piastra.bombatura — mm — 0…4 — default 0 — Bombatura della faccia a vista
+- bordo.rilievo — mm — 0…1 — default 0.3 — Rilievo del bordo (0 = senza)
+- bordo.larghezza — mm — 0.4…3 — default 0.8 — Larghezza del bordo
+- testo.contenuto — testo — — — default "" — Testo del logo
+- testo.altezza — mm — 2…40 — default 5 — Altezza delle maiuscole
+- testo.modo — enum — rilievo | inciso | nessuno — default "rilievo" — Testo in rilievo o inciso
+- testo.profondita — mm — 0.2…1.5 — default 0.4 — Rilievo o profondità del testo
+- testo.font — enum — lato | sinopia — default "lato" — Carattere
+- fissaggio.tipo — enum — nessuno | perni | fori | ribattini — default "perni" — Fissaggio
+- fissaggio.perno.diametro — mm — 1…3 — default 1.5 — Diametro dei perni o dei fori
+- fissaggio.perno.lunghezza — mm — 2…8 — default 4 — Lunghezza dei perni
+- fissaggio.interasse — mm — — — default 18 — DERIVED (do not output) — Interasse dei perni: 0,6 × lunghezza
+- costruzione.processo — enum — pressofusione_zama | tranciatura_lamiera | fusione_cera_persa — default "pressofusione_zama" — Processo produttivo
+- costruzione.materiale — enum — zama | ottone | argento_925 | inox — default "zama" — Materiale
+- costruzione.sformo — deg — 0.5…2 — default 1 — Sformo dei fianchi in pressofusione"
+`;
+
+exports[`prompt del classificatore > should describe the family puntale with every critical parameter and stay under 6k tokens 1`] = `
+"## Family \`puntale\` (recipe v1)
+Variants: quarto_ellissoide
+part_type: — (jewellery and accessories, by shape)
+Parameters (key — unit — range — default — flags — meaning in Italian):
+- puntale.lunghezza — mm — 10…60 — default 25 — CRITICAL, silhouette — Lunghezza (dal retro alla punta)
+- puntale.larghezza — mm — 10…60 — default 30 — CRITICAL, silhouette — Larghezza
+- puntale.altezza — mm — 4…25 — default 10 — silhouette — Altezza
+- puntale.spessore — mm — 0.4…1.2 — default 0.6 — Spessore della lamiera
+- fori.numero — n — 0…2 — default 2 — Fori di fissaggio (0 o 2)
+- fori.diametro — mm — 1…3 — default 1.6 — Diametro dei fori
+- costruzione.materiale — enum — ottone | inox | alluminio — default "ottone" — Lamiera"
+`;
+
+exports[`prompt del classificatore > should describe the family tacco with every critical parameter and stay under 6k tokens 1`] = `
+"## Family \`tacco\` (recipe v1)
+Variants: stiletto | blocco | rocchetto | cono | kitten
+part_type: heel, top_lift
+Parameters (key — unit — range — default — flags — meaning in Italian):
+- tacco.altezza — mm — 15…130 — default 85 — CRITICAL, silhouette — Altezza dal piano d’appoggio al punto posteriore della seduta
+- tacco.spinta — deg — -2…10 — default 3 — silhouette — Inclinazione in avanti dell’asse del tacco
+- seduta.forma — enum — ellisse | rettangolo | scudo — default "ellisse" — Forma della seduta
+- seduta.lunghezza — mm — 30…90 — default 55 — CRITICAL, silhouette — Lunghezza della seduta (verso la punta)
+- seduta.larghezza — mm — 28…75 — default 48 — CRITICAL, silhouette — Larghezza della seduta
+- seduta.raggioAngoli — mm — 0…30 — default 12 — Raggio degli angoli (rettangolo, scudo)
+- seduta.inclinazione — deg — 0…15 — default 6 — Inclinazione della seduta (calzata media), scende verso la punta
+- tappo.forma — enum — ellisse | rettangolo | come_seduta — default "ellisse" — Forma del tappo
+- tappo.lunghezza — mm — 6…70 — default 10 — CRITICAL, silhouette — Lunghezza del tappo
+- tappo.larghezza — mm — 6…70 — default 10 — CRITICAL, silhouette — Larghezza del tappo
+- tappo.altezza — mm — 3…8 — default 5 — Spessore del sopratacco
+- tappo.materiale — enum — tpu | pu — default "tpu" — Materiale del sopratacco
+- vita.quota — frazione — 0.2…0.8 — default 0.55 — silhouette — Quota della vita (0 tappo, 1 seduta)
+- vita.scala — frazione — 0.25…1.2 — default 0.45 — silhouette — Larghezza della vita rispetto alla seduta
+- dorso.bombatura — mm — -10…15 — default 6 — silhouette — Bombatura del dorso (verso −Y)
+- fronte.bombatura — mm — -12…10 — default -4 — silhouette — Bombatura del fronte (verso +Y; negativa = concavo)
+- anima.diametro — mm — 0…8 — default 5 — Perno d’acciaio (0 = assente, altrimenti 3–8)
+- anima.lunghezza — mm — — — default 72 — DERIVED (do not output) — Altezza − tappo − 8 mm
+- fori.numero — n — 0…4 — default 3 — Fori di fissaggio sulla seduta
+- fori.diametro — mm — 2…4.5 — default 3.2 — Diametro dei fori di fissaggio
+- costruzione.processo — enum — stampaggio_iniezione | cnc | stampa_3d_resina — default "stampaggio_iniezione" — Processo produttivo
+- costruzione.materiale — enum — abs | pa6 | pa_gf30 | pu | legno_faggio | alluminio — default "abs" — Materiale del corpo
+- costruzione.parete — mm — 1.5…4 — default 2.2 — Parete dello svuotamento (ABS)
+- costruzione.sformo — deg — 0.5…3 — default 1.5 — Sformo della cavità
+- costruzione.svuotato — bool — true | false — default true — DERIVED (do not output) — Svuotato dal lato seduta (iniezione e seduta oltre 900 mm²)
+- costruzione.lato — enum — dx | sx | coppia — default "coppia" — Destro, sinistro o la coppia"
+`;
