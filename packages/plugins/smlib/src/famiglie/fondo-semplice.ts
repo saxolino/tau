@@ -335,7 +335,8 @@ function costruisciDestro(lib: Lib, p: ParametriFondo, esiti: Esito[]): Smlib.Pa
   const centro = (spigolo: Smlib.Edge): number => spigolo.center().z;
   if (p.costruzione.materiale === 'cuoio') {
     try {
-      blocco = blocco.chamfer(
+      // Bordo fresato: raggio di 0,5 mm (lo smusso vuole facce ad angolo costante, che il rialzo di punta non dà).
+      blocco = blocco.fillet(
         blocco.edges().filter((spigolo) => centro(spigolo) > p.spessore.punta * 0.5),
         0.5,
       );
