@@ -223,6 +223,7 @@ const parametri: readonly DefinizioneParametro[] = [
   },
   {
     chiave: 'logo.svg',
+    fuoriRiconoscimento: true,
     unita: 'testo',
     lunghezzaMassima: 6000,
     default: '',
@@ -231,6 +232,7 @@ const parametri: readonly DefinizioneParametro[] = [
   },
   {
     chiave: 'logo.modo',
+    fuoriRiconoscimento: true,
     unita: 'enum',
     valori: ['rilievo', 'inciso', 'nessuno'],
     default: 'rilievo',
@@ -239,6 +241,7 @@ const parametri: readonly DefinizioneParametro[] = [
   },
   {
     chiave: 'logo.larghezza',
+    fuoriRiconoscimento: true,
     unita: 'mm',
     min: 2,
     max: 80,
@@ -248,6 +251,7 @@ const parametri: readonly DefinizioneParametro[] = [
   },
   {
     chiave: 'logo.profondita',
+    fuoriRiconoscimento: true,
     unita: 'mm',
     min: 0.2,
     max: 1.5,
@@ -257,6 +261,7 @@ const parametri: readonly DefinizioneParametro[] = [
   },
   {
     chiave: 'logo.x',
+    fuoriRiconoscimento: true,
     unita: 'mm',
     min: -60,
     max: 60,
@@ -266,6 +271,7 @@ const parametri: readonly DefinizioneParametro[] = [
   },
   {
     chiave: 'logo.y',
+    fuoriRiconoscimento: true,
     unita: 'mm',
     min: -30,
     max: 30,

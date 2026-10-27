@@ -290,6 +290,40 @@ const descrittori: Partial<Record<IdFamiglia, Descrittore>> = {
 export const famiglieConSerie: readonly IdFamiglia[] = Object.keys(descrittori) as IdFamiglia[];
 
 /**
+ * L'intervallo che si propone per una serie, secondo la famiglia (e il sistema di taglie degli anelli): quello che
+ * una bottega chiede di solito, non tutto l'intervallo ammesso.
+ * @param famiglia - Identificativo.
+ * @param sistema - Sistema di taglie (anelli).
+ * @returns Estremi e passo, o undefined dove non c'è serie.
+ * @public
+ */
+export function intervalloConsigliato(
+  famiglia: IdFamiglia,
+  sistema?: SistemaTaglia,
+): Readonly<{ da: number; a: number; passo: number }> | undefined {
+  switch (famiglia) {
+    case 'anello': {
+      const consigliati: Record<SistemaTaglia, { da: number; a: number; passo: number }> = {
+        it: { da: 8, a: 24, passo: 1 },
+        us: { da: 4, a: 12, passo: 1 },
+        eu_iso: { da: 48, a: 64, passo: 1 },
+        diametro: { da: 15, a: 20, passo: 0.5 },
+      };
+      return consigliati[sistema ?? 'it'];
+    }
+    case 'fondo_semplice': {
+      return { da: 35, a: 42, passo: 1 };
+    }
+    case 'tacco': {
+      return { da: 40, a: 100, passo: 10 };
+    }
+    default: {
+      return undefined;
+    }
+  }
+}
+
+/**
  * Le regole di crescita predefinite di una famiglia.
  * @param famiglia - Identificativo.
  * @returns Le regole, vuote dove la famiglia non ha serie.

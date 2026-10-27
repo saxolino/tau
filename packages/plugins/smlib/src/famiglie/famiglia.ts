@@ -88,6 +88,8 @@ export type DefinizioneParametro = {
   derivato?: (p: ParametriAnnidati) => number | boolean;
   /** Etichetta breve in italiano per le Misure e il prompt del classificatore. */
   descrizione?: string;
+  /** Non si legge da una foto (un logo, un SVG): il catalogo del classificatore e il contratto con Sinopia non lo vedono. */
+  fuoriRiconoscimento?: boolean;
 };
 
 /**

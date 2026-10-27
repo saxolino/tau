@@ -4,15 +4,27 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fibbia } from '@taucad/smlib/famiglie';
 import type { EsitoVarianti } from '@taucad/smlib/varianti';
 import { TooltipProvider } from '@taucad/ui/components/tooltip';
-import { AgentVariantsBlock, AssistantTrayContext } from '#components/chat/assistant-tray.js';
+import { AgentVariantsBlock, AssistantBrief, AssistantTrayContext } from '#components/chat/assistant-tray.js';
 import type { AssistantTrayValue } from '#components/chat/assistant-tray.js';
 import type { ModelloAssistente } from '#hooks/use-assistant-model.js';
 import { resetLanguageForTests, setLanguage } from '#i18n/language.js';
 import type { BloccoVarianti } from '#lib/assistant-variants-marker.js';
+import { ProducibilitaTestProvider } from '#routes/w.$workspace.$project/producibilita-context.js';
+import type { Producibilita } from '#routes/w.$workspace.$project/producibilita-context.js';
 
 vi.mock('#services/varianti-worker.js', () => ({
   prendiValutatoreVarianti: vi.fn(),
   chiudiValutatoreVarianti: vi.fn(),
+}));
+
+// The chips write into the composer: a card test needs none of the chat.
+vi.mock('#hooks/use-chat.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('#hooks/use-chat.js')>()),
+  useDraftActions: () => ({ setDraftText: vi.fn() }),
+}));
+vi.mock('#components/chat/assistant-suggestions.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('#components/chat/assistant-suggestions.js')>()),
+  useAssistantComposer: () => ({ focusComposer: vi.fn() }),
 }));
 
 const parametri = fibbia.predefiniti('rettangolare');
@@ -133,5 +145,99 @@ describe('AgentVariantsBlock', () => {
     await user.click(await screen.findByRole('button', { name: 'Riprova' }));
     expect(await screen.findByText('Sezione più sottile.')).toBeInTheDocument();
     expect(valutaInsiemi).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('AssistantBrief ↔ producibilità', () => {
+  const pezzo = {
+    id: 'component:Telaio',
+    name: 'Telaio',
+    kind: 'part' as const,
+    extras: { volumeMm3: 482.7, density: 6.7 },
+    selector: 'Telaio',
+    childIds: [],
+    depth: 1,
+    path: ['Telaio'],
+    meshNodeIndices: [],
+    primitiveIndices: [],
+    materialIndices: [],
+    capabilities: {
+      canIsolate: true,
+      canHide: true,
+      canFocus: true,
+      canAdjustOpacity: true,
+      hasDrawings: false,
+      hasPreciseTopology: true,
+      exports: [],
+    },
+  };
+  const conPezzi: ModelloAssistente = {
+    ...modello,
+    pieces: [pezzo],
+    // The worker's own answer says something else: the card must not read it.
+    controllo: {
+      stato: 'pronto',
+      esiti: [{ livello: 'blocco', codice: 'RAGGI_MIN', messaggio: 'Raccordi del worker.', pezzo: 'Telaio' }],
+      correzioni: [],
+    },
+  };
+  const producibilita = (sovrascrivi: Partial<Producibilita>): Producibilita =>
+    ({
+      stato: 'pronto',
+      controlli: [],
+      blocchi: [],
+      pezzi: [],
+      direzione: 'z',
+      artifactKey: 'k',
+      aggiornati: true,
+      famiglia: undefined,
+      tempi: undefined,
+      focus: undefined,
+      setFocus: vi.fn(),
+      setProcesso: vi.fn(),
+      setDirezione: vi.fn(),
+      riprova: vi.fn(),
+      registraScelta: vi.fn(async () => undefined),
+      ...sovrascrivi,
+    }) as Producibilita;
+  const renderScheda = (valore: Producibilita | undefined) =>
+    render(
+      <TooltipProvider>
+        <AssistantTrayContext.Provider value={tray({ modello: conPezzi })}>
+          <ProducibilitaTestProvider value={valore}>
+            <AssistantBrief />
+          </ProducibilitaTestProvider>
+        </AssistantTrayContext.Provider>
+      </TooltipProvider>,
+    );
+
+  it('should list the rows the inspector shows, not the worker’s own answer', () => {
+    renderScheda(
+      producibilita({
+        controlli: [
+          {
+            id: 'PARETE_MIN-Telaio',
+            livello: 'avviso',
+            codice: 'PARETE_MIN',
+            pezzo: 'Telaio',
+            valore: 1.1,
+            soglia: 1.2,
+            messaggio: 'x',
+            unita: 'mm',
+            fonti: ['geometria'],
+          },
+        ],
+      }),
+    );
+    expect(screen.getByText('Telaio: parete 1,1 mm, minimo 1,2 mm')).toBeInTheDocument();
+    expect(screen.queryByText('Raccordi del worker.')).not.toBeInTheDocument();
+  });
+
+  it('should wait while the shared checks are running, and fall back to the worker without a provider', () => {
+    const { unmount } = renderScheda(producibilita({ stato: 'in_corso' }));
+    expect(screen.getByRole('status')).toHaveTextContent('Controllo la producibilità…');
+    unmount();
+    renderScheda(undefined);
+    expect(screen.getByText('Raccordi del worker.')).toBeInTheDocument();
   });
 });

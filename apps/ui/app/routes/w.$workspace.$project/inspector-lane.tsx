@@ -21,6 +21,7 @@ import type { LaneTogglePlace } from '#routes/w.$workspace.$project/lane-toggle-
 import { InspectorPieceMeasures } from '#routes/w.$workspace.$project/piece-measures-pane.js';
 import { InspectorRecognition } from '#routes/w.$workspace.$project/inspector-recognition.js';
 import { InspectorProducibilita } from '#routes/w.$workspace.$project/inspector-producibilita.js';
+import { InspectorSerie } from '#routes/w.$workspace.$project/inspector-serie.js';
 import { useProjectWorkspace, useWorkspaceLanes } from '#routes/w.$workspace.$project/project-workspace-context.js';
 
 /** ⌃J opens and closes the assistant's conversation under the inspector. */
@@ -354,6 +355,7 @@ export function InspectorLane({
             <InspectorRecognition />
             <div ref={slot} data-slot='inspector-tools' />
             <InspectorPieceParameters />
+            <InspectorSerie />
             <InspectorProducibilita />
             <div ref={historySlot} data-slot='inspector-history' />
           </div>

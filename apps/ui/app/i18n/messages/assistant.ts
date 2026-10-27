@@ -176,6 +176,7 @@ export const assistantMessages = defineMessages({
         RAGGI_MIN: 'raccordi',
         SPESSORE_MIN: 'spessore',
         TRATTO_MIN: 'tratto del testo',
+        TRATTO_MIN_LOGO: 'tratto del logo',
         TAPPO_MIN: 'tappo',
       },
       targets: {
@@ -187,6 +188,7 @@ export const assistantMessages = defineMessages({
         RAGGI_MIN: 'i raccordi',
         SPESSORE_MIN: 'lo spessore',
         TRATTO_MIN: 'il tratto del testo',
+        TRATTO_MIN_LOGO: 'il tratto del logo',
         TAPPO_MIN: 'il tappo',
       },
       line: '{piece}: {what} {value} mm, minimo {threshold} mm',
@@ -432,6 +434,7 @@ export const assistantMessages = defineMessages({
         RAGGI_MIN: 'fillets',
         SPESSORE_MIN: 'thickness',
         TRATTO_MIN: 'lettering stroke',
+        TRATTO_MIN_LOGO: 'logo stroke',
         TAPPO_MIN: 'top lift',
       },
       targets: {
@@ -443,6 +446,7 @@ export const assistantMessages = defineMessages({
         RAGGI_MIN: 'the fillets',
         SPESSORE_MIN: 'the thickness',
         TRATTO_MIN: 'the lettering stroke',
+        TRATTO_MIN_LOGO: 'the logo stroke',
         TAPPO_MIN: 'the top lift',
       },
       line: '{piece}: {what} {value} mm, minimum {threshold} mm',
