@@ -10,6 +10,8 @@ const baseConfig: UserConfig = {
     'src/riconoscimento/index.ts',
     'src/verifica/index.ts',
     'src/verifica/verifica.worker.ts',
+    'src/varianti/index.ts',
+    'src/varianti/varianti.worker.ts',
   ],
   sourcemap: false,
   clean: true,
