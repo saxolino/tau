@@ -242,6 +242,12 @@ export function createModelAssembly(): ModelAssembly {
     },
     present: ({ componentIds, manifest, previousCount }) => {
       const { request } = snapshot;
+      // A second model while the first one is still entering (the agent rebuilt it): show it whole at once, so no piece
+      // of the new scene stays veiled by the old run's ids and labels.
+      if (snapshot.run && previousCount > 0) {
+        end();
+        return;
+      }
       if (!request || previousCount > 0 || componentIds.length === 0) {
         return;
       }

@@ -74,6 +74,18 @@ describe('createModelAssembly', () => {
     expect(assembly.getSnapshot().request).toEqual(request);
   });
 
+  it('should end a run still entering when the agent rebuilds the model, so the new scene is drawn whole', () => {
+    const assembly = createModelAssembly();
+    assembly.arm(request);
+    assembly.present({ componentIds: buckle, manifest, previousCount: 0 });
+    expect(assembly.hiddenComponentIds()).toEqual(['traversa', 'ardiglione']);
+
+    assembly.present({ componentIds: buckle, manifest, previousCount: 3 });
+
+    expect(assembly.hiddenComponentIds()).toEqual([]);
+    expect(assembly.getSnapshot().run).toBeUndefined();
+  });
+
   it('should play a key once and ignore arming it again', () => {
     const assembly = createModelAssembly();
     assembly.arm(request);
