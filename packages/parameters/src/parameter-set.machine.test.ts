@@ -786,6 +786,7 @@ const watchedFiles = (): Readonly<{
   files: ParameterFiles;
   emit(type: string): void;
   close(): void;
+  abort(): void;
   opened(): number;
 }> => {
   const closed = Promise.withResolvers<void>();
@@ -808,6 +809,9 @@ const watchedFiles = (): Readonly<{
     emit: (type) => onEvent?.({ type }),
     close: () => {
       closed.resolve();
+    },
+    abort: () => {
+      closed.reject(new DOMException('The operation was aborted.', 'AbortError'));
     },
   };
 };
@@ -835,6 +839,19 @@ it('should fail a parameter actor with WATCH_CLOSED when its watch closes', asyn
     });
   });
   expect(actor.getSnapshot().matches({ open: 'disconnected' })).toBe(true);
+  actor.send({ type: 'close' });
+});
+
+it('should treat a watch that ends by aborting as closed, without an unhandled rejection', async () => {
+  const watch = watchedFiles();
+  const actor = await readyFactoryActor(watch.files);
+  watch.abort();
+  await vi.waitFor(() => {
+    expect(actor.getSnapshot().context.diagnostic).toEqual({
+      code: 'WATCH_CLOSED',
+      message: 'Parameter watch closed.',
+    });
+  });
   actor.send({ type: 'close' });
 });
 
