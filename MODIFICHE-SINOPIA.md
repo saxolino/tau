@@ -1052,3 +1052,38 @@ Blocchi C1, C2, C5 e D4 del piano di Claude (`PIANO-CLAUDE-2026-10-26.md`), dall
   disegnata alle misure registrate: luce 20 mm, apertura 14 mm, sezione 3,4 mm, ardiglione ⌀ 2,2 mm in acciaio.
 - **Test.** `verifica/vista-assi.test.ts`: una fibbia sintetica fotografata di faccia e dichiarata «fronte» supera
   IoU 0,9 (prima 0,23). Se la vista dichiarata spiega la maschera, resta un avvio solo.
+
+## 27 ottobre 2026 — tassellatura per pezzo, mesh grossa durante il trascinamento, handle del kernel liberati subito
+
+Studio text-to-cad, «Misura del 27 ottobre»: la tassellatura pesava il 47–70 % di una modifica di un parametro e si
+rifaceva per intero a ogni modifica e di nuovo nell'export GLB; gli handle di SMLib si liberavano solo col garbage
+collector. Numeri prima e dopo nello studio, sezione «Misura dopo la tassellatura».
+
+- **Mesh per pezzo con chiave.** `packages/plugins/smlib/src/utils/mesh-cache.ts` (nuovo): cache LRU delle facce e
+  degli spigoli tassellati di ogni pezzo, con tetto di voci e di byte; la chiave è l'impronta del `.smb` binario del
+  corpo (hash a 64 bit, meno di 1 ms per modello) più la tolleranza. Le voci tengono solo array JavaScript.
+  `utils/render-output.ts`: `render` legge e scrive la cache; nella vista un preset di tolleranza si aggancia a una
+  griglia di 16 passi per raddoppio, verso il fine (al massimo 4,4 % più fine di prima, mai più grosso), così una
+  piccola modifica della misura complessiva non cambia la tolleranza dei pezzi che restano uguali. Gli export restano
+  esatti.
+- **Tolleranza adattiva.** Un aggiornamento transitorio può dirsi `interactive` (campione di un trascinamento):
+  `packages/runtime/src/client/runtime-document.types.ts`, `runtime-document-session.ts`,
+  `types/runtime-document-protocol.schemas.ts`, `framework/kernel-worker.ts`, `framework/kernel-runtime-worker.ts`,
+  `types/runtime-middleware-v2.types.ts`, `types/runtime-kernel-v2.types.ts` lo portano fino al `render` del kernel
+  come `interaction: 'continuous'`, con una proiezione sua (una mesh grossa non risponde mai per i valori a riposo).
+  `smlib.kernel.ts` tassella quei campioni 4 volte più grossi (almeno 30°) in una cache separata.
+  `apps/ui/app/machines/cad.machine.ts` manda i campioni dello scrub come interattivi;
+  `apps/ui/app/routes/w.$workspace.$project/chat-parameters.tsx` rimanda l'ultimo campione come fermo dopo 250 ms
+  senza movimento, e il rilascio conferma come prima. `packages/plugins/middleware/src/geometry-cache.middleware.ts`
+  non salva la mesh di un campione interattivo.
+- **Export GLB.** `smlib.kernel.ts`: l'export legge la cache fine; riusa la mesh dell'anteprima quando la tolleranza
+  coincide, e le sue mesh di export dei pezzi non cambiati.
+- **Handle.** `smlib.kernel.ts`: `releaseHandle` libera i corpi di una costruzione sostituita; STEP, STL e la
+  serializzazione lavorano dentro `lib.scope`. `utils/render-output.ts`: ogni pezzo si tassella dentro `lib.scope`.
+  `famiglie/modulo.ts`: costruzioni e verifiche delle famiglie dentro `lib.scope`.
+- **Test.** `utils/mesh-cache.test.ts`, `smlib.tassellatura.test.ts` (nuovi), `famiglie/ricostruzione.bench.test.ts`
+  (come l'app: spigoli nella vista, topologia nell'export, valori sempre nuovi, mesh confrontate),
+  `packages/runtime/src/framework/kernel-worker.parameter-commit.test.ts`,
+  `client/runtime-document-session.test.ts`, `types/runtime-document-protocol-payload-shape.test.ts`,
+  `packages/plugins/middleware/src/geometry-cache.middleware.test.ts`, `apps/ui/app/machines/cad.machine.test.ts`,
+  `apps/ui/app/routes/w.$workspace.$project/chat-parameters.test.tsx`.

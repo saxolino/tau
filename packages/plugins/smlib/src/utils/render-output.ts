@@ -4,6 +4,7 @@ import type * as SmlibModule from '@classcad/smlibwasm';
 import type { GeometrySvg, KernelIssue, RuntimeSpanTracer, TessellationReport } from '@taucad/runtime/types';
 import {
   createTessellationDowngradedIssue,
+  occtPresetLinearToleranceRange,
   resolveOcctTessellation,
   tessellateWithinOcctBudget,
 } from '@taucad/occt-core';
@@ -17,6 +18,8 @@ import type { ManualShapeInfo } from '#manual-evaluator.js';
 import type { ManualProfile } from '#manual-operations.js';
 import { normalizeColor } from '#utils/normalize-color.js';
 import { projectSurfaceCoordinates } from '#utils/surface-coordinates.js';
+import { improntaForma } from '#utils/mesh-cache.js';
+import type { CacheMesh } from '#utils/mesh-cache.js';
 
 /** The `@classcad/smlibwasm` module the kernel loaded. */
 export type SmlibLibrary = typeof SmlibModule;
@@ -28,6 +31,11 @@ type RenderOptions = {
   tessellation: Tessellation;
   collectBrepEdges?: boolean;
   tracer?: RuntimeSpanTracer;
+  /**
+   * Per-piece mesh cache: a body whose exact form (its `.smb` fingerprint) and tolerances match an earlier render
+   * reuses that render's face and edge buffers instead of tessellating again. Absent, every body is tessellated.
+   */
+  cache?: CacheMesh;
 };
 
 /** SMLib authoring config used by the meshing adapter. */
@@ -510,9 +518,11 @@ function emptyGeometry(config: NamedInputShape): GeometrySmlib {
  * @returns The shape's grouped geometry.
  */
 function renderMesh(config: NamedInputShape, options: RenderOptions): GeometrySmlib {
-  const { library, tessellation, collectBrepEdges = false, tracer } = options;
-  const geometry = emptyGeometry(config);
+  const { library, tessellation, collectBrepEdges = false, cache } = options;
   const { shape } = config;
+  // The key is read before anything here measures the body: a measure stores refitted trims that a later `.smb` writes.
+  const cacheKey = cache === undefined ? undefined : meshCacheKey(config, options);
+  const geometry = emptyGeometry(config);
   const attributes = {
     shapeName: config.name,
     linearTolerance: tessellation.linearTolerance,
@@ -521,42 +531,16 @@ function renderMesh(config: NamedInputShape, options: RenderOptions): GeometrySm
   };
 
   const faceMapping = { trusted: false };
-  withSpan({ tracer, name: 'smlib.tessellate.faces', attributes: { ...attributes, output: 'faces' } }, () => {
-    if (shape instanceof library.Mesh) {
-      appendFaceMesh(geometry.faces, shape, 0);
-      return;
+  const cachedFaces = cacheKey === undefined ? undefined : cache?.leggiFacce(cacheKey);
+  if (cachedFaces) {
+    geometry.faces = cachedFaces.faces;
+    faceMapping.trusted = cachedFaces.faceMappingTrusted;
+  } else {
+    tessellateFaces(geometry, config, { ...options, attributes, faceMapping });
+    if (cacheKey !== undefined) {
+      cache?.scriviFacce(cacheKey, { faces: geometry.faces, faceMappingTrusted: faceMapping.trusted });
     }
-    // One mesh of the whole body: faces meshed alone sample their shared edges differently and crack.
-    const mesh = library.tessellate(shape, tessellation.linearTolerance, tessellation.angularTolerance);
-    if (shape instanceof library.Part && !mesh.isClosed()) {
-      // SMLib 0.3.4 leaves a moved torus's seam open in a body mesh, though the face alone meshes
-      // closed: keep whichever mesh has fewer open edges.
-      const faceMeshes = [...shape.faces()].map((face) =>
-        library.tessellate(face, tessellation.linearTolerance, tessellation.angularTolerance),
-      );
-      if (countOpenEdges(faceMeshes) < countOpenEdges([mesh])) {
-        faceMapping.trusted = true;
-        for (const [faceId, faceMesh] of faceMeshes.entries()) {
-          appendFaceMesh(geometry.faces, faceMesh, faceId);
-        }
-        return;
-      }
-    }
-    let runs: FaceRun[];
-    try {
-      runs = shape instanceof library.Face ? [] : findFaceRuns([...shape.faces()], mesh, tessellation.linearTolerance);
-    } catch {
-      runs = [];
-    }
-    if (runs.length === 0) {
-      appendFaceMesh(geometry.faces, mesh, 0);
-      return;
-    }
-    faceMapping.trusted = true;
-    for (const run of runs) {
-      appendFaceMesh(geometry.faces, sliceFaceMesh(mesh, run), run.faceId);
-    }
-  });
+  }
 
   if (faceMapping.trusted && config.manual && shape instanceof library.Part) {
     geometry.manualFaces = [...shape.faces()].flatMap((face, index): NonNullable<GeometrySmlib['manualFaces']> => {
@@ -593,19 +577,124 @@ function renderMesh(config: NamedInputShape, options: RenderOptions): GeometrySm
   }
 
   if (collectBrepEdges && !(shape instanceof library.Mesh)) {
-    withSpan({ tracer, name: 'smlib.tessellate.edges', attributes: { ...attributes, output: 'edges' } }, () => {
-      const nativeEdges = [...shape.edges()];
-      appendEdges(geometry.edges, nativeEdges, tessellation);
-      if (config.manual?.replayWitness && shape instanceof library.Part) {
-        geometry.manualEdges = nativeEdges.flatMap((edge, index) => {
-          const descriptor = manualEdgeGeometry(edge);
-          return descriptor ? [{ index, geometry: descriptor }] : [];
-        });
-      }
-    });
+    collectEdges(geometry, config, shape, { ...options, attributes, cacheKey });
   }
 
   return geometry;
+}
+
+/**
+ * Sample a body's B-rep edges into its geometry, or take them from the cache; a manual replay witness also needs the
+ * native edges' descriptors, which are read either way.
+ * @param geometry - The shape's geometry, whose edge buffers receive the polylines.
+ * @param config - The named shape.
+ * @param shape - Its B-rep shape (a body, shell or face, never a mesh).
+ * @param options - Library, tolerances, telemetry, cache, span attributes and the shape's cache key.
+ */
+// oxlint-disable-next-line max-params -- the geometry to fill, its config, the narrowed shape and the render options.
+function collectEdges(
+  geometry: GeometrySmlib,
+  config: NamedInputShape,
+  shape: SmlibModule.Shape,
+  options: RenderOptions & { attributes: Record<string, string | number | boolean>; cacheKey: string | undefined },
+): void {
+  const { library, tessellation, tracer, cache, attributes, cacheKey } = options;
+  const cachedEdges = cacheKey === undefined ? undefined : cache?.leggiSpigoli(cacheKey);
+  const witness = Boolean(config.manual?.replayWitness) && shape instanceof library.Part;
+  if (cachedEdges) {
+    geometry.edges = cachedEdges;
+    if (!witness) {
+      return;
+    }
+  }
+  withSpan({ tracer, name: 'smlib.tessellate.edges', attributes: { ...attributes, output: 'edges' } }, () => {
+    const nativeEdges = [...shape.edges()];
+    if (cachedEdges === undefined) {
+      appendEdges(geometry.edges, nativeEdges, tessellation);
+      if (cacheKey !== undefined) {
+        cache?.scriviSpigoli(cacheKey, geometry.edges);
+      }
+    }
+    if (witness) {
+      geometry.manualEdges = nativeEdges.flatMap((edge, index) => {
+        const descriptor = manualEdgeGeometry(edge);
+        return descriptor ? [{ index, geometry: descriptor }] : [];
+      });
+    }
+  });
+}
+
+/**
+ * A body's key in the per-piece mesh cache: the fingerprint of its exact form and the tolerances it is meshed at.
+ * @param config - The named shape.
+ * @param options - Library, tolerances and telemetry.
+ * @returns The key, or nothing for a mesh (its arrays are read as they are, there is nothing to tessellate).
+ */
+function meshCacheKey(config: NamedInputShape, options: RenderOptions): string | undefined {
+  const { library, tessellation, tracer } = options;
+  const { shape } = config;
+  if (!(shape instanceof library.Part || shape instanceof library.Shell || shape instanceof library.Face)) {
+    return undefined;
+  }
+  const fingerprint = withSpan(
+    { tracer, name: 'smlib.tessellate.fingerprint', attributes: { shapeName: config.name } },
+    () => improntaForma(library, shape),
+  );
+  return `${fingerprint}|${tessellation.linearTolerance}|${tessellation.angularTolerance}`;
+}
+
+/**
+ * Tessellate a body's faces into its geometry: one mesh of the whole body, split into per-face runs.
+ * @param geometry - The shape's geometry, whose face buffers receive the mesh.
+ * @param config - The named shape.
+ * @param options - Library, tolerances, telemetry, span attributes and the face-mapping flag to set.
+ */
+function tessellateFaces(
+  geometry: GeometrySmlib,
+  config: NamedInputShape,
+  options: RenderOptions & {
+    attributes: Record<string, string | number | boolean>;
+    faceMapping: { trusted: boolean };
+  },
+): void {
+  const { library, tessellation, tracer, attributes, faceMapping } = options;
+  const { shape } = config;
+  withSpan({ tracer, name: 'smlib.tessellate.faces', attributes: { ...attributes, output: 'faces' } }, () => {
+    if (shape instanceof library.Mesh) {
+      appendFaceMesh(geometry.faces, shape, 0);
+      return;
+    }
+    // One mesh of the whole body: faces meshed alone sample their shared edges differently and crack.
+    const mesh = library.tessellate(shape, tessellation.linearTolerance, tessellation.angularTolerance);
+    if (shape instanceof library.Part && !mesh.isClosed()) {
+      // SMLib 0.3.4 leaves a moved torus's seam open in a body mesh, though the face alone meshes
+      // closed: keep whichever mesh has fewer open edges.
+      const faceMeshes = [...shape.faces()].map((face) =>
+        library.tessellate(face, tessellation.linearTolerance, tessellation.angularTolerance),
+      );
+      if (countOpenEdges(faceMeshes) < countOpenEdges([mesh])) {
+        faceMapping.trusted = true;
+        for (const [faceId, faceMesh] of faceMeshes.entries()) {
+          appendFaceMesh(geometry.faces, faceMesh, faceId);
+        }
+        return;
+      }
+    }
+    let runs: FaceRun[];
+    try {
+      runs = shape instanceof library.Face ? [] : findFaceRuns([...shape.faces()], mesh, tessellation.linearTolerance);
+    } catch {
+      runs = [];
+    }
+    if (runs.length === 0) {
+      appendFaceMesh(geometry.faces, mesh, 0);
+      return;
+    }
+    faceMapping.trusted = true;
+    for (const run of runs) {
+      appendFaceMesh(geometry.faces, sliceFaceMesh(mesh, run), run.faceId);
+    }
+  });
 }
 
 // =============================================================================
@@ -707,14 +796,17 @@ export function renderDrawing(entries: readonly DrawingEntry[]): GeometrySvg {
 /**
  * Renders the meshable input shapes into face- and edge-grouped geometry; drawings are skipped.
  *
+ * Each shape renders inside `library.scope`: the faces, edges, shells and meshes read while meshing it are kernel
+ * objects, freed as soon as its plain geometry is out instead of when the garbage collector gets to them.
+ *
  * @param shapes - The shapes to render with optional color/name metadata.
- * @param options - Library, tessellation, BRep edge, and telemetry options.
+ * @param options - Library, tessellation, BRep edge, telemetry and per-piece cache options.
  * @returns One geometry per meshable shape.
  */
 export function render(shapes: readonly NamedInputShape[], options: RenderOptions): GeometrySmlib[] {
   return shapes
     .filter((config) => isMeshableShape(options.library, config.shape))
-    .map((config) => renderMesh(config, options));
+    .map((config) => options.library.scope(() => renderMesh(config, options)));
 }
 
 /** A tessellation request: a preset or explicit tolerances, and the field values an explicit request omits. */
@@ -753,6 +845,24 @@ export function measureShapesDiagonal(library: SmlibLibrary, shapes: readonly In
   return Math.hypot(maximum[0]! - minimum[0]!, maximum[1]! - minimum[1]!, maximum[2]! - minimum[2]!);
 }
 
+/** Steps per doubling of the grid a preset's linear tolerance snaps down to: each step is 4.4 % finer. */
+const presetToleranceStepsPerOctave = 16;
+
+/**
+ * A preset's linear tolerance, snapped down to a grid of {@link presetToleranceStepsPerOctave} steps per doubling.
+ * A preset scales with the bounding-box diagonal of all the shapes together, so a parameter that changes one piece
+ * moves every piece's tolerance by a hair, and no unchanged piece could reuse its mesh. On the grid, a small change of
+ * the overall size keeps the tolerance, and with it every unchanged piece's cached mesh. Down, never up: the view's
+ * mesh is at most 4.4 % finer than the diagonal alone asks, never coarser.
+ * @param tolerance - The linear tolerance the preset resolved to, in millimetres.
+ * @returns The tolerance on the grid, within the preset range.
+ */
+export const snapPresetLinearTolerance = (tolerance: number): number =>
+  Math.max(
+    occtPresetLinearToleranceRange.min,
+    2 ** (Math.floor(Math.log2(tolerance) * presetToleranceStepsPerOctave) / presetToleranceStepsPerOctave),
+  );
+
 /**
  * Resolve a request into absolute tolerances. Explicit tolerances never measure the shapes.
  *
@@ -767,6 +877,27 @@ export function resolveSmlibTessellation(
   request: SmlibTessellationRequest,
 ): OcctResolvedTessellation {
   return resolveOcctTessellation({ ...request, measureDiagonal: () => measureShapesDiagonal(library, shapes) });
+}
+
+/**
+ * Resolve a view's request: as {@link resolveSmlibTessellation}, with a preset's linear tolerance snapped down to its
+ * grid ({@link snapPresetLinearTolerance}), so that the view of a model being edited keeps reusing the meshes of the
+ * pieces an edit does not change. Exports resolve exactly.
+ *
+ * @param library - Loaded SMLib module.
+ * @param shapes - Shapes about to be meshed.
+ * @param request - The preset or explicit tolerances.
+ * @returns Absolute tolerances and the requested form.
+ */
+export function resolveSmlibViewTessellation(
+  library: SmlibLibrary,
+  shapes: readonly InputShape[],
+  request: SmlibTessellationRequest,
+): OcctResolvedTessellation {
+  const resolved = resolveSmlibTessellation(library, shapes, request);
+  return resolved.requested === 'explicit'
+    ? resolved
+    : { ...resolved, linearTolerance: snapPresetLinearTolerance(resolved.linearTolerance) };
 }
 
 /**
@@ -792,24 +923,49 @@ export type BudgetedRender = {
   issues: KernelIssue[];
 };
 
+/** How much coarser an interactive render meshes than the request: the `medium` to `low` preset step. */
+const interactiveLinearFactor = 4;
+const interactiveMinimumAngle = 30;
+
 /**
- * Render a preview within a triangle budget. The request resolves to absolute tolerances; while
+ * The tolerances a render takes during a continuous interaction (a drag of a Measures slider): four times the
+ * chord deviation and at least 30°, the step from the `medium` preset to `low`. A drag sample is replaced by the next
+ * one within a frame or two, and the render at rest meshes at the request again; exports never take these.
+ *
+ * @param tolerances - The resolved request.
+ * @returns Coarser tolerances.
+ */
+export const interactiveTessellation = (tolerances: OcctTessellationTolerances): OcctTessellationTolerances => ({
+  linearTolerance: tolerances.linearTolerance * interactiveLinearFactor,
+  angularTolerance: Math.max(tolerances.angularTolerance, interactiveMinimumAngle),
+});
+
+/**
+ * Render a preview within a triangle budget. The request resolves to absolute tolerances (a preset's on its grid, see
+ * {@link resolveSmlibViewTessellation}); while
  * the mesh exceeds the budget it is re-tessellated one step coarser, at most three times, and a
- * `TESSELLATION_DOWNGRADED` warning names the requested and effective tolerances.
+ * `TESSELLATION_DOWNGRADED` warning names the requested and effective tolerances. An interactive
+ * render starts from {@link interactiveTessellation} instead, which is not a downgrade.
  *
  * @param shapes - The shapes to render.
- * @param options - Request, budget, and the {@link render} options other than tessellation.
+ * @param options - Request, budget, interaction, and the {@link render} options other than tessellation.
  * @returns Geometries, the tessellation report and the downgrade warning when one was taken.
  */
 export function renderWithinBudget(
   shapes: readonly NamedInputShape[],
-  options: Omit<RenderOptions, 'tessellation'> & { request: SmlibTessellationRequest; budget: number },
+  options: Omit<RenderOptions, 'tessellation'> & {
+    request: SmlibTessellationRequest;
+    budget: number;
+    /** The render belongs to a continuous interaction: mesh coarser than the request. */
+    interactive?: boolean;
+  },
 ): BudgetedRender {
-  const { request, budget, ...renderOptions } = options;
+  const { request, budget, interactive = false, ...renderOptions } = options;
   const started = performance.now();
-  const requested = resolveSmlibTessellation(renderOptions.library, shapes, request);
+  const requested = resolveSmlibViewTessellation(renderOptions.library, shapes, request);
+  const starting = interactive ? interactiveTessellation(requested) : requested;
   const { result, effective, downgraded } = tessellateWithinOcctBudget({
-    tolerances: requested,
+    tolerances: starting,
     budget,
     tessellate(tolerances) {
       const geometries = render(shapes, { ...renderOptions, tessellation: tolerances });

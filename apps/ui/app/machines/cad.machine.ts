@@ -99,7 +99,12 @@ type CadEvent =
   | { type: 'setEntryPath'; entryPath: string }
   | { type: 'commitParameters'; stage: Record<string, Uint8Array<ArrayBuffer>> }
   | { type: 'setPreviewParameters'; parameters: Record<string, unknown> }
-  | { type: 'scrubParameters'; parameters: Record<string, unknown> }
+  | {
+      type: 'scrubParameters';
+      parameters: Record<string, unknown>;
+      /** The drag has held still: render these values at full quality, still without committing them. */
+      settled?: boolean;
+    }
   | { type: 'restoreParameters' }
   | { type: 'setCodeIssues'; errors: CadContext['codeIssues'] }
   | { type: 'defaultRendered'; rendering: Rendering }
@@ -234,7 +239,7 @@ type RenderModelInput = {
 type ParameterRender =
   | Readonly<{ kind: 'commit'; stage: Record<string, Uint8Array<ArrayBuffer>> }>
   | Readonly<{ kind: 'preview'; parameters: Record<string, unknown> }>
-  | Readonly<{ kind: 'scrub'; parameters: Record<string, unknown> }>
+  | Readonly<{ kind: 'scrub'; parameters: Record<string, unknown>; settled?: boolean }>
   | Readonly<{
       kind: 'initial';
       parameters?: Record<string, unknown>;
@@ -538,7 +543,11 @@ const renderModelActor = fromSafeAsync<void, RenderModelInput>(async ({ input, s
       : change?.kind === 'preview'
         ? { parameters: change.parameters }
         : change?.kind === 'scrub'
-          ? { parameters: change.parameters, transient: true }
+          ? /* A moving drag sample renders coarse (the next one replaces it); once the drag holds still the same
+             * values render fine again, and the release commits them. */
+            change.settled === true
+            ? ({ parameters: change.parameters, transient: true } as const)
+            : ({ parameters: change.parameters, transient: true, interactive: true } as const)
           : change?.kind === 'initial'
             ? {
                 ...(change.parameters === undefined ? {} : { parameters: change.parameters }),
@@ -803,7 +812,11 @@ const renderRequestPatch = (context: CadContext, event: RenderTrigger): CadPatch
     case 'scrubParameters': {
       return {
         ...bumped,
-        parameterRender: { kind: 'scrub', parameters: event.parameters },
+        parameterRender: {
+          kind: 'scrub',
+          parameters: event.parameters,
+          ...(event.settled === true ? { settled: true } : {}),
+        },
         latestRenderingOutcome: undefined,
       };
     }

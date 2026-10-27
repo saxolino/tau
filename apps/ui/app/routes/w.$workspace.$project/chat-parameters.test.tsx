@@ -464,6 +464,40 @@ describe('project parameters scrub lane', () => {
     restore();
   });
 
+  it('should send the last sample once more as settled when the drag holds still, and not after it ends', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'requestAnimationFrame', 'cancelAnimationFrame'] });
+    try {
+      mockGeometryUnits.set('main.ts', mockCadRef);
+      const source = projectSource();
+      const { result } = renderHook(() => source.useScrub?.('main.ts'));
+      const settled = { type: 'scrubParameters', parameters: { width: '21 in' }, settled: true };
+
+      result.current?.scrub?.(field);
+      vi.advanceTimersByTime(200);
+      result.current?.scrub?.({ pointer: '/width', value: '22 in' });
+      vi.advanceTimersByTime(200);
+      // Still moving: every sample restarts the pause, so nothing has settled yet.
+      expect(mockCadRef.send).toHaveBeenCalledWith({ type: 'scrubParameters', parameters: { width: '22 in' } });
+      expect(mockCadRef.send).not.toHaveBeenCalledWith(expect.objectContaining({ settled: true }));
+
+      vi.advanceTimersByTime(100);
+      expect(mockCadRef.send).toHaveBeenLastCalledWith({ ...settled, parameters: { width: '22 in' } });
+      vi.advanceTimersByTime(1000);
+      expect(vi.mocked(mockCadRef.send).mock.calls.filter(([event]) => 'settled' in event)).toHaveLength(1);
+
+      // A drag that ends before the pause sends no settled sample.
+      vi.mocked(mockCadRef.send).mockClear();
+      result.current?.scrub?.(field);
+      vi.advanceTimersByTime(50);
+      void result.current?.endScrub?.();
+      vi.advanceTimersByTime(1000);
+      expect(mockCadRef.send).toHaveBeenCalledWith({ type: 'scrubParameters', parameters: { width: '21 in' } });
+      expect(mockCadRef.send).not.toHaveBeenCalledWith(expect.objectContaining({ settled: true }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('should keep a kernel that cannot cancel off the drag lane until its last render fits the budget', () => {
     const restore = withImmediateFrames();
     let now = 0;

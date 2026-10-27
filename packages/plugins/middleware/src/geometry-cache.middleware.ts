@@ -405,7 +405,9 @@ export const geometryCache = defineMiddleware({
   },
 
   async wrapRender(input, handler, { compute, dependencyHash, logger, tracer }) {
-    if (compute.status !== 'on') {
+    // A drag sample is replaced within a frame or two and its values are rarely seen again: storing its coarse mesh
+    // would only fill the store during the drag.
+    if (compute.status !== 'on' || input.interaction === 'continuous') {
       return handler(input);
     }
     const result = await traceCacheOperation(tracer, 'cache.geometry.mesh.evaluate', async () =>

@@ -760,6 +760,7 @@ class KernelRuntimeWorker extends KernelWorker<RuntimeWorkerOptions> {
           options: Record<string, unknown>;
           instance?: string;
           content?: RuntimeContentInput;
+          interaction?: 'continuous';
         },
         services: KernelRuntime,
         context: unknown,
@@ -771,6 +772,7 @@ class KernelRuntimeWorker extends KernelWorker<RuntimeWorkerOptions> {
           options: { ...resolvedOptions },
           ...(input.instance === undefined ? {} : { instance: input.instance }),
           ...(input.content === undefined ? {} : { content: input.content }),
+          ...(input.interaction === undefined ? {} : { interaction: input.interaction }),
         },
         runtime,
         kernel.ctx,

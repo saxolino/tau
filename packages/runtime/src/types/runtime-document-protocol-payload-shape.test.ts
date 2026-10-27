@@ -85,6 +85,10 @@ describe('document protocol payload-shape coverage (C18)', () => {
     expect(wire.notifies.update.safeParse({ documentId: 'doc', intent: 1, transient: true, stage: {} }).success).toBe(
       false,
     );
+    expect(
+      wire.notifies.update.safeParse({ documentId: 'doc', intent: 1, transient: true, interactive: true }).success,
+    ).toBe(true);
+    expect(wire.notifies.update.safeParse({ documentId: 'doc', intent: 1, interactive: true }).success).toBe(false);
   });
 
   it('admits all twelve host notifications, including failed view and telemetry envelopes', () => {

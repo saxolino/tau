@@ -69,6 +69,8 @@ import {
 } from '#utils/render-output.js';
 import type { DrawingEntry, NamedInputShape, SmlibLibrary } from '#utils/render-output.js';
 import { convertSmlibGeometriesToGltf } from '#utils/smlib-to-gltf.js';
+import { creaCacheMeshKernel } from '#utils/mesh-cache.js';
+import type { CacheMeshKernel } from '#utils/mesh-cache.js';
 
 const kernelId = 'smlib';
 const kernelVersion = '1.5.0';
@@ -102,6 +104,8 @@ type SerializedHandle = GlbResources & { shapes: SerializedShape[]; drawings: Dr
 type SmlibContext = {
   library: SmlibLibrary;
   libraryTrace: KernelLibraryTraceHandle<SmlibLibrary>;
+  /** Per-piece meshes: fine ones for the view at rest and for exports, coarse ones for a drag. */
+  meshCache: CacheMeshKernel;
 };
 
 /**
@@ -323,7 +327,7 @@ export const smlibKernel = defineKernel({
     registerSmlibModule(runtime, libraryTrace.tracedLibrary);
     registerFamiglieModule(runtime, library);
     logger.debug(`SMLib kernel initialized (smlibwasm ${module.version}, libraryTracing: ${options.libraryTracing})`);
-    return { library, libraryTrace };
+    return { library, libraryTrace, meshCache: creaCacheMeshKernel() };
   },
 
   async resolve({ entryPath }, runtime) {
@@ -494,6 +498,8 @@ export const smlibKernel = defineKernel({
     const { options, content } = input;
     const { tracer } = runtime;
     const modelShapes = handle.shapes;
+    // A drag sample meshes coarser into its own cache; the render at rest and every export stay fine.
+    const interactive = input.interaction === 'continuous';
     if (modelShapes.length === 0) {
       return { content: asBuffer(createEmptyGlb()) };
     }
@@ -519,6 +525,8 @@ export const smlibKernel = defineKernel({
                 budget: occtTriangleBudgets.preview,
                 collectBrepEdges: includeEdges || includeTopology,
                 tracer,
+                interactive,
+                cache: interactive ? context.meshCache.interattiva : context.meshCache.fine,
               }),
           });
         } finally {
@@ -603,6 +611,8 @@ export const smlibKernel = defineKernel({
                 tessellation: requested,
                 collectBrepEdges: content?.includeEdges === true || content?.includeTopology === true,
                 tracer: runtime.tracer,
+                // The view's fine meshes: reused when the export asks for the same tolerances, never a drag's.
+                cache: context.meshCache.fine,
               }),
             );
             assertWithinExportBudget(requested, countMesh(geometries).triangles);
@@ -647,17 +657,20 @@ export const smlibKernel = defineKernel({
             const { coordinateSystem } = input.options;
             let text: string;
             try {
+              // Rotated, named and colored copies are freed with the scope; the text is all that leaves it.
               text = await tracedPhase(runtime.tracer, 'export.exportSTEP', () =>
-                library.toStep(
-                  bodies.flatMap(({ shape, name, color }) => {
-                    const placed = toExportBody(library, shape, coordinateSystem);
-                    if (!(placed instanceof library.Part || placed instanceof library.Shell)) {
-                      return [];
-                    }
-                    const labelled = placed.named(toStepName(name));
-                    return [color ? labelled.colored(color) : labelled];
-                  }),
-                  { name: bodies.length === 1 ? toStepName(bodies[0]!.name) : 'assembly' },
+                library.scope(() =>
+                  library.toStep(
+                    bodies.flatMap(({ shape, name, color }) => {
+                      const placed = toExportBody(library, shape, coordinateSystem);
+                      if (!(placed instanceof library.Part || placed instanceof library.Shell)) {
+                        return [];
+                      }
+                      const labelled = placed.named(toStepName(name));
+                      return [color ? labelled.colored(color) : labelled];
+                    }),
+                    { name: bodies.length === 1 ? toStepName(bodies[0]!.name) : 'assembly' },
+                  ),
                 ),
               );
             } catch (error) {
@@ -676,14 +689,16 @@ export const smlibKernel = defineKernel({
               explicitDefaults: occtExplicitTessellationDefaults.export,
             });
             const files = entries.map(({ shape, name }, index) => {
-              const placed =
-                shape instanceof library.Mesh
-                  ? rotateMesh(library, shape, options.coordinateSystem)
-                  : toExportBody(library, shape, options.coordinateSystem);
-              const bytes = library.toStl(placed, {
-                tolerance: requested.linearTolerance,
-                angle: requested.angularTolerance,
-                ascii: !options.binary,
+              const bytes = library.scope(() => {
+                const placed =
+                  shape instanceof library.Mesh
+                    ? rotateMesh(library, shape, options.coordinateSystem)
+                    : toExportBody(library, shape, options.coordinateSystem);
+                return library.toStl(placed, {
+                  tolerance: requested.linearTolerance,
+                  angle: requested.angularTolerance,
+                  ascii: !options.binary,
+                });
               });
               return createExportFile(
                 'stl',
@@ -712,6 +727,12 @@ export const smlibKernel = defineKernel({
         }
       },
     });
+  },
+
+  // The runtime releases a handle once no evaluation it keeps references it (a newer build replaced it): its bodies
+  // are freed now rather than whenever the garbage collector runs, so memory stays flat across a run of edits.
+  releaseHandle({ handle }, _runtime, context) {
+    releaseSmlibHandle(context.library, handle);
   },
 
   serializeHandle({ handle }, runtime, context): SerializedHandle {
@@ -785,6 +806,20 @@ const rotateMesh = (
   return new library.Mesh(vertices, mesh.triangles);
 };
 
+/**
+ * Free the kernel bodies and meshes of a handle the runtime no longer keeps. A body shares its Brep with its `named()`
+ * and `colored()` copies, and the kernel frees it with the last of them. Faces belong to their body and are left to it.
+ * @param library - Loaded SMLib module.
+ * @param handle - The released handle.
+ */
+const releaseSmlibHandle = (library: SmlibLibrary, handle: NativeHandle): void => {
+  for (const { shape } of handle.shapes) {
+    if (shape instanceof library.Part || shape instanceof library.Shell || shape instanceof library.Mesh) {
+      shape.dispose();
+    }
+  }
+};
+
 const serializeSmlibHandle = (library: SmlibLibrary, handle: NativeHandle): SerializedHandle => ({
   ...(handle.images === undefined ? {} : { images: handle.images }),
   ...(handle.textures === undefined ? {} : { textures: handle.textures }),
@@ -795,8 +830,11 @@ const serializeSmlibHandle = (library: SmlibLibrary, handle: NativeHandle): Seri
     if (shape instanceof library.Mesh) {
       return { kind: 'mesh', vertices: [...shape.vertices], triangles: [...shape.triangles], metadata };
     }
-    const body = shape instanceof library.Face ? shape.toShell() : shape;
-    return { kind: 'brep', smb: new Uint8Array(library.toSmb(body)), metadata };
+    // A face's temporary shell is freed with the scope; the bytes are all that leaves it.
+    const smb = library.scope(
+      () => new Uint8Array(library.toSmb(shape instanceof library.Face ? shape.toShell() : shape)),
+    );
+    return { kind: 'brep', smb, metadata };
   }),
 });
 
