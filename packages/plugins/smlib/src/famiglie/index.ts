@@ -36,3 +36,8 @@ export {
   poligonoSemplice,
 } from '#famiglie/fondo-pianta-canonica.js';
 export type { Pianta } from '#famiglie/fondo-pianta-canonica.js';
+export { pendente } from '#famiglie/pendente.js';
+export type { ParametriPendente, VariantePendente } from '#famiglie/pendente.js';
+export { puntale } from '#famiglie/puntale.js';
+export type { ParametriPuntale } from '#famiglie/puntale.js';
+export { ovale, ovaleQuattroCentri, estrudiSformato } from '#famiglie/profili.js';
