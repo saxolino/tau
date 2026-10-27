@@ -156,10 +156,17 @@ function parseNumber(
   if (separators.status !== 'success') {
     return separators;
   }
-  const { decimal, group } = separators.value;
   const exponentIndex = text.search(/[eE]/u);
   const mantissa = exponentIndex < 0 ? text : text.slice(0, exponentIndex);
-  if (group !== decimal && mantissa.includes(group)) {
+  // A single point and no locale decimal separator is a decimal point: «3.5» in it-IT is 3,5 (fields show values
+  // with a point, and a measure is far likelier than a grouped thousand).
+  const decimalPoint =
+    separators.value.decimal !== '.' &&
+    separators.value.group === '.' &&
+    !mantissa.includes(separators.value.decimal) &&
+    mantissa.split('.').length === 2;
+  const { decimal, group } = decimalPoint ? { decimal: '.', group: '' } : separators.value;
+  if (group !== '' && group !== decimal && mantissa.includes(group)) {
     const grouped = new RegExp(`^[+-]?\\d{1,3}(?:${escapeRegex(group)}\\d{3})+(?:${escapeRegex(decimal)}\\d+)?$`, 'u');
     if (!grouped.test(mantissa)) {
       return {
@@ -174,7 +181,7 @@ function parseNumber(
       diagnostic: { code: 'REPRESENTATION_UNSUPPORTED', message: 'Locale decimal separator is repeated.' },
     };
   }
-  const normalized = text.split(group).join('').replace(decimal, '.');
+  const normalized = (group === '' ? text : text.split(group).join('')).replace(decimal, '.');
   if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/u.test(normalized)) {
     return { status: 'invalid', diagnostic: { code: 'UNIT_INVALID', message: 'Malformed numeric value.' } };
   }

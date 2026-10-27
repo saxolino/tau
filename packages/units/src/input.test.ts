@@ -117,3 +117,20 @@ describe('complete input parsing', () => {
     expect(native.value).toMatchObject({ value: 1, representation: 'safe-integer', unit: { code: 'mm' } });
   });
 });
+
+describe('locale decimal separators', () => {
+  it.each([
+    { text: '3.5', value: 3.5 },
+    { text: '3,5', value: 3.5 },
+    { text: '1.234,5', value: 1234.5 },
+    { text: '12.75 mm', value: 12.75 },
+    { text: '-0.4', value: -0.4 },
+  ])('reads $text in it-IT', ({ text, value }) => {
+    const result = parseInput({ text, locale: 'it-IT', inputUnit: 'mm' });
+    expect(result.status === 'success' && result.value.quantity.value).toBe(value);
+  });
+
+  it('still refuses a malformed grouping in it-IT', () => {
+    expect(parseInput({ text: '1.23.4', locale: 'it-IT', inputUnit: 'mm' }).status).toBe('invalid');
+  });
+});
