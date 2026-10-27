@@ -29,7 +29,7 @@ describe('famiglia pendente', () => {
     'should build a %s charm in one piece with its bail',
     (variante) => {
       const p = pendente.normalizza({}, { variante });
-      const valutazione = valutaFamiglia(lib, pendente, p, { variante });
+      const valutazione = valutaFamiglia(lib, pendente, { parametri: p, variante });
       const pezzo = forma(valutazione);
       expect(pezzo.isValid()).toBe(true);
       // The bail is fused: one solid.
@@ -46,7 +46,7 @@ describe('famiglia pendente', () => {
 
   it('should cross the bail and pierce a hole with a 1.2 mm bridge', () => {
     const p = pendente.normalizza({ anellino: { orientamento: 'di_traverso' }, occhiello: { foro: 1.5 } });
-    const valutazione = valutaFamiglia(lib, pendente, p);
+    const valutazione = valutaFamiglia(lib, pendente, { parametri: p });
     const pezzo = forma(valutazione);
     expect(pezzo.isValid()).toBe(true);
     expect(pezzo.solids()).toHaveLength(1);
@@ -59,7 +59,7 @@ describe('famiglia pendente', () => {
 describe('famiglia puntale', () => {
   it('should build a quarter-ellipsoid brass cap of 0.6 mm sheet with two holes', () => {
     const p = puntale.predefiniti();
-    const valutazione = valutaFamiglia(lib, puntale, p);
+    const valutazione = valutaFamiglia(lib, puntale, { parametri: p });
     const pezzo = forma(valutazione);
     expect(pezzo.isValid()).toBe(true);
     expect(pezzo.solids()).toHaveLength(1);

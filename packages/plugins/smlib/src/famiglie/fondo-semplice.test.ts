@@ -62,7 +62,7 @@ describe('pianta canonica', () => {
 describe('famiglia fondo semplice', () => {
   it('should build a platform whose lowest point is the ground and whose thickness holds', () => {
     const p = fondoSemplice.normalizza({ costruzione: { lato: 'dx' } }, { variante: 'platform' });
-    const valutazione = valutaFamiglia(lib, fondoSemplice, p, { variante: 'platform' });
+    const valutazione = valutaFamiglia(lib, fondoSemplice, { parametri: p, variante: 'platform' });
     const pezzo = fondo(valutazione);
     expect(pezzo.isValid()).toBe(true);
     expect(pezzo.solids()).toHaveLength(1);
@@ -81,7 +81,7 @@ describe('famiglia fondo semplice', () => {
 
   it('should build a wedge from 60 mm at the heel to 8 mm at the toe', () => {
     const p = fondoSemplice.normalizza({ costruzione: { lato: 'dx' } }, { variante: 'zeppa' });
-    const pezzo = fondo(valutaFamiglia(lib, fondoSemplice, p, { variante: 'zeppa', verifiche: false }));
+    const pezzo = fondo(valutaFamiglia(lib, fondoSemplice, { parametri: p, variante: 'zeppa', verifiche: false }));
     expect(pezzo.isValid()).toBe(true);
     expect(verticale(pezzo, 0, -20).spessore).toBeCloseTo(60, 1);
     expect(verticale(pezzo, 0, 150).spessore).toBeCloseTo(8, 1);
@@ -90,7 +90,7 @@ describe('famiglia fondo semplice', () => {
 
   it('should build a flat leather sole of one thickness with straight sides', () => {
     const p = fondoSemplice.normalizza({ costruzione: { lato: 'dx' } }, { variante: 'cuoio_liscio' });
-    const valutazione = valutaFamiglia(lib, fondoSemplice, p, { variante: 'cuoio_liscio' });
+    const valutazione = valutaFamiglia(lib, fondoSemplice, { parametri: p, variante: 'cuoio_liscio' });
     const pezzo = fondo(valutazione);
     expect(pezzo.isValid()).toBe(true);
     expect(verticale(pezzo, 0, 60).spessore).toBeCloseTo(4.5, 1);

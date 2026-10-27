@@ -2,10 +2,13 @@ import type { IdFamiglia, ParametriAnnidati, ValoreParametro } from '#famiglie/f
 
 import { sinopiaFamiglieModuleName } from '#smlib.constants.js';
 
-/** Il modulo built-in da cui il `main.ts` di un progetto importa le famiglie (registrato dal kernel SMLib). */
+/**
+ * Il modulo built-in da cui il `main.ts` di un progetto importa le famiglie (registrato dal kernel SMLib).
+ * @public
+ */
 export const moduloFamiglie = sinopiaFamiglieModuleName;
 
-const identificatore = /^[A-Za-z_$][\w$]*$/;
+const identificatore = /^[$A-Z_a-z][\w$]*$/;
 
 const chiave = (nome: string): string => (identificatore.test(nome) ? nome : JSON.stringify(nome));
 
@@ -14,30 +17,32 @@ const letterale = (valore: ValoreParametro | ParametriAnnidati | Record<string, 
     return `[${(valore as ReadonlyArray<readonly [number, number]>).map(([x, y]) => `[${x}, ${y}]`).join(', ')}]`;
   }
   if (typeof valore === 'object') {
-    const campi = Object.entries(valore).map(([nome, figlio]) => `${chiave(nome)}: ${letterale(figlio)}`);
+    const campi = Object.entries(valore as Record<string, ValoreParametro | ParametriAnnidati>).map(
+      ([nome, figlio]) => `${chiave(nome)}: ${letterale(figlio)}`,
+    );
     return `{ ${campi.join(', ')} }`;
   }
-  return typeof valore === 'string' ? `'${valore.replaceAll('\\', '\\\\').replaceAll("'", "\\'")}'` : String(valore);
+  return typeof valore === 'string'
+    ? `'${valore.replaceAll('\\', String.raw`\\`).replaceAll("'", String.raw`\'`)}'`
+    : String(valore);
 };
 
 /**
  * Il `main.ts` di un progetto di famiglia (specifica §1.0.1): `defaultParams` annidati per pezzo, `ipotesi`
  * (lette da `annotateParameterAssumptions`), l'export `famiglia` per l'ispettore e un `main` che delega alla
  * ricetta del modulo built-in, così la ricetta ha una sola implementazione.
- * @param id - Famiglia.
- * @param versione - Versione della ricetta.
- * @param variante - Variante.
+ * @param scheda - Famiglia, versione della ricetta e variante.
  * @param p - Parametri normalizzati.
  * @param ipotesi - Per percorso puntato, perché il valore è un'ipotesi.
  * @returns Il sorgente TypeScript.
+ * @public
  */
 export function emettiMainFamiglia(
-  id: IdFamiglia,
-  versione: number,
-  variante: string,
+  scheda: { id: IdFamiglia; versione: number; variante: string },
   p: ParametriAnnidati,
   ipotesi: Record<string, string>,
 ): string {
+  const { id, versione, variante } = scheda;
   return [
     `import { ${id} } from '${moduloFamiglie}';`,
     `// mm. Z in alto. Vedi scheda famiglia «${id}» v${versione}.`,

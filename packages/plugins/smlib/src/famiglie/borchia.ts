@@ -29,8 +29,16 @@ import {
 
 type Lib = typeof Smlib;
 
+/**
+ * Varianti della famiglia borchia.
+ * @public
+ */
 export type VarianteBorchia = 'cupola' | 'piramide' | 'piatta' | 'cono';
 
+/**
+ * Parametri della famiglia borchia, annidati per pezzo.
+ * @public
+ */
 export type ParametriBorchia = {
   testa: { forma: VarianteBorchia; diametro: number; altezza: number; lati: number };
   gambo: { diametro: number; lunghezza: number };
@@ -156,8 +164,8 @@ const predefiniti = (variante?: string): ParametriBorchia => {
   });
 };
 
-const vincoli = (p: ParametriBorchia): { chiave: string; messaggio: string }[] => {
-  const violati: { chiave: string; messaggio: string }[] = [];
+const vincoli = (p: ParametriBorchia): Array<{ chiave: string; messaggio: string }> => {
+  const violati: Array<{ chiave: string; messaggio: string }> = [];
   if (p.testa.forma === 'cupola' && p.testa.altezza > p.testa.diametro / 2) {
     violati.push({ chiave: 'testa.altezza', messaggio: 'Una cupola più alta di mezzo diametro va in sottosquadro.' });
   }
@@ -187,7 +195,10 @@ const normalizza = (grezzi: unknown, opzioni?: OpzioniFamiglia): ParametriBorchi
   return p;
 };
 
-/** Raggio della sfera di una calotta di corda d e freccia h. */
+/**
+ * Raggio della sfera di una calotta di corda d e freccia h.
+ * @public
+ */
 export const raggioCalotta = (d: number, h: number): number => (d ** 2 / 4 + h ** 2) / (2 * h);
 
 function testa(lib: Lib, p: ParametriBorchia): Smlib.Part {
@@ -225,7 +236,9 @@ function costruisciConEsiti(lib: Lib, p: ParametriBorchia): RisultatoCostruzione
         // Il gambo sale fino al cielo della cavità.
         cima = Math.max(0.5, p.testa.altezza - p.costruzione.parete + 0.5);
       } catch {
-        esiti.push(esito('avviso', 'CAVA', 'Testa non svuotabile con questa parete: piena.', { pezzo: 'Borchia' }));
+        esiti.push(
+          esito('avviso', 'CAVA', { messaggio: 'Testa non svuotabile con questa parete: piena.', pezzo: 'Borchia' }),
+        );
       }
     }
     const r = p.gambo.diametro / 2;
@@ -250,12 +263,16 @@ function costruisciConEsiti(lib: Lib, p: ParametriBorchia): RisultatoCostruzione
     };
   } catch (error) {
     esiti.push(
-      esito('blocco', 'SOLIDO_NON_VALIDO', `Borchia non costruita: ${(error as Error).message}`, { pezzo: 'Borchia' }),
+      esito('blocco', 'SOLIDO_NON_VALIDO', {
+        messaggio: `Borchia non costruita: ${(error as Error).message}`,
+        pezzo: 'Borchia',
+      }),
     );
     return { pezzi: [], esiti };
   }
 }
 
+// oxlint-disable-next-line eslint/max-params -- firma del contratto delle famiglie (§1.0): lib, pezzi, parametri, processo, opzioni.
 function verifiche(
   lib: Lib,
   pezzi: readonly PezzoFamiglia[],
@@ -263,26 +280,38 @@ function verifiche(
   processo: Processo = p.costruzione.processo,
 ): Esito[] {
   const esiti: Esito[] = [];
-  esiti.push(esitoMinimo('GAMBO_MIN', p.gambo.diametro, 1.8, 'Diametro del gambo', { pezzo: 'Borchia' }));
+  esiti.push(
+    esitoMinimo('GAMBO_MIN', { valore: p.gambo.diametro, soglia: 1.8, cosa: 'Diametro del gambo', pezzo: 'Borchia' }),
+  );
   if (p.costruzione.cava) {
-    esiti.push(esitoMinimo('PARETE_MIN', p.costruzione.parete, 1, 'Parete della testa cava', { pezzo: 'Borchia' }));
+    esiti.push(
+      esitoMinimo('PARETE_MIN', {
+        valore: p.costruzione.parete,
+        soglia: 1,
+        cosa: 'Parete della testa cava',
+        pezzo: 'Borchia',
+      }),
+    );
   }
   const minimo = sogliaSformo(processo);
   const borchia = pezzi[0]?.shape;
   if (minimo !== undefined && borchia instanceof lib.Part) {
     esiti.push(
-      ...esitiSformo(
-        sformoDuePiani(borchia, 0, minimo - 1e-3),
-        minimo,
-        'Borchia',
-        'Borchia (divisione sotto la testa)',
-      ),
+      ...esitiSformo(sformoDuePiani(borchia, { piano: 0, minimo: minimo - 1e-3 }), {
+        soglia: minimo,
+        pezzo: 'Borchia',
+        dove: 'Borchia (divisione sotto la testa)',
+      }),
     );
   }
   esiti.push(...esitiPezzi(lib, pezzi));
   return esiti;
 }
 
+/**
+ * La famiglia borchia.
+ * @public
+ */
 export const borchia: Famiglia<ParametriBorchia> = {
   id: 'borchia',
   versione: 1,
@@ -299,5 +328,9 @@ export const borchia: Famiglia<ParametriBorchia> = {
   silhouette: { assi: ['z'], simmetrie: ['yz', 'xz'] },
   materialiAmmessi: ['zama', 'ottone'],
   emettiMain: (p, ipotesi, opzioni) =>
-    emettiMainFamiglia('borchia', 1, varianteDi(opzioni ?? { variante: p.testa.forma }), p, ipotesi),
+    emettiMainFamiglia(
+      { id: 'borchia', versione: 1, variante: varianteDi(opzioni ?? { variante: p.testa.forma }) },
+      p,
+      ipotesi,
+    ),
 };

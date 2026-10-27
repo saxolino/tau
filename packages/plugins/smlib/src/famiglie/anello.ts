@@ -1,4 +1,5 @@
 /* oxlint-disable new-cap -- SMLib exposes capitalized shape factory functions. */
+/* eslint-disable @typescript-eslint/naming-convention -- chiavi dei dati della specifica (processi, materiali, varianti, taglie): snake_case come in Sinopia. */
 import type * as Smlib from '@classcad/smlibwasm';
 import type {
   DefinizioneParametro,
@@ -27,6 +28,10 @@ import { esitiPezzi, esito, esitoMinimo, mm, normalizzaForma } from '#famiglie/v
 
 type Lib = typeof Smlib;
 
+/**
+ * Varianti della famiglia anello.
+ * @public
+ */
 export type VarianteAnello = 'griffe' | 'chiuso' | 'fascia';
 
 const leghe = [
@@ -40,6 +45,10 @@ const leghe = [
   'titanio',
 ] as const;
 
+/**
+ * Parametri della famiglia anello, annidati per pezzo.
+ * @public
+ */
 export type ParametriAnello = {
   taglia: { sistema: SistemaTaglia; valore: number };
   gambo: {
@@ -253,8 +262,8 @@ const predefiniti = (variante?: string): ParametriAnello => {
   return predefinitiDaParametri<ParametriAnello>(parametri, { 'castone.tipo': tipo === 'fascia' ? 'nessuno' : tipo });
 };
 
-const vincoli = (p: ParametriAnello): { chiave: string; messaggio: string }[] => {
-  const violati: { chiave: string; messaggio: string }[] = [];
+const vincoli = (p: ParametriAnello): Array<{ chiave: string; messaggio: string }> => {
+  const violati: Array<{ chiave: string; messaggio: string }> = [];
   const [minimo, massimo] = intervalliTaglia[p.taglia.sistema];
   if (p.taglia.valore < minimo || p.taglia.valore > massimo) {
     violati.push({ chiave: 'taglia.valore', messaggio: `La taglia ${p.taglia.sistema} va da ${minimo} a ${massimo}.` });
@@ -322,7 +331,7 @@ function costruisciGambo(lib: Lib, p: ParametriAnello): Smlib.Part {
 /** La testa (castone a griffe o chiuso) con base sul piano XY, centrata sull'asse Z. */
 function costruisciTesta(lib: Lib, p: ParametriAnello): Smlib.Part | undefined {
   const rp = p.pietra.diametro / 2;
-  const parete = p.castone.parete;
+  const { parete } = p.castone;
   const altezza = altezzaCastone(p);
   const centrato = { align: [lib.Align.CENTER, lib.Align.CENTER, lib.Align.MIN] as const };
   if (p.castone.tipo === 'chiuso') {
@@ -390,7 +399,9 @@ function costruisciConEsiti(lib: Lib, p: ParametriAnello): RisultatoCostruzione 
     }
     anello = normalizzaForma(lib, anello);
     if (!anello.isValid()) {
-      esiti.push(esito('blocco', 'SOLIDO_NON_VALIDO', 'L’anello non è un solido valido.', { pezzo: 'Anello' }));
+      esiti.push(
+        esito('blocco', 'SOLIDO_NON_VALIDO', { messaggio: 'L’anello non è un solido valido.', pezzo: 'Anello' }),
+      );
     }
     pezzi.push({ name: 'Anello', shape: anello, ruolo: 'metallo', materiale: p.lega, ...aspettoMateriale(p.lega) });
     if (testa) {
@@ -408,12 +419,16 @@ function costruisciConEsiti(lib: Lib, p: ParametriAnello): RisultatoCostruzione 
     }
   } catch (error) {
     esiti.push(
-      esito('blocco', 'SOLIDO_NON_VALIDO', `Anello non costruito: ${(error as Error).message}`, { pezzo: 'Anello' }),
+      esito('blocco', 'SOLIDO_NON_VALIDO', {
+        messaggio: `Anello non costruito: ${(error as Error).message}`,
+        pezzo: 'Anello',
+      }),
     );
   }
   return { pezzi, esiti };
 }
 
+// oxlint-disable-next-line eslint/max-params -- firma del contratto delle famiglie (§1.0): lib, pezzi, parametri, processo, opzioni.
 function verifiche(
   lib: Lib,
   pezzi: readonly PezzoFamiglia[],
@@ -424,19 +439,31 @@ function verifiche(
   const soglia = sogliaParete(processo, p.lega);
   const gamboMinimo = p.gambo.spessore * p.gambo.rastremazione;
   esiti.push(
-    esitoMinimo(
-      'PARETE_MIN',
-      Math.min(gamboMinimo, p.castone.tipo === 'nessuno' ? Number.POSITIVE_INFINITY : p.castone.parete),
+    esitoMinimo('PARETE_MIN', {
+      valore: Math.min(gamboMinimo, p.castone.tipo === 'nessuno' ? Number.POSITIVE_INFINITY : p.castone.parete),
       soglia,
-      `Parete minima (${materiale(p.lega).nome})`,
-      { pezzo: 'Anello' },
-    ),
+      cosa: `Parete minima (${materiale(p.lega).nome})`,
+      pezzo: 'Anello',
+    }),
   );
   esiti.push(
-    esitoMinimo('GAMBO_MIN', gamboMinimo, 1.2, 'Spessore del gambo in basso', { pezzo: 'Anello', fattoreBlocco: 0 }),
+    esitoMinimo('GAMBO_MIN', {
+      valore: gamboMinimo,
+      soglia: 1.2,
+      cosa: 'Spessore del gambo in basso',
+      pezzo: 'Anello',
+      fattoreBlocco: 0,
+    }),
   );
   if (p.castone.tipo === 'griffe') {
-    esiti.push(esitoMinimo('GRIFFA_BASE', p.griffe.diametro, 0.7, 'Diametro delle griffe', { pezzo: 'Anello' }));
+    esiti.push(
+      esitoMinimo('GRIFFA_BASE', {
+        valore: p.griffe.diametro,
+        soglia: 0.7,
+        cosa: 'Diametro delle griffe',
+        pezzo: 'Anello',
+      }),
+    );
   }
   if (p.castone.tipo !== 'nessuno') {
     // Punta del padiglione rispetto alla base del castone (negativa = sotto).
@@ -445,8 +472,12 @@ function verifiche(
     if (p.castone.tipo === 'chiuso') {
       esiti.push(
         punta >= 0
-          ? esito('ok', 'PIETRA_BUCA_FONDO', 'Il padiglione resta dentro il castone chiuso.', { valore: punta })
-          : esito('blocco', 'PIETRA_BUCA_FONDO', `Il padiglione esce di ${mm(-punta)} sotto il castone chiuso.`, {
+          ? esito('ok', 'PIETRA_BUCA_FONDO', {
+              messaggio: 'Il padiglione resta dentro il castone chiuso.',
+              valore: punta,
+            })
+          : esito('blocco', 'PIETRA_BUCA_FONDO', {
+              messaggio: `Il padiglione esce di ${mm(-punta)} sotto il castone chiuso.`,
               valore: punta,
             }),
       );
@@ -454,23 +485,22 @@ function verifiche(
       const tocca = anello.contains([0, 0, quotaTesta(p) + punta]);
       esiti.push(
         tocca
-          ? esito(
-              'avviso',
-              'PIETRA_BUCA_FONDO',
-              'La punta del padiglione entra nel gambo: alzare il castone o forare il gambo.',
-              { valore: punta },
-            )
-          : esito('ok', 'PIETRA_BUCA_FONDO', 'La punta del padiglione resta libera.', { valore: punta }),
+          ? esito('avviso', 'PIETRA_BUCA_FONDO', {
+              messaggio: 'La punta del padiglione entra nel gambo: alzare il castone o forare il gambo.',
+              valore: punta,
+            })
+          : esito('ok', 'PIETRA_BUCA_FONDO', { messaggio: 'La punta del padiglione resta libera.', valore: punta }),
       );
     }
   }
-  const ritiro = soglieProcessi[processo].ritiro;
+  const { ritiro } = soglieProcessi[processo];
   if (ritiro) {
     esiti.push(esito('info', 'RITIRO', `Ritiro della cera ${ritiro[0]}–${ritiro[1]} %: dichiarato, non applicato.`));
   }
   const nomi: Record<SistemaTaglia, string> = { it: 'IT', us: 'US', eu_iso: 'ISO', diametro: '⌀' };
   esiti.push(
-    esito('info', 'TAGLIA', `Taglia ${nomi[p.taglia.sistema]} ${p.taglia.valore} = ⌀ ${mm(diametroDi(p))} interno.`, {
+    esito('info', 'TAGLIA', {
+      messaggio: `Taglia ${nomi[p.taglia.sistema]} ${p.taglia.valore} = ⌀ ${mm(diametroDi(p))} interno.`,
       valore: diametroDi(p),
     }),
   );
@@ -478,6 +508,10 @@ function verifiche(
   return esiti;
 }
 
+/**
+ * La famiglia anello.
+ * @public
+ */
 export const anello: Famiglia<ParametriAnello> = {
   id: 'anello',
   versione: 1,
@@ -495,9 +529,11 @@ export const anello: Famiglia<ParametriAnello> = {
   materialiAmmessi: [...leghe],
   emettiMain: (p, ipotesi, opzioni) =>
     emettiMainFamiglia(
-      'anello',
-      1,
-      varianteDi(opzioni ?? { variante: p.castone.tipo === 'nessuno' ? 'fascia' : p.castone.tipo }),
+      {
+        id: 'anello',
+        versione: 1,
+        variante: varianteDi(opzioni ?? { variante: p.castone.tipo === 'nessuno' ? 'fascia' : p.castone.tipo }),
+      },
       p,
       ipotesi,
     ),

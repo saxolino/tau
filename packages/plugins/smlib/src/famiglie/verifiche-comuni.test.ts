@@ -1,4 +1,5 @@
 /* oxlint-disable new-cap -- SMLib exposes capitalized shape factory functions. */
+/* eslint-disable @typescript-eslint/naming-convention -- chiavi dei dati della specifica (processi, materiali, varianti, taglie): snake_case come in Sinopia. */
 // @vitest-environment node
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type * as Smlib from '@classcad/smlibwasm';
@@ -51,9 +52,9 @@ describe('verifiche comuni delle famiglie', () => {
     const box = lib.Box(20, 20, 20);
     const sides = box.faces().filter((face) => Math.abs(face.normalAt(face.interiorPoint()).z) < 0.1);
     const bottom = box.faces().find((face) => face.normalAt(face.interiorPoint()).z < -0.9)!;
-    expect(sformo(box, [0, 0, -1], 1).verticali).toHaveLength(4);
+    expect(sformo(box, { direzione: [0, 0, -1], minimo: 1 }).verticali).toHaveLength(4);
     const drafted = box.draft(sides, 5, bottom);
-    const misura = sformo(drafted, [0, 0, -1], 1);
+    const misura = sformo(drafted, { direzione: [0, 0, -1], minimo: 1 });
     expect(misura.insufficienti).toHaveLength(0);
     expect(misura.verticali).toHaveLength(0);
     // The top face looks away from a pull towards -Z: it belongs to the other half of the mould.
@@ -61,25 +62,25 @@ describe('verifiche comuni delle famiglie', () => {
     expect(misura.sottosquadri[0]!.normalAt(misura.sottosquadri[0]!.interiorPoint()).z).toBeCloseTo(1, 6);
     // Only the side walls: their least draft is the 5 degrees given.
     const pareti = drafted.faces().filter((face) => Math.abs(face.normalAt(face.interiorPoint()).z) < 0.5);
-    expect(sformo(drafted, [0, 0, -1], 1, pareti).minimo).toBeCloseTo(5, 3);
+    expect(sformo(drafted, { direzione: [0, 0, -1], minimo: 1, facce: pareti }).minimo).toBeCloseTo(5, 3);
   });
 
   it('should release both halves of a part drafted about a mid parting plane', () => {
     const anello = lib.Rectangle(30, 20, { fillet: 4 }).cut(lib.Rectangle(20, 10, { fillet: 1 }));
     const telaio = lib.Pos(0, 0, 1.5).mul(anello).extrude(1.5, { both: true, taper: 1 });
-    const misura = sformoDuePiani(telaio, 1.5, 0.99);
+    const misura = sformoDuePiani(telaio, { piano: 1.5, minimo: 0.99 });
     expect(misura.sottosquadri).toHaveLength(0);
     expect(misura.insufficienti).toHaveLength(0);
     expect(misura.minimo).toBeCloseTo(1, 3);
     // Seen from one side only, the lower half is an undercut.
-    expect(sformo(telaio, [0, 0, 1], 0.99).sottosquadri.length).toBeGreaterThan(0);
+    expect(sformo(telaio, { direzione: [0, 0, 1], minimo: 0.99 }).sottosquadri.length).toBeGreaterThan(0);
   });
 
   it('should weigh a brass cylinder with the density in g/cm3', () => {
     const cilindro = lib.Cylinder(5, 10);
     const ottone = materiale('ottone');
     expect(ottone.densita).toBe(8.5);
-    // pi * 25 * 10 mm3 = 785.4 mm3 = 0.7854 cm3 at 8.5 g/cm3.
+    // Pi * 25 * 10 mm3 = 785.4 mm3 = 0.7854 cm3 at 8.5 g/cm3.
     expect(pesoGrammi(cilindro, ottone.densita)).toBeCloseTo(Math.PI * 250 * 8.5e-3, 6);
   });
 
@@ -111,14 +112,14 @@ describe('verifiche comuni delle famiglie', () => {
     ];
     const { corpi, esito } = rileggiStep(lib, pezzi, 'prova');
     expect(esito.livello).toBe('ok');
-    expect(corpi.map(({ nome }) => nome).sort()).toEqual(['Ardiglione', 'Telaio']);
+    expect(corpi.map(({ nome }) => nome ?? '').sort((a, b) => a.localeCompare(b))).toEqual(['Ardiglione', 'Telaio']);
     expect(corpi.find(({ nome }) => nome === 'Telaio')!.volume).toBeCloseTo(200, 6);
   });
 
   it('should grade a measured minimum against its threshold', () => {
-    expect(esitoMinimo('PARETE_MIN', 1.3, 1.2, 'Parete').livello).toBe('ok');
-    expect(esitoMinimo('PARETE_MIN', 1, 1.2, 'Parete').livello).toBe('avviso');
-    expect(esitoMinimo('PARETE_MIN', 0.9, 1.2, 'Parete').livello).toBe('blocco');
+    expect(esitoMinimo('PARETE_MIN', { valore: 1.3, soglia: 1.2, cosa: 'Parete' }).livello).toBe('ok');
+    expect(esitoMinimo('PARETE_MIN', { valore: 1, soglia: 1.2, cosa: 'Parete' }).livello).toBe('avviso');
+    expect(esitoMinimo('PARETE_MIN', { valore: 0.9, soglia: 1.2, cosa: 'Parete' }).livello).toBe('blocco');
   });
 });
 
@@ -132,7 +133,7 @@ describe('processi e materiali', () => {
     expect(sogliaSformo('pressofusione_zama')).toBe(1);
     expect(sogliaSformo('stampaggio_iniezione', 'gomma')).toBe(3);
     expect(sogliaSformo('cnc')).toBeUndefined();
-    expect(Object.values(soglieProcessi).every(({ fonte }) => fonte === 'mestiere')).toBe(true);
+    expect(new Set(Object.values(soglieProcessi).map(({ fonte }) => fonte))).toEqual(new Set(['mestiere']));
   });
 
   it('should list the materials of the specification with their densities', () => {
@@ -223,9 +224,7 @@ describe('parametri', () => {
 
   it('should emit a project main.ts that imports the family from the built-in module', () => {
     const codice = emettiMainFamiglia(
-      'fibbia',
-      1,
-      'rettangolare',
+      { id: 'fibbia', versione: 1, variante: 'rettangolare' },
       { cinturino: { larghezza: 20 }, telaio: { profilo: 'bombato' } },
       { 'cinturino.larghezza': 'Dalla misura dichiarata.' },
     );

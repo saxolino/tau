@@ -14,6 +14,10 @@ import { esitiPezzi, esito, esitoMinimo, mm, normalizzaForma } from '#famiglie/v
 
 type Lib = typeof Smlib;
 
+/**
+ * Parametri della famiglia puntale, annidati per pezzo.
+ * @public
+ */
 export type ParametriPuntale = {
   puntale: { lunghezza: number; larghezza: number; altezza: number; spessore: number };
   fori: { numero: number; diametro: number };
@@ -99,7 +103,7 @@ const raggioMinimo = (p: ParametriPuntale): number => {
   return Math.min(...semiassi) ** 2 / Math.max(...semiassi);
 };
 
-const vincoli = (p: ParametriPuntale): { chiave: string; messaggio: string }[] =>
+const vincoli = (p: ParametriPuntale): Array<{ chiave: string; messaggio: string }> =>
   p.puntale.spessore * 3 > p.puntale.altezza
     ? [{ chiave: 'puntale.spessore', messaggio: 'La lamiera supera un terzo dell’altezza.' }]
     : [];
@@ -128,7 +132,8 @@ function costruisciConEsiti(lib: Lib, p: ParametriPuntale): RisultatoCostruzione
         ellissoide(larghezza / 2 - spessore, lunghezza - spessore, altezza - spessore).translate(0, -1e-3, -1e-3),
       );
       esiti.push(
-        esito('info', 'GUSCIO', 'Guscio per differenza di ellissoidi (il kernel non ha svuotato la sfera scalata).', {
+        esito('info', 'GUSCIO', {
+          messaggio: 'Guscio per differenza di ellissoidi (il kernel non ha svuotato la sfera scalata).',
           pezzo: 'Puntale',
         }),
       );
@@ -145,7 +150,9 @@ function costruisciConEsiti(lib: Lib, p: ParametriPuntale): RisultatoCostruzione
     }
     const forma = normalizzaForma(lib, guscio);
     if (!forma.isValid()) {
-      esiti.push(esito('blocco', 'SOLIDO_NON_VALIDO', 'Il puntale non è un solido valido.', { pezzo: 'Puntale' }));
+      esiti.push(
+        esito('blocco', 'SOLIDO_NON_VALIDO', { messaggio: 'Il puntale non è un solido valido.', pezzo: 'Puntale' }),
+      );
     }
     const { materiale } = p.costruzione;
     return {
@@ -154,19 +161,28 @@ function costruisciConEsiti(lib: Lib, p: ParametriPuntale): RisultatoCostruzione
     };
   } catch (error) {
     esiti.push(
-      esito('blocco', 'SOLIDO_NON_VALIDO', `Puntale non costruito: ${(error as Error).message}`, { pezzo: 'Puntale' }),
+      esito('blocco', 'SOLIDO_NON_VALIDO', {
+        messaggio: `Puntale non costruito: ${(error as Error).message}`,
+        pezzo: 'Puntale',
+      }),
     );
     return { pezzi: [], esiti };
   }
 }
 
+// oxlint-disable-next-line eslint/max-params -- firma del contratto delle famiglie (§1.0): lib, pezzi, parametri, processo, opzioni.
 function verifiche(lib: Lib, pezzi: readonly PezzoFamiglia[], p: ParametriPuntale): Esito[] {
   const esiti: Esito[] = [];
   const { altezza, spessore } = p.puntale;
   esiti.push(
     spessore >= 0.4 && spessore <= 1.2
-      ? esito('ok', 'PARETE_MIN', `Lamiera di ${mm(spessore)} (0,4–1,2).`, { pezzo: 'Puntale', valore: spessore })
-      : esito('avviso', 'PARETE_MIN', `Lamiera di ${mm(spessore)} fuori da 0,4–1,2 mm.`, {
+      ? esito('ok', 'PARETE_MIN', {
+          messaggio: `Lamiera di ${mm(spessore)} (0,4–1,2).`,
+          pezzo: 'Puntale',
+          valore: spessore,
+        })
+      : esito('avviso', 'PARETE_MIN', {
+          messaggio: `Lamiera di ${mm(spessore)} fuori da 0,4–1,2 mm.`,
           pezzo: 'Puntale',
           valore: spessore,
         }),
@@ -174,14 +190,22 @@ function verifiche(lib: Lib, pezzi: readonly PezzoFamiglia[], p: ParametriPuntal
   const rapporto = altezza / spessore;
   esiti.push(
     rapporto <= 25
-      ? esito('ok', 'IMBUTITURA', `Altezza / spessore = ${rapporto.toFixed(1)}.`, { valore: rapporto, soglia: 25 })
-      : esito('avviso', 'IMBUTITURA', `Altezza / spessore = ${rapporto.toFixed(1)}: imbutitura profonda (oltre 25).`, {
+      ? esito('ok', 'IMBUTITURA', {
+          messaggio: `Altezza / spessore = ${rapporto.toFixed(1)}.`,
+          valore: rapporto,
+          soglia: 25,
+        })
+      : esito('avviso', 'IMBUTITURA', {
+          messaggio: `Altezza / spessore = ${rapporto.toFixed(1)}: imbutitura profonda (oltre 25).`,
           valore: rapporto,
           soglia: 25,
         }),
   );
   esiti.push(
-    esitoMinimo('RAGGI_MIN', raggioMinimo(p), 2 * spessore, 'Raggio di curvatura minimo', {
+    esitoMinimo('RAGGI_MIN', {
+      valore: raggioMinimo(p),
+      soglia: 2 * spessore,
+      cosa: 'Raggio di curvatura minimo',
       pezzo: 'Puntale',
       fattoreBlocco: 0,
     }),
@@ -190,6 +214,10 @@ function verifiche(lib: Lib, pezzi: readonly PezzoFamiglia[], p: ParametriPuntal
   return esiti;
 }
 
+/**
+ * La famiglia puntale.
+ * @public
+ */
 export const puntale: Famiglia<ParametriPuntale> = {
   id: 'puntale',
   versione: 1,
@@ -205,5 +233,6 @@ export const puntale: Famiglia<ParametriPuntale> = {
   verifiche,
   silhouette: { assi: ['x', 'y', 'z'], simmetrie: ['yz'] },
   materialiAmmessi: ['ottone', 'inox', 'alluminio'],
-  emettiMain: (p, ipotesi) => emettiMainFamiglia('puntale', 1, 'quarto_ellissoide', p, ipotesi),
+  emettiMain: (p, ipotesi) =>
+    emettiMainFamiglia({ id: 'puntale', versione: 1, variante: 'quarto_ellissoide' }, p, ipotesi),
 };

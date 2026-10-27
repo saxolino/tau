@@ -1,4 +1,5 @@
 /* oxlint-disable new-cap -- SMLib exposes capitalized shape factory functions. */
+/* eslint-disable @typescript-eslint/naming-convention -- chiavi dei dati della specifica (processi, materiali, varianti, taglie): snake_case come in Sinopia. */
 import type * as Smlib from '@classcad/smlibwasm';
 import type {
   DefinizioneParametro,
@@ -37,12 +38,20 @@ import {
 
 type Lib = typeof Smlib;
 
+/**
+ * Varianti della famiglia placca.
+ * @public
+ */
 export type VariantePlacca = 'rettangolo' | 'ovale' | 'cerchio' | 'scudo';
 
+/**
+ * Parametri della famiglia placca, annidati per pezzo.
+ * @public
+ */
 export type ParametriPlacca = {
   piastra: {
     forma: VariantePlacca | 'contorno';
-    contorno: [number, number][];
+    contorno: Array<[number, number]>;
     lunghezza: number;
     larghezza: number;
     spessore: number;
@@ -67,8 +76,11 @@ export type ParametriPlacca = {
 
 const varianti = ['rettangolo', 'ovale', 'cerchio', 'scudo'] as const;
 
-/** Larghezza del tratto più sottile di Lato Regular rispetto all'altezza delle maiuscole (traversa della H). */
-export const TRATTO_LATO = 0.099;
+/**
+ * Larghezza del tratto più sottile di Lato Regular rispetto all'altezza delle maiuscole (traversa della H).
+ * @public
+ */
+export const trattoLato = 0.099;
 
 const parametri: readonly DefinizioneParametro[] = [
   {
@@ -266,15 +278,15 @@ const predefiniti = (variante?: string): ParametriPlacca =>
   predefinitiDaParametri<ParametriPlacca>(parametri, { 'piastra.forma': varianteDi({ variante }) });
 
 const materialiDelProcesso: Readonly<
-  Record<ParametriPlacca['costruzione']['processo'], readonly ParametriPlacca['costruzione']['materiale'][]>
+  Record<ParametriPlacca['costruzione']['processo'], ReadonlyArray<ParametriPlacca['costruzione']['materiale']>>
 > = {
   pressofusione_zama: ['zama'],
   tranciatura_lamiera: ['ottone', 'inox'],
   fusione_cera_persa: ['ottone', 'argento_925'],
 };
 
-const vincoli = (p: ParametriPlacca): { chiave: string; messaggio: string }[] => {
-  const violati: { chiave: string; messaggio: string }[] = [];
+const vincoli = (p: ParametriPlacca): Array<{ chiave: string; messaggio: string }> => {
+  const violati: Array<{ chiave: string; messaggio: string }> = [];
   if (!materialiDelProcesso[p.costruzione.processo].includes(p.costruzione.materiale)) {
     violati.push({ chiave: 'costruzione.materiale', messaggio: 'Materiale non adatto al processo.' });
   }
@@ -326,10 +338,11 @@ function sagomaDaContorno(lib: Lib, p: ParametriPlacca): Smlib.Sketch | undefine
     ((y - (y0 + y1) / 2) * larghezza) / (y1 - y0),
   ]);
   // In senso antiorario (normale +Z): una faccia girata al contrario rifiuta l'estrusione sformata.
-  const area = scalati.reduce((somma, [x, y], indice) => {
+  let area = 0;
+  for (const [indice, [x, y]] of scalati.entries()) {
     const [xn, yn] = scalati[(indice + 1) % scalati.length]!;
-    return somma + x * yn - xn * y;
-  }, 0);
+    area += x * yn - xn * y;
+  }
   const punti = area < 0 ? scalati.toReversed() : scalati;
   try {
     const curva = lib.makeFace(lib.Spline(...punti, { closed: true }));
@@ -351,12 +364,10 @@ function sagoma(lib: Lib, p: ParametriPlacca, esiti: Esito[] = []): Smlib.Sketch
       return daContorno.translate(-daContorno.bbox().center.x, -daContorno.bbox().center.y);
     }
     esiti.push(
-      esito(
-        'avviso',
-        'CONTORNO',
-        'Contorno assente, con meno di 3 punti o che si autointerseca: piastra rettangolare.',
-        { pezzo: 'Placca' },
-      ),
+      esito('avviso', 'CONTORNO', {
+        messaggio: 'Contorno assente, con meno di 3 punti o che si autointerseca: piastra rettangolare.',
+        pezzo: 'Placca',
+      }),
     );
   }
   if (forma === 'ovale') {
@@ -385,7 +396,12 @@ function sagoma(lib: Lib, p: ParametriPlacca, esiti: Esito[] = []): Smlib.Sketch
  * Il contorno ristretto di `distanza`: offset (esatto: archi e rette restano tali; l'ovale è a quattro centri) e il
  * cerchio a raggio ridotto.
  */
-function sagomaRistretta(lib: Lib, p: ParametriPlacca, sagomaPiena: Smlib.Sketch, distanza: number): Smlib.Sketch {
+function sagomaRistretta(
+  lib: Lib,
+  p: ParametriPlacca,
+  richiesta: { base: Smlib.Sketch; distanza: number },
+): Smlib.Sketch {
+  const { base: sagomaPiena, distanza } = richiesta;
   if (distanza <= 0) {
     return sagomaPiena;
   }
@@ -428,7 +444,7 @@ function testoChesta(
 }
 
 /** Pezzo e altezza effettiva del testo (per le verifiche). */
-const altezzeTesto = new WeakMap<object, number>();
+const altezzeTesto = new WeakMap<WeakKey, number>();
 
 function costruisciPlacca(lib: Lib, p: ParametriPlacca, esiti: Esito[]): Smlib.Part {
   const { piastra, bordo, testo, fissaggio, costruzione } = p;
@@ -443,7 +459,7 @@ function costruisciPlacca(lib: Lib, p: ParametriPlacca, esiti: Esito[]): Smlib.P
     sformo <= 0
       ? schizzo.extrude(altezza)
       : archiTangenti
-        ? estrudiSformato(lib, schizzo, altezza, sformo)
+        ? estrudiSformato(lib, schizzo, { altezza, sformo })
         : schizzo.extrude(altezza, { taper: sformo });
   let corpo = sformata(base, altezzaPiastra);
   // Calotta: sfera di corda = lunghezza e freccia = bombatura, appoggiata allo spessore sul bordo.
@@ -456,10 +472,10 @@ function costruisciPlacca(lib: Lib, p: ParametriPlacca, esiti: Esito[]): Smlib.P
   const ritiroCima = sformo > 0 ? piastra.spessore * Math.tan(radianti(sformo)) : 0;
   // Sulle curve libere l'offset dello schizzo non coincide al centesimo col bordo della piastra sformata: il bordo in
   // rilievo sta 0,02 mm dentro (altrimenti la fusione tocca solo lungo uno spigolo).
-  const cima = sagomaRistretta(lib, p, base, ritiroCima + (piastra.forma === 'contorno' ? 0.02 : 0));
+  const cima = sagomaRistretta(lib, p, { base, distanza: ritiroCima + (piastra.forma === 'contorno' ? 0.02 : 0) });
   const rilievi: Smlib.Part[] = [];
   if (bordo.rilievo > 0) {
-    const cornice = cima.cut(sagomaRistretta(lib, p, base, ritiroCima + bordo.larghezza));
+    const cornice = cima.cut(sagomaRistretta(lib, p, { base, distanza: ritiroCima + bordo.larghezza }));
     let solido = sformata(
       lib.Pos(0, 0, piastra.spessore - 0.05).mul(cornice),
       bordo.rilievo + 0.05 + piastra.bombatura,
@@ -469,21 +485,20 @@ function costruisciPlacca(lib: Lib, p: ParametriPlacca, esiti: Esito[]): Smlib.P
     }
     rilievi.push(solido);
   }
-  const spazio = sagomaRistretta(lib, p, base, ritiroCima + (bordo.rilievo > 0 ? bordo.larghezza + 0.5 : 0.5));
+  const spazio = sagomaRistretta(lib, p, {
+    base,
+    distanza: ritiroCima + (bordo.rilievo > 0 ? bordo.larghezza + 0.5 : 0.5),
+  });
   const scritta = testoChesta(lib, p, spazio);
   let inciso: Smlib.Part | undefined;
   if (scritta) {
     if (scritta.altezza < testo.altezza - 1e-9) {
       esiti.push(
-        esito(
-          'avviso',
-          'TESTO_RIDOTTO',
-          `Testo ridotto a ${mm(scritta.altezza, 1)} di altezza perché stia nella piastra.`,
-          {
-            valore: scritta.altezza,
-            soglia: testo.altezza,
-          },
-        ),
+        esito('avviso', 'TESTO_RIDOTTO', {
+          messaggio: `Testo ridotto a ${mm(scritta.altezza, 1)} di altezza perché stia nella piastra.`,
+          valore: scritta.altezza,
+          soglia: testo.altezza,
+        }),
       );
     }
     if (testo.font === 'sinopia') {
@@ -509,13 +524,13 @@ function costruisciPlacca(lib: Lib, p: ParametriPlacca, esiti: Esito[]): Smlib.P
     }
   }
   const interasse = 0.6 * piastra.lunghezza;
-  const posizioni: [number, number][] = [
+  const posizioni: Array<[number, number]> = [
     [-interasse / 2, 0],
     [interasse / 2, 0],
   ];
   if (fissaggio.tipo === 'perni') {
     const r = fissaggio.perno.diametro / 2;
-    const lunghezza = fissaggio.perno.lunghezza;
+    const { lunghezza } = fissaggio.perno;
     // Lo sformo vale su tutta l'altezza del cono, compresi gli 0,5 mm dentro la piastra.
     const punta = zama ? Math.max(0.3, r - (lunghezza + 0.5) * Math.tan(radianti(sformo))) : r;
     for (const [x, y] of posizioni) {
@@ -553,7 +568,9 @@ function costruisciPlacca(lib: Lib, p: ParametriPlacca, esiti: Esito[]): Smlib.P
     altezzeTesto.set(normalizzata, scritta.altezza);
   }
   if (!normalizzata.isValid()) {
-    esiti.push(esito('blocco', 'SOLIDO_NON_VALIDO', 'La placca non è un solido valido.', { pezzo: 'Placca' }));
+    esiti.push(
+      esito('blocco', 'SOLIDO_NON_VALIDO', { messaggio: 'La placca non è un solido valido.', pezzo: 'Placca' }),
+    );
   }
   return normalizzata;
 }
@@ -576,12 +593,16 @@ function costruisciConEsiti(lib: Lib, p: ParametriPlacca): RisultatoCostruzione 
     };
   } catch (error) {
     esiti.push(
-      esito('blocco', 'SOLIDO_NON_VALIDO', `Placca non costruita: ${(error as Error).message}`, { pezzo: 'Placca' }),
+      esito('blocco', 'SOLIDO_NON_VALIDO', {
+        messaggio: `Placca non costruita: ${(error as Error).message}`,
+        pezzo: 'Placca',
+      }),
     );
     return { pezzi: [], esiti };
   }
 }
 
+// oxlint-disable-next-line eslint/max-params -- firma del contratto delle famiglie (§1.0): lib, pezzi, parametri, processo, opzioni.
 function verifiche(
   lib: Lib,
   pezzi: readonly PezzoFamiglia[],
@@ -595,15 +616,12 @@ function verifiche(
   if (altezza !== undefined) {
     const sogliaTratto = processo === 'pressofusione_zama' ? 0.4 : 0.3;
     esiti.push(
-      esitoMinimo(
-        'TRATTO_MIN',
-        TRATTO_LATO * altezza,
-        sogliaTratto,
-        `Tratto più sottile del testo (${mm(altezza, 1)} di altezza)`,
-        {
-          pezzo: 'Placca',
-        },
-      ),
+      esitoMinimo('TRATTO_MIN', {
+        valore: trattoLato * altezza,
+        soglia: sogliaTratto,
+        cosa: `Tratto più sottile del testo (${mm(altezza, 1)} di altezza)`,
+        pezzo: 'Placca',
+      }),
     );
   }
   const sogliaPiastra =
@@ -615,17 +633,17 @@ function verifiche(
   const parete =
     testo.modo === 'inciso' && altezza !== undefined ? piastra.spessore - testo.profondita : piastra.spessore;
   esiti.push(
-    esitoMinimo(
-      'PARETE_MIN',
-      parete,
-      sogliaPiastra,
-      testo.modo === 'inciso' ? 'Spessore sotto l’incisione' : 'Spessore della piastra',
-      { pezzo: 'Placca' },
-    ),
+    esitoMinimo('PARETE_MIN', {
+      valore: parete,
+      soglia: sogliaPiastra,
+      cosa: testo.modo === 'inciso' ? 'Spessore sotto l’incisione' : 'Spessore della piastra',
+      pezzo: 'Placca',
+    }),
   );
   if (bordo.rilievo > 0.6 * piastra.spessore) {
     esiti.push(
-      esito('avviso', 'BORDO_RILIEVO', `Bordo di ${mm(bordo.rilievo)}: oltre il 60 % dello spessore.`, {
+      esito('avviso', 'BORDO_RILIEVO', {
+        messaggio: `Bordo di ${mm(bordo.rilievo)}: oltre il 60 % dello spessore.`,
         valore: bordo.rilievo,
         soglia: 0.6 * piastra.spessore,
       }),
@@ -634,25 +652,20 @@ function verifiche(
   const minimoSformo = sogliaSformo(processo);
   if (minimoSformo !== undefined && placca?.shape instanceof lib.Part) {
     esiti.push(
-      ...esitiSformo(
-        sformoDuePiani(placca.shape, 0, minimoSformo - 1e-3),
-        minimoSformo,
-        'Placca',
-        'Placca (divisione sul retro)',
-      ),
+      ...esitiSformo(sformoDuePiani(placca.shape, { piano: 0, minimo: minimoSformo - 1e-3 }), {
+        soglia: minimoSformo,
+        pezzo: 'Placca',
+        dove: 'Placca (divisione sul retro)',
+      }),
     );
     if (altezza !== undefined) {
       esiti.push(
-        esito(
-          'avviso',
-          'SFORMO_TESTO',
-          'Fianchi delle lettere a 0°: il kernel non sforma il testo; lo sformo di 1° va dato sullo stampo.',
-          {
-            pezzo: 'Placca',
-            valore: 0,
-            soglia: minimoSformo,
-          },
-        ),
+        esito('avviso', 'SFORMO_TESTO', {
+          messaggio: 'Fianchi delle lettere a 0°: il kernel non sforma il testo; lo sformo di 1° va dato sullo stampo.',
+          pezzo: 'Placca',
+          valore: 0,
+          soglia: minimoSformo,
+        }),
       );
     }
   }
@@ -660,6 +673,10 @@ function verifiche(
   return esiti;
 }
 
+/**
+ * La famiglia placca logo.
+ * @public
+ */
 export const placca: Famiglia<ParametriPlacca> = {
   id: 'placca',
   versione: 1,
@@ -676,5 +693,9 @@ export const placca: Famiglia<ParametriPlacca> = {
   silhouette: { assi: ['z'], simmetrie: ['yz', 'xz'] },
   materialiAmmessi: ['zama', 'ottone', 'argento_925', 'inox'],
   emettiMain: (p, ipotesi, opzioni) =>
-    emettiMainFamiglia('placca', 1, varianteDi(opzioni ?? { variante: p.piastra.forma }), p, ipotesi),
+    emettiMainFamiglia(
+      { id: 'placca', versione: 1, variante: varianteDi(opzioni ?? { variante: p.piastra.forma }) },
+      p,
+      ipotesi,
+    ),
 };

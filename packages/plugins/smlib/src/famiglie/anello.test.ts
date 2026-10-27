@@ -52,7 +52,7 @@ describe('taglie degli anelli', () => {
 describe('famiglia anello', () => {
   it('should build an IT 14 ring with a 4-prong head and a 5 mm stone', () => {
     const p = anello.predefiniti();
-    const valutazione = valutaFamiglia(lib, anello, p);
+    const valutazione = valutaFamiglia(lib, anello, { parametri: p });
     expect(valutazione.pezzi.map(({ name }) => name)).toEqual(['Anello', 'Pietra']);
     const metallo = pezzo(valutazione, 'Anello');
     expect(metallo.isValid()).toBe(true);
@@ -83,7 +83,7 @@ describe('famiglia anello', () => {
 
   it.each([4, 6])('should build %i prongs', (numero) => {
     const p = anello.normalizza({ griffe: { numero } });
-    const metallo = pezzo(valutaFamiglia(lib, anello, p, { verifiche: false }), 'Anello');
+    const metallo = pezzo(valutaFamiglia(lib, anello, { parametri: p, verifiche: false }), 'Anello');
     expect(metallo.isValid()).toBe(true);
     // Count the prong tips cut by a plane just under their tops (the girdle is 0.2 mm above the band + pavilion).
     const cintura = 17.19 / 2 + 1.8 + 0.2 + 0.43 * 5;
@@ -92,17 +92,19 @@ describe('famiglia anello', () => {
   });
 
   it('should seat the stone in a closed bezel and block a pavilion that pokes out', () => {
-    const chiuso = valutaFamiglia(lib, anello, anello.predefiniti('chiuso'), { variante: 'chiuso' });
+    const chiuso = valutaFamiglia(lib, anello, { parametri: anello.predefiniti('chiuso'), variante: 'chiuso' });
     expect(pezzo(chiuso, 'Anello').isValid()).toBe(true);
     expect(codice(chiuso, 'PIETRA_BUCA_FONDO')?.livello).toBe('ok');
     // The prong gallery rises so that the pavilion tip clears the band: no warning for the default stone.
-    expect(codice(valutaFamiglia(lib, anello, anello.predefiniti()), 'PIETRA_BUCA_FONDO')?.livello).toBe('ok');
+    expect(codice(valutaFamiglia(lib, anello, { parametri: anello.predefiniti() }), 'PIETRA_BUCA_FONDO')?.livello).toBe(
+      'ok',
+    );
   });
 
   it('should build a plain band of every profile, revolved when it does not taper', () => {
     for (const profilo of ['tondo', 'piatto', 'd', 'comfort'] as const) {
       const p = anello.normalizza({ gambo: { profilo, rastremazione: 1 } }, { variante: 'fascia' });
-      const valutazione = valutaFamiglia(lib, anello, p, { variante: 'fascia' });
+      const valutazione = valutaFamiglia(lib, anello, { parametri: p, variante: 'fascia' });
       expect(valutazione.pezzi).toHaveLength(1);
       expect(pezzo(valutazione, 'Anello').isValid()).toBe(true);
     }

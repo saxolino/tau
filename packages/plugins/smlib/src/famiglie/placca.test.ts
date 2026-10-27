@@ -2,7 +2,7 @@
 // @vitest-environment node
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type * as Smlib from '@classcad/smlibwasm';
-import { placca, TRATTO_LATO } from '#famiglie/placca.js';
+import { placca, trattoLato } from '#famiglie/placca.js';
 import { rileggiStep } from '#famiglie/verifiche-comuni.js';
 import { budgetTarato } from '#famiglie/budget-tempo.js';
 import { valutaFamiglia } from '#famiglie/valuta-famiglia.js';
@@ -38,7 +38,7 @@ const codice = (valutazione: Valutazione, nome: string) => valutazione.esiti.fin
 describe('famiglia placca', () => {
   it('should build the default zamak plate with its rim and two pins under it', () => {
     const p = placca.predefiniti();
-    const valutazione = valutaFamiglia(lib, placca, p);
+    const valutazione = valutaFamiglia(lib, placca, { parametri: p });
     const piastra = forma(valutazione);
     expect(piastra.isValid()).toBe(true);
     expect(piastra.solids()).toHaveLength(1);
@@ -60,16 +60,16 @@ describe('famiglia placca', () => {
       ...base,
       testo: { ...base.testo, contenuto: 'SINOPIA', modo: 'rilievo', altezza: 5 },
     });
-    const senza = forma(valutaFamiglia(lib, placca, base, { verifiche: false }));
-    const valutazione = valutaFamiglia(lib, placca, conTesto);
+    const senza = forma(valutaFamiglia(lib, placca, { parametri: base, verifiche: false }));
+    const valutazione = valutaFamiglia(lib, placca, { parametri: conTesto });
     const scritta = forma(valutazione);
     expect(scritta.isValid()).toBe(true);
-    const area = lib.Text('SINOPIA', 5).area;
+    const { area } = lib.Text('SINOPIA', 5);
     expect(scritta.volume - senza.volume).toBeCloseTo(area * conTesto.testo.profondita, 1);
     expect(scritta.bbox().max.z).toBeCloseTo(conTesto.piastra.spessore + conTesto.testo.profondita, 3);
     // Lato letters cannot be drafted by the kernel: the check says so instead of hiding it.
     expect(codice(valutazione, 'SFORMO_TESTO')?.livello).toBe('avviso');
-    expect(codice(valutazione, 'TRATTO_MIN')).toMatchObject({ livello: 'ok', valore: TRATTO_LATO * 5 });
+    expect(codice(valutazione, 'TRATTO_MIN')).toMatchObject({ livello: 'ok', valore: trattoLato * 5 });
   });
 
   it('should engrave the text into the plate (volume removed = text area times depth)', () => {
@@ -78,8 +78,8 @@ describe('famiglia placca', () => {
       ...base,
       testo: { ...base.testo, contenuto: 'SINOPIA', modo: 'inciso', altezza: 5, profondita: 0.5 },
     });
-    const senza = forma(valutaFamiglia(lib, placca, base, { verifiche: false }));
-    const valutazione = valutaFamiglia(lib, placca, incisa);
+    const senza = forma(valutaFamiglia(lib, placca, { parametri: base, verifiche: false }));
+    const valutazione = valutaFamiglia(lib, placca, { parametri: incisa });
     expect(forma(valutazione).isValid()).toBe(true);
     expect(senza.volume - forma(valutazione).volume).toBeCloseTo(lib.Text('SINOPIA', 5).area * 0.5, 1);
     expect(codice(valutazione, 'PARETE_MIN')).toMatchObject({ livello: 'ok', valore: 1.5 });
@@ -88,17 +88,17 @@ describe('famiglia placca', () => {
   it('should measure the thinnest Lato stroke and grade small zamak lettering', () => {
     // The H crossbar is the thinnest stroke of Lato Regular: 0.099 of the cap height (stems 0.135).
     const traversa = lib.Text('H', 10).intersect(lib.Rectangle(0.01, 20)).area / 0.01;
-    expect(traversa / 10).toBeCloseTo(TRATTO_LATO, 3);
-    expect(lib.Text('I', 10).bbox().size.x / 10).toBeGreaterThan(TRATTO_LATO);
+    expect(traversa / 10).toBeCloseTo(trattoLato, 3);
+    expect(lib.Text('I', 10).bbox().size.x / 10).toBeGreaterThan(trattoLato);
     const p = placca.normalizza({ testo: { contenuto: 'LOGO', altezza: 3 } });
-    const tratto = codice(valutaFamiglia(lib, placca, p), 'TRATTO_MIN');
+    const tratto = codice(valutaFamiglia(lib, placca, { parametri: p }), 'TRATTO_MIN');
     expect(tratto?.livello).toBe('blocco');
     expect(tratto?.valore).toBeCloseTo(0.297, 3);
   });
 
   it('should shrink a text that does not fit and say so', () => {
     const p = placca.normalizza({ testo: { contenuto: 'ATELIER SINOPIA 1924', altezza: 8 } });
-    const valutazione = valutaFamiglia(lib, placca, p);
+    const valutazione = valutaFamiglia(lib, placca, { parametri: p });
     const ridotto = codice(valutazione, 'TESTO_RIDOTTO');
     expect(ridotto?.livello).toBe('avviso');
     expect(ridotto?.valore).toBeLessThan(8);
@@ -107,30 +107,26 @@ describe('famiglia placca', () => {
 
   it.each(['ovale', 'cerchio', 'scudo'] as const)('should build the %s plate', (variante) => {
     const p = placca.normalizza({ testo: { contenuto: 'S' } }, { variante });
-    const valutazione = valutaFamiglia(lib, placca, p, { variante });
+    const valutazione = valutaFamiglia(lib, placca, { parametri: p, variante });
     expect(forma(valutazione).isValid()).toBe(true);
     expect(forma(valutazione).solids()).toHaveLength(1);
     expect(valutazione.esiti.filter(({ livello }) => livello === 'blocco')).toEqual([]);
   });
 
   it('should dome the face, holes for rivets and stamped brass', () => {
-    const bombata = valutaFamiglia(
-      lib,
-      placca,
-      placca.normalizza({ piastra: { bombatura: 1 }, testo: { contenuto: 'AB' } }),
-    );
+    const bombata = valutaFamiglia(lib, placca, {
+      parametri: placca.normalizza({ piastra: { bombatura: 1 }, testo: { contenuto: 'AB' } }),
+    });
     expect(forma(bombata).isValid()).toBe(true);
     expect(forma(bombata).bbox().max.z).toBeGreaterThan(2.5);
-    const tranciata = valutaFamiglia(
-      lib,
-      placca,
-      placca.normalizza({
+    const tranciata = valutaFamiglia(lib, placca, {
+      parametri: placca.normalizza({
         piastra: { spessore: 0.8 },
         bordo: { rilievo: 0 },
         fissaggio: { tipo: 'ribattini' },
         costruzione: { processo: 'tranciatura_lamiera' },
       }),
-    );
+    });
     expect(forma(tranciata).isValid()).toBe(true);
     expect(tranciata.pezzi[0]?.materiale).toBe('ottone');
     expect(codice(tranciata, 'PARETE_MIN')?.livello).toBe('ok');
@@ -139,7 +135,7 @@ describe('famiglia placca', () => {
 
   it('should cut a plate to a free outline scaled to its length and width, with the text inside', () => {
     // A cloud-like badge: eight points, any scale.
-    const contorno: [number, number][] = [
+    const contorno: Array<[number, number]> = [
       [0, 10],
       [6, 8],
       [10, 4],
@@ -153,7 +149,7 @@ describe('famiglia placca', () => {
       piastra: { forma: 'contorno', contorno, lunghezza: 36, larghezza: 20 },
       testo: { contenuto: 'SINOPIA' },
     });
-    const valutazione = valutaFamiglia(lib, placca, p);
+    const valutazione = valutaFamiglia(lib, placca, { parametri: p });
     const piastra = forma(valutazione);
     expect(piastra.isValid()).toBe(true);
     expect(piastra.bbox().size.x).toBeCloseTo(36, 1);
@@ -172,7 +168,7 @@ describe('famiglia placca', () => {
         ],
       },
     });
-    expect(codice(valutaFamiglia(lib, placca, storto), 'CONTORNO')?.livello).toBe('avviso');
+    expect(codice(valutaFamiglia(lib, placca, { parametri: storto }), 'CONTORNO')?.livello).toBe('avviso');
   });
 
   it('should rebuild within the rebuild budget and export to STEP', () => {

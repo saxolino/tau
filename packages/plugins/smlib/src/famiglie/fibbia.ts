@@ -1,4 +1,5 @@
 /* oxlint-disable new-cap -- SMLib exposes capitalized shape factory functions. */
+/* eslint-disable @typescript-eslint/naming-convention -- chiavi dei dati della specifica (processi, materiali, varianti, taglie): snake_case come in Sinopia. */
 import type * as Smlib from '@classcad/smlibwasm';
 import type {
   DefinizioneParametro,
@@ -37,8 +38,16 @@ import {
 
 type Lib = typeof Smlib;
 
+/**
+ * Varianti della famiglia fibbia.
+ * @public
+ */
 export type VarianteFibbia = 'rettangolare' | 'ovale' | 'a_d' | 'doppia';
 
+/**
+ * Parametri della famiglia fibbia, annidati per pezzo.
+ * @public
+ */
 export type ParametriFibbia = {
   cinturino: { larghezza: number; spessore: number };
   telaio: {
@@ -236,8 +245,8 @@ const varianteDi = (opzioni?: OpzioniFamiglia): VarianteFibbia =>
 const predefiniti = (variante?: string): ParametriFibbia =>
   predefinitiDaParametri<ParametriFibbia>(parametri, sostituzioniVariante[varianteDi({ variante })]);
 
-const vincoli = (p: ParametriFibbia): { chiave: string; messaggio: string }[] => {
-  const violati: { chiave: string; messaggio: string }[] = [];
+const vincoli = (p: ParametriFibbia): Array<{ chiave: string; messaggio: string }> => {
+  const violati: Array<{ chiave: string; messaggio: string }> = [];
   const { telaio, ardiglione, traversino } = p;
   const luce = luceDi(p);
   if (telaio.sezioneSpessore > telaio.sezioneLarghezza * 2) {
@@ -301,9 +310,9 @@ function sagomaEsterna(lib: Lib, variante: VarianteFibbia, p: ParametriFibbia): 
 function raccorda(
   forma: Smlib.Part,
   spigoli: readonly Smlib.Edge[],
-  raggio: number,
-  dove: { pezzo: string; esiti: Esito[] },
+  opzioni: { raggio: number; pezzo: string; esiti: Esito[] },
 ): Smlib.Part {
+  const { raggio, ...dove } = opzioni;
   if (raggio <= 0 || spigoli.length === 0) {
     return forma;
   }
@@ -313,16 +322,12 @@ function raccorda(
       if (raccordata.isValid()) {
         if (tentativo < raggio) {
           dove.esiti.push(
-            esito(
-              'avviso',
-              'RACCORDO_RIDOTTO',
-              `${dove.pezzo}: raccordo ridotto da ${mm(raggio)} a ${mm(tentativo)}.`,
-              {
-                pezzo: dove.pezzo,
-                valore: tentativo,
-                soglia: raggio,
-              },
-            ),
+            esito('avviso', 'RACCORDO_RIDOTTO', {
+              messaggio: `${dove.pezzo}: raccordo ridotto da ${mm(raggio)} a ${mm(tentativo)}.`,
+              pezzo: dove.pezzo,
+              valore: tentativo,
+              soglia: raggio,
+            }),
           );
         }
         return raccordata;
@@ -332,7 +337,8 @@ function raccorda(
     }
   }
   dove.esiti.push(
-    esito('avviso', 'RACCORDO_RIDOTTO', `${dove.pezzo}: raccordo di ${mm(raggio)} non costruibile, spigoli vivi.`, {
+    esito('avviso', 'RACCORDO_RIDOTTO', {
+      messaggio: `${dove.pezzo}: raccordo di ${mm(raggio)} non costruibile, spigoli vivi.`,
       pezzo: dove.pezzo,
       valore: 0,
       soglia: raggio,
@@ -357,16 +363,21 @@ export const pianoDivisioneFibbia = (p: ParametriFibbia): number =>
 function sformato(
   lib: Lib,
   schizzo: Smlib.Sketch,
-  altezza: number,
-  opzioni: { sformo: number; archiTangenti: boolean },
+  opzioni: { altezza: number; sformo: number; archiTangenti: boolean },
 ): Smlib.Part {
+  const { altezza } = opzioni;
   return opzioni.archiTangenti
-    ? estrudiSformato(lib, schizzo, altezza, opzioni.sformo)
+    ? estrudiSformato(lib, schizzo, { altezza, sformo: opzioni.sformo })
     : schizzo.extrude(altezza, { taper: opzioni.sformo });
 }
 
 /** Il telaio con l'eventuale traversino, sformato in pressofusione e raccordato. */
-function costruisciTelaio(lib: Lib, p: ParametriFibbia, variante: VarianteFibbia, esiti: Esito[]): Smlib.Part {
+function costruisciTelaio(
+  lib: Lib,
+  p: ParametriFibbia,
+  contesto: { variante: VarianteFibbia; esiti: Esito[] },
+): Smlib.Part {
+  const { variante, esiti } = contesto;
   const { telaio, traversino, costruzione } = p;
   const w = telaio.sezioneLarghezza;
   const s = telaio.sezioneSpessore;
@@ -384,8 +395,8 @@ function costruisciTelaio(lib: Lib, p: ParametriFibbia, variante: VarianteFibbia
         .extrude(sopra + sotto);
     }
     const posato = lib.Pos(0, 0, piano).mul(schizzo);
-    const alto = sformato(lib, posato, sopra, opzioniSformo);
-    return sotto > 0 ? alto.fuse(sformato(lib, posato, -sotto, opzioniSformo)) : alto;
+    const alto = sformato(lib, posato, { altezza: sopra, ...opzioniSformo });
+    return sotto > 0 ? alto.fuse(sformato(lib, posato, { altezza: -sotto, ...opzioniSformo })) : alto;
   };
   let corpo: Smlib.Part;
   if (telaio.profilo === 'tondo') {
@@ -417,9 +428,12 @@ function costruisciTelaio(lib: Lib, p: ParametriFibbia, variante: VarianteFibbia
   }
   const dove = { pezzo: 'Telaio', esiti };
   if (telaio.profilo === 'bombato') {
-    corpo = raccorda(corpo, [...corpo.edges().top()], 0.45 * Math.min(s, w), dove);
+    corpo = raccorda(corpo, [...corpo.edges().top()], { raggio: 0.45 * Math.min(s, w), ...dove });
   } else if (telaio.profilo === 'piatto') {
-    corpo = raccorda(corpo, [...corpo.edges().top(), ...corpo.edges().bottom()], telaio.raggioBordo, dove);
+    corpo = raccorda(corpo, [...corpo.edges().top(), ...corpo.edges().bottom()], {
+      raggio: telaio.raggioBordo,
+      ...dove,
+    });
   }
   return normalizzaForma(lib, corpo);
 }
@@ -463,7 +477,7 @@ function costruisciArdiglione(lib: Lib, p: ParametriFibbia, esiti: Esito[]): Sml
         .mul(lib.Cylinder(d / 2, punta - perno.y, { align: [lib.Align.CENTER, lib.Align.CENTER, lib.Align.MIN] })),
     );
   const spigoliPunta = tratto.edges().filter((spigolo) => spigolo.center().y > punta - 1e-3);
-  tratto = raccorda(tratto, [...spigoliPunta], 0.45 * d, { pezzo: 'Ardiglione', esiti });
+  tratto = raccorda(tratto, [...spigoliPunta], { raggio: 0.45 * d, pezzo: 'Ardiglione', esiti });
   // Occhio: un arco solo si spazza come una rivoluzione (rapido); il tratto lo continua sulla stessa sezione.
   const occhio = lib.sweep(
     lib.Circle(d / 2),
@@ -478,7 +492,7 @@ function costruisciConEsiti(lib: Lib, p: ParametriFibbia, opzioni?: OpzioniFamig
   const pezzi: PezzoFamiglia[] = [];
   const materiali = { telaio: materialeTelaio(p.costruzione.processo), ardiglione: p.ardiglione.materiale };
   try {
-    const telaio = costruisciTelaio(lib, p, variante, esiti);
+    const telaio = costruisciTelaio(lib, p, { variante, esiti });
     pezzi.push({
       name: 'Telaio',
       shape: telaio,
@@ -488,7 +502,10 @@ function costruisciConEsiti(lib: Lib, p: ParametriFibbia, opzioni?: OpzioniFamig
     });
   } catch (error) {
     esiti.push(
-      esito('blocco', 'SOLIDO_NON_VALIDO', `Telaio non costruito: ${(error as Error).message}`, { pezzo: 'Telaio' }),
+      esito('blocco', 'SOLIDO_NON_VALIDO', {
+        messaggio: `Telaio non costruito: ${(error as Error).message}`,
+        pezzo: 'Telaio',
+      }),
     );
   }
   try {
@@ -502,7 +519,8 @@ function costruisciConEsiti(lib: Lib, p: ParametriFibbia, opzioni?: OpzioniFamig
     });
   } catch (error) {
     esiti.push(
-      esito('blocco', 'SOLIDO_NON_VALIDO', `Ardiglione non costruito: ${(error as Error).message}`, {
+      esito('blocco', 'SOLIDO_NON_VALIDO', {
+        messaggio: `Ardiglione non costruito: ${(error as Error).message}`,
         pezzo: 'Ardiglione',
       }),
     );
@@ -510,13 +528,17 @@ function costruisciConEsiti(lib: Lib, p: ParametriFibbia, opzioni?: OpzioniFamig
   for (const pezzo of pezzi) {
     if (!(pezzo.shape instanceof lib.Part) || !pezzo.shape.isValid()) {
       esiti.push(
-        esito('blocco', 'SOLIDO_NON_VALIDO', `${pezzo.name}: il kernel non lo dà valido.`, { pezzo: pezzo.name }),
+        esito('blocco', 'SOLIDO_NON_VALIDO', {
+          messaggio: `${pezzo.name}: il kernel non lo dà valido.`,
+          pezzo: pezzo.name,
+        }),
       );
     }
   }
   return { pezzi, esiti };
 }
 
+// oxlint-disable-next-line eslint/max-params -- firma del contratto delle famiglie (§1.0): lib, pezzi, parametri, processo, opzioni.
 function verifiche(
   lib: Lib,
   pezzi: readonly PezzoFamiglia[],
@@ -528,7 +550,12 @@ function verifiche(
   const materialeT = materialeTelaio(processo);
   const sezione = t.profilo === 'tondo' ? t.sezioneSpessore : Math.min(t.sezioneSpessore, t.sezioneLarghezza);
   esiti.push(
-    esitoMinimo('PARETE_MIN', sezione, sogliaParete(processo, materialeT), 'Sezione del telaio', { pezzo: 'Telaio' }),
+    esitoMinimo('PARETE_MIN', {
+      valore: sezione,
+      soglia: sogliaParete(processo, materialeT),
+      cosa: 'Sezione del telaio',
+      pezzo: 'Telaio',
+    }),
   );
   const telaio = pezzi.find((pezzo) => pezzo.ruolo === 'telaio');
   const ardiglione = pezzi.find((pezzo) => pezzo.ruolo === 'ardiglione');
@@ -536,22 +563,22 @@ function verifiche(
   if (sformoMinimo !== undefined && telaio?.shape instanceof lib.Part) {
     if (t.profilo === 'tondo') {
       esiti.push(
-        esito('info', 'SFORMO', 'Sezione tonda: il piano di divisione all’equatore la sforma da sé.', {
+        esito('info', 'SFORMO', {
+          messaggio: 'Sezione tonda: il piano di divisione all’equatore la sforma da sé.',
           pezzo: 'Telaio',
         }),
       );
     } else {
       esiti.push(
-        ...esitiSformo(
-          sformoDuePiani(telaio.shape, pianoDivisioneFibbia(p), sformoMinimo - 1e-3),
-          sformoMinimo,
-          'Telaio',
-          'Telaio',
-        ),
+        ...esitiSformo(sformoDuePiani(telaio.shape, { piano: pianoDivisioneFibbia(p), minimo: sformoMinimo - 1e-3 }), {
+          soglia: sformoMinimo,
+          pezzo: 'Telaio',
+          dove: 'Telaio',
+        }),
       );
     }
   }
-  const raggioMinimo = soglieProcessi[processo].raggioMinimo;
+  const { raggioMinimo } = soglieProcessi[processo];
   const raggio =
     t.profilo === 'bombato'
       ? 0.45 * Math.min(t.sezioneSpessore, t.sezioneLarghezza)
@@ -561,28 +588,49 @@ function verifiche(
   if (raggioMinimo !== undefined) {
     esiti.push(
       raggio === 0
-        ? esito('avviso', 'RAGGI_MIN', `Spigoli vivi sul telaio: almeno ${mm(raggioMinimo)} di raccordo.`, {
+        ? esito('avviso', 'RAGGI_MIN', {
+            messaggio: `Spigoli vivi sul telaio: almeno ${mm(raggioMinimo)} di raccordo.`,
             pezzo: 'Telaio',
             valore: 0,
             soglia: raggioMinimo,
           })
-        : esitoMinimo('RAGGI_MIN', raggio, raggioMinimo, 'Raccordo del telaio', { pezzo: 'Telaio', fattoreBlocco: 0 }),
+        : esitoMinimo('RAGGI_MIN', {
+            valore: raggio,
+            soglia: raggioMinimo,
+            cosa: 'Raccordo del telaio',
+            pezzo: 'Telaio',
+            fattoreBlocco: 0,
+          }),
     );
   }
   const filoMinimo = a.materiale === 'ottone' ? 2.2 : 1.8;
-  esiti.push(esitoMinimo('ARDIGLIONE_D', a.diametro, filoMinimo, 'Diametro dell’ardiglione', { pezzo: 'Ardiglione' }));
+  esiti.push(
+    esitoMinimo('ARDIGLIONE_D', {
+      valore: a.diametro,
+      soglia: filoMinimo,
+      cosa: 'Diametro dell’ardiglione',
+      pezzo: 'Ardiglione',
+    }),
+  );
   if (materialeT === 'zama' || materialeT === 'ottone') {
     esiti.push(
-      esito('info', 'GALVANICA', 'Galvanica 5–15 µm non modellata: aggiungerla in tavola.', { pezzo: 'Telaio' }),
+      esito('info', 'GALVANICA', {
+        messaggio: 'Galvanica 5–15 µm non modellata: aggiungerla in tavola.',
+        pezzo: 'Telaio',
+      }),
     );
   }
   const gioco = luceDi(p) - p.cinturino.larghezza;
   esiti.push(
     gioco >= 0.5 && gioco <= 2
-      ? esito('ok', 'LUCE_CINTURINO', `Luce ${mm(luceDi(p))} per un cinturino di ${mm(p.cinturino.larghezza)}.`, {
+      ? esito('ok', 'LUCE_CINTURINO', {
+          messaggio: `Luce ${mm(luceDi(p))} per un cinturino di ${mm(p.cinturino.larghezza)}.`,
           valore: gioco,
         })
-      : esito('avviso', 'LUCE_CINTURINO', `Gioco del cinturino ${mm(gioco)} fuori da 0,5–2 mm.`, { valore: gioco }),
+      : esito('avviso', 'LUCE_CINTURINO', {
+          messaggio: `Gioco del cinturino ${mm(gioco)} fuori da 0,5–2 mm.`,
+          valore: gioco,
+        }),
   );
   if (telaio?.shape instanceof lib.Part && ardiglione?.shape instanceof lib.Part) {
     let comune = 0;
@@ -593,10 +641,11 @@ function verifiche(
     }
     esiti.push(
       comune > 1e-3
-        ? esito('blocco', 'INTERFERENZA', `L’ardiglione entra nel telaio per ${comune.toFixed(3)} mm³.`, {
+        ? esito('blocco', 'INTERFERENZA', {
+            messaggio: `L’ardiglione entra nel telaio per ${comune.toFixed(3)} mm³.`,
             valore: comune,
           })
-        : esito('ok', 'INTERFERENZA', 'Ardiglione e telaio non si compenetrano.', { valore: comune }),
+        : esito('ok', 'INTERFERENZA', { messaggio: 'Ardiglione e telaio non si compenetrano.', valore: comune }),
     );
   }
   esiti.push(...esitiPezzi(lib, pezzi));
@@ -607,6 +656,7 @@ function verifiche(
  * Parametri che riproducono il pilota «Fibbia · strumenti manuali» (`libs/tau-examples/.../manual-buckle-fixture`):
  * cinturino 25 + 1, apertura 36, sezione 4 × 4, angoli 1/5, traversino tondo ⌀ 3,2, telaio senza sformo né raccordi.
  * L'ardiglione è il filo tondo della famiglia (il pilota ha un ardiglione piatto con occhio a cannula).
+ * @public
  */
 export const presetPilotaFibbia: { variante: VarianteFibbia; parametri: ParametriFibbia } = {
   variante: 'doppia',
@@ -626,6 +676,10 @@ export const presetPilotaFibbia: { variante: VarianteFibbia; parametri: Parametr
   },
 };
 
+/**
+ * La famiglia fibbia.
+ * @public
+ */
 export const fibbia: Famiglia<ParametriFibbia> = {
   id: 'fibbia',
   versione: 1,
@@ -641,5 +695,6 @@ export const fibbia: Famiglia<ParametriFibbia> = {
   verifiche,
   silhouette: { assi: ['z'], simmetrie: ['yz'] },
   materialiAmmessi: ['zama', 'ottone', 'acciaio', 'inox'],
-  emettiMain: (p, ipotesi, opzioni) => emettiMainFamiglia('fibbia', 1, varianteDi(opzioni), p, ipotesi),
+  emettiMain: (p, ipotesi, opzioni) =>
+    emettiMainFamiglia({ id: 'fibbia', versione: 1, variante: varianteDi(opzioni) }, p, ipotesi),
 };

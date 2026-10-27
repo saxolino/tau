@@ -55,9 +55,17 @@ import {
 
 type Lib = typeof Smlib;
 
+/**
+ * Varianti della famiglia tacco.
+ * @public
+ */
 export type VarianteTacco = 'stiletto' | 'blocco' | 'rocchetto' | 'cono' | 'kitten';
 type FormaSeduta = 'ellisse' | 'rettangolo' | 'scudo';
 
+/**
+ * Parametri della famiglia tacco, annidati per pezzo.
+ * @public
+ */
 export type ParametriTacco = {
   tacco: { altezza: number; spinta: number };
   seduta: { forma: FormaSeduta; lunghezza: number; larghezza: number; raggioAngoli: number; inclinazione: number };
@@ -83,7 +91,7 @@ export type ParametriTacco = {
 };
 
 const varianti = ['stiletto', 'blocco', 'rocchetto', 'cono', 'kitten'] as const;
-const variantiRigate: readonly VarianteTacco[] = ['blocco', 'cono'];
+const variantiRigate: ReadonlySet<VarianteTacco> = new Set<VarianteTacco>(['blocco', 'cono']);
 
 const svuotatoDi = (p: ParametriTacco): boolean =>
   p.costruzione.processo === 'stampaggio_iniezione' && p.seduta.lunghezza * p.seduta.larghezza > 900;
@@ -381,8 +389,8 @@ const predefiniti = (variante?: string): ParametriTacco =>
 const spostamentoTappo = (p: ParametriTacco): number =>
   (p.tacco.altezza - p.tappo.altezza) * Math.tan(radianti(p.tacco.spinta));
 
-const vincoli = (p: ParametriTacco): { chiave: string; messaggio: string }[] => {
-  const violati: { chiave: string; messaggio: string }[] = [];
+const vincoli = (p: ParametriTacco): Array<{ chiave: string; messaggio: string }> => {
+  const violati: Array<{ chiave: string; messaggio: string }> = [];
   const { tacco, seduta, tappo, vita, anima, costruzione } = p;
   if (tappo.lunghezza > seduta.lunghezza || tappo.larghezza > seduta.larghezza) {
     violati.push({ chiave: 'tappo.lunghezza', messaggio: 'Il tappo è più grande della seduta.' });
@@ -447,7 +455,12 @@ const normalizza = (grezzi: unknown, opzioni?: OpzioniFamiglia): ParametriTacco 
 };
 
 /** Una sezione del tacco centrata su XY: x = larghezza, y = lunghezza (verso la punta). */
-function sezione(lib: Lib, forma: FormaSeduta, larghezza: number, lunghezza: number, raggio: number): Smlib.Sketch {
+function sezione(
+  lib: Lib,
+  forma: FormaSeduta,
+  misure: { larghezza: number; lunghezza: number; raggio: number },
+): Smlib.Sketch {
+  const { larghezza, lunghezza, raggio } = misure;
   const r = Math.min(raggio, 0.49 * Math.min(larghezza, lunghezza / 2));
   if (forma === 'ellisse') {
     return lib.Ellipse(larghezza / 2, lunghezza / 2);
@@ -519,7 +532,7 @@ function stazione(p: ParametriTacco, variante: VarianteTacco, t: number): Stazio
   const z = tappo.altezza + t * corpo;
   const sx0 = tappo.larghezza / seduta.larghezza;
   const sy0 = tappo.lunghezza / seduta.lunghezza;
-  const rigata = variantiRigate.includes(variante);
+  const rigata = variantiRigate.has(variante);
   const sx = rigata
     ? sx0 + (1 - sx0) * t
     : interpolaMonotona(
@@ -578,7 +591,7 @@ const assePerno = (p: ParametriTacco, z: number): { y: number; z: number } => ({
 });
 
 /** Posizioni (x, y) dei fori di fissaggio sulla seduta (§1.1, passo 9). */
-function posizioniFori(lib: Lib, p: ParametriTacco): [number, number][] {
+function posizioniFori(lib: Lib, p: ParametriTacco): Array<[number, number]> {
   const { numero } = p.fori;
   const { lunghezza, larghezza } = p.seduta;
   if (numero <= 0) {
@@ -602,7 +615,7 @@ function posizioniFori(lib: Lib, p: ParametriTacco): [number, number][] {
 
 type CorpoTacco = {
   corpo: Smlib.Part;
-  cavita: (readonly [number, number, number])[];
+  cavita: Array<readonly [number, number, number]>;
   anima?: Smlib.Part;
   foroAnima?: Smlib.Part;
 };
@@ -619,10 +632,9 @@ type Colonna = { x: number; y: (z: number) => number; raggio: number; sformo: nu
 function costruisciCavita(
   lib: Lib,
   p: ParametriTacco,
-  variante: VarianteTacco,
-  fori: readonly [number, number][],
-  esiti: Esito[],
-): { cavita?: Smlib.Part; fori: [number, number][] } {
+  contesto: { variante: VarianteTacco; fori: ReadonlyArray<[number, number]>; esiti: Esito[] },
+): { cavita?: Smlib.Part; fori: Array<[number, number]> } {
+  const { variante, fori, esiti } = contesto;
   const { costruzione, seduta, tacco, anima } = p;
   const tanSformo = Math.tan(radianti(costruzione.sformo));
   const riduzione = (z: number): number => costruzione.parete + (tacco.altezza - z) * tanSformo;
@@ -685,7 +697,7 @@ function costruisciCavita(
   });
   // I chiodi: le posizioni della ricetta, poi più vicine al centro (a passi del 10 %); con il perno, anche in giro
   // attorno alla sua colonna (un chiodo dietro e due davanti, o il contrario), finché le colonne ci stanno.
-  const candidati: { posizioni: [number, number][]; nota?: string }[] = [];
+  const candidati: Array<{ posizioni: Array<[number, number]>; nota?: string }> = [];
   for (let fattore = 1; fattore >= 0.45; fattore -= 0.1) {
     candidati.push({
       posizioni: fori.map(([x, y]) => [x * fattore, y * fattore]),
@@ -711,14 +723,15 @@ function costruisciCavita(
     // Ultima scelta: la vite centrale entra nella colonna del perno, sopra la sua testa; i chiodi restano fuori.
     candidati.push({ posizioni: [], nota: 'ridotti alla vite centrale nella colonna del perno' });
   }
-  let foriTenuti: [number, number][] = [];
+  let foriTenuti: Array<[number, number]> = [];
   for (const { posizioni, nota } of fori.length > 0 ? candidati : []) {
     const elenco = [...colonne, ...posizioni.map(([x, y]) => colonnaChiodo(x, y))];
     if (ciStanno(alta, elenco) && ciStanno(seduta1, elenco)) {
       foriTenuti = posizioni.length > 0 ? posizioni : [[0, assePerno(p, tacco.altezza).y]];
       if (nota) {
         esiti.push(
-          esito('info', 'FORI_SPOSTATI', `Fori di fissaggio ${nota}: così le colonne stanno nella cavità.`, {
+          esito('info', 'FORI_SPOSTATI', {
+            messaggio: `Fori di fissaggio ${nota}: così le colonne stanno nella cavità.`,
             pezzo: 'Tacco',
           }),
         );
@@ -728,7 +741,8 @@ function costruisciCavita(
   }
   if (fori.length > 0 && foriTenuti.length === 0) {
     esiti.push(
-      esito('avviso', 'FORO_FUORI', 'Le colonne dei fori non stanno nella cavità: fori tolti, fissaggio da definire.', {
+      esito('avviso', 'FORO_FUORI', {
+        messaggio: 'Le colonne dei fori non stanno nella cavità: fori tolti, fissaggio da definire.',
         pezzo: 'Tacco',
       }),
     );
@@ -740,7 +754,9 @@ function costruisciCavita(
     Math.abs(foriTenuti[0]![1] - assePerno(p, tacco.altezza).y) < 1e-9;
   colonne.push(...(vitePerno ? [] : foriTenuti.map(([x, y]) => colonnaChiodo(x, y))));
   if (!ciStanno(alta, colonne) || !annidata(alta, seduta1)) {
-    esiti.push(esito('info', 'SVUOTAMENTO', 'Seduta troppo stretta per la cavità: tacco pieno.', { pezzo: 'Tacco' }));
+    esiti.push(
+      esito('info', 'SVUOTAMENTO', { messaggio: 'Seduta troppo stretta per la cavità: tacco pieno.', pezzo: 'Tacco' }),
+    );
     return { fori: [...fori] };
   }
   // Il fondo sta su una quota delle sezioni del corpo: interno ed esterno si interpolano sulle stesse stazioni.
@@ -754,10 +770,11 @@ function costruisciCavita(
     fondo -= 1;
   }
   const ridotta = (s: Stazione, profondita: number): Smlib.Sketch => {
-    let schizzo = sezione(lib, seduta.forma, s.larghezza, s.lunghezza, s.scala * seduta.raggioAngoli).offset(
-      -(costruzione.parete + profondita * tanSformo),
-      { corners: 'round' },
-    );
+    let schizzo = sezione(lib, seduta.forma, {
+      larghezza: s.larghezza,
+      lunghezza: s.lunghezza,
+      raggio: s.scala * seduta.raggioAngoli,
+    }).offset(-(costruzione.parete + profondita * tanSformo), { corners: 'round' });
     for (const colonna of colonne) {
       const { x, y, r } = cerchio(colonna, { ...s, z: tacco.altezza - profondita });
       schizzo = schizzo.cut(lib.Pos(x, y).mul(lib.Circle(r)));
@@ -774,26 +791,40 @@ function costruisciCavita(
 }
 
 /** Corpo del tacco destro con cavità, fori e sede del perno. */
-function costruisciCorpo(lib: Lib, p: ParametriTacco, variante: VarianteTacco, esiti: Esito[]): CorpoTacco {
+function costruisciCorpo(
+  lib: Lib,
+  p: ParametriTacco,
+  contesto: { variante: VarianteTacco; esiti: Esito[] },
+): CorpoTacco {
+  const { variante, esiti } = contesto;
   const { seduta, tappo, tacco, anima } = p;
   const formaTappo: FormaSeduta = tappo.forma === 'come_seduta' ? seduta.forma : tappo.forma;
   const griglia = quoteSezioni();
-  const indici = variantiRigate.includes(variante) ? [0, 6] : [0, 1, 2, 3, 4, 5, 6];
+  const indici = variantiRigate.has(variante) ? [0, 6] : [0, 1, 2, 3, 4, 5, 6];
   const sezioni = indici.map((k) => {
     const s = stazione(p, variante, griglia[k]!);
     const schizzo =
       k === 0
-        ? sezione(lib, formaTappo, tappo.larghezza, tappo.lunghezza, seduta.raggioAngoli * s.scala)
-        : sezione(lib, seduta.forma, s.larghezza, s.lunghezza, seduta.raggioAngoli * s.scala);
+        ? sezione(lib, formaTappo, {
+            larghezza: tappo.larghezza,
+            lunghezza: tappo.lunghezza,
+            raggio: seduta.raggioAngoli * s.scala,
+          })
+        : sezione(lib, seduta.forma, {
+            larghezza: s.larghezza,
+            lunghezza: s.lunghezza,
+            raggio: seduta.raggioAngoli * s.scala,
+          });
     return posa(lib, schizzo, s);
   });
-  let corpo = lib.loft(sezioni, variantiRigate.includes(variante) ? { ruled: true } : { smooth: true });
+  let corpo = lib.loft(sezioni, variantiRigate.has(variante) ? { ruled: true } : { smooth: true });
   // Raccordo del bordo verso il tappo (spigolo del loft, non di una booleana); nessuno sul bordo della seduta.
   try {
     corpo = corpo.fillet(corpo.edges().bottom(), Math.min(0.6, 0.2 * Math.min(tappo.larghezza, tappo.lunghezza)));
   } catch {
     esiti.push(
-      esito('avviso', 'RACCORDO_RIDOTTO', 'Raccordo del bordo verso il tappo non costruibile: spigolo vivo.', {
+      esito('avviso', 'RACCORDO_RIDOTTO', {
+        messaggio: 'Raccordo del bordo verso il tappo non costruibile: spigolo vivo.',
         pezzo: 'Tacco',
       }),
     );
@@ -802,12 +833,13 @@ function costruisciCorpo(lib: Lib, p: ParametriTacco, variante: VarianteTacco, e
   let cavita: Smlib.Part | undefined;
   if (svuotatoDi(p)) {
     try {
-      const risultato = costruisciCavita(lib, p, variante, fori, esiti);
+      const risultato = costruisciCavita(lib, p, { variante, fori, esiti });
       cavita = risultato.cavita;
       fori = risultato.fori;
     } catch (error) {
       esiti.push(
-        esito('avviso', 'SVUOTAMENTO', `Cavità non costruita (${(error as Error).message}): tacco pieno.`, {
+        esito('avviso', 'SVUOTAMENTO', {
+          messaggio: `Cavità non costruita (${(error as Error).message}): tacco pieno.`,
           pezzo: 'Tacco',
         }),
       );
@@ -851,7 +883,9 @@ function costruisciCorpo(lib: Lib, p: ParametriTacco, variante: VarianteTacco, e
   }
   const cavitaPunti = cavita ? puntiDiFacce(corpo.faces().derivedFrom(cavita)) : [];
   if (!corpo.isValid()) {
-    esiti.push(esito('blocco', 'SOLIDO_NON_VALIDO', 'Il corpo del tacco non è un solido valido.', { pezzo: 'Tacco' }));
+    esiti.push(
+      esito('blocco', 'SOLIDO_NON_VALIDO', { messaggio: 'Il corpo del tacco non è un solido valido.', pezzo: 'Tacco' }),
+    );
   }
   return {
     corpo: normalizzaForma(lib, corpo),
@@ -867,7 +901,13 @@ function costruisciTappo(lib: Lib, p: ParametriTacco, foroAnima: Smlib.Part | un
   const scala = Math.min(tappo.larghezza / seduta.larghezza, tappo.lunghezza / seduta.lunghezza);
   let pezzo = lib
     .Pos(0, -spostamentoTappo(p), 0)
-    .mul(sezione(lib, forma, tappo.larghezza, tappo.lunghezza, seduta.raggioAngoli * scala))
+    .mul(
+      sezione(lib, forma, {
+        larghezza: tappo.larghezza,
+        lunghezza: tappo.lunghezza,
+        raggio: seduta.raggioAngoli * scala,
+      }),
+    )
     .extrude(tappo.altezza);
   try {
     pezzo = pezzo.fillet(
@@ -885,7 +925,7 @@ function costruisciConEsiti(lib: Lib, p: ParametriTacco, opzioni?: OpzioniFamigl
   const esiti: Esito[] = [];
   const destri: PezzoFamiglia[] = [];
   try {
-    const { corpo, cavita, anima, foroAnima } = costruisciCorpo(lib, p, variante, esiti);
+    const { corpo, cavita, anima, foroAnima } = costruisciCorpo(lib, p, { variante, esiti });
     if (cavita.length > 0) {
       marcaFacce(corpo, 'cavita', cavita);
     }
@@ -914,7 +954,10 @@ function costruisciConEsiti(lib: Lib, p: ParametriTacco, opzioni?: OpzioniFamigl
     }
   } catch (error) {
     esiti.push(
-      esito('blocco', 'SOLIDO_NON_VALIDO', `Tacco non costruito: ${(error as Error).message}`, { pezzo: 'Tacco' }),
+      esito('blocco', 'SOLIDO_NON_VALIDO', {
+        messaggio: `Tacco non costruito: ${(error as Error).message}`,
+        pezzo: 'Tacco',
+      }),
     );
     return { pezzi: [], esiti };
   }
@@ -973,6 +1016,7 @@ function distanzaPerno(p: ParametriTacco, variante: VarianteTacco): number {
   return minima;
 }
 
+// oxlint-disable-next-line eslint/max-params -- firma del contratto delle famiglie (§1.0): lib, pezzi, parametri, processo, opzioni.
 function verifiche(
   lib: Lib,
   pezzi: readonly PezzoFamiglia[],
@@ -988,45 +1032,37 @@ function verifiche(
     const facce = facceAiPunti(corpo.shape, punti);
     const parete = pareteMinima(corpo.shape, { facce, campioniPerFaccia: 6 });
     esiti.push(
-      esitoMinimo(
-        'PARETE_MIN',
-        parete.min,
-        sogliaPareteTacco(processo, p.costruzione.materiale),
-        'Parete della cavità',
-        {
-          pezzo: corpo.name,
-        },
-      ),
+      esitoMinimo('PARETE_MIN', {
+        valore: parete.min,
+        soglia: sogliaPareteTacco(processo, p.costruzione.materiale),
+        cosa: 'Parete della cavità',
+        pezzo: corpo.name,
+      }),
     );
     const minimoSformo = sogliaSformo(processo, p.costruzione.materiale);
     if (minimoSformo !== undefined) {
       esiti.push(
-        ...esitiSformo(
-          sformo(corpo.shape, [0, 0, 1], minimoSformo - 1e-3, facce),
-          minimoSformo,
-          corpo.name,
-          'Cavità (estrazione verso la seduta)',
-        ),
+        ...esitiSformo(sformo(corpo.shape, { direzione: [0, 0, 1], minimo: minimoSformo - 1e-3, facce }), {
+          soglia: minimoSformo,
+          pezzo: corpo.name,
+          dove: 'Cavità (estrazione verso la seduta)',
+        }),
       );
     }
   } else {
     esiti.push(
-      esito(
-        'info',
-        'PARETE_MIN',
-        'Tacco pieno: nessuna parete di svuotamento da misurare.',
-        corpo ? { pezzo: corpo.name } : {},
-      ),
+      esito('info', 'PARETE_MIN', {
+        messaggio: 'Tacco pieno: nessuna parete di svuotamento da misurare.',
+        ...(corpo ? { pezzo: corpo.name } : {}),
+      }),
     );
   }
   if ((variante === 'stiletto' || variante === 'kitten') && Math.min(p.tappo.lunghezza, p.tappo.larghezza) < 8) {
     esiti.push(
-      esito(
-        'avviso',
-        'TAPPO_MIN',
-        `Tappo di ${mm(Math.min(p.tappo.lunghezza, p.tappo.larghezza))}: sotto 8 mm consuma presto.`,
-        { soglia: 8 },
-      ),
+      esito('avviso', 'TAPPO_MIN', {
+        messaggio: `Tappo di ${mm(Math.min(p.tappo.lunghezza, p.tappo.larghezza))}: sotto 8 mm consuma presto.`,
+        soglia: 8,
+      }),
     );
   }
   const animaNecessaria =
@@ -1034,11 +1070,13 @@ function verifiche(
   if (animaNecessaria) {
     esiti.push(
       p.anima.diametro >= 4
-        ? esito('ok', 'ANIMA_OBBLIGATORIA', `Perno d’acciaio ⌀ ${mm(p.anima.diametro)} presente.`, {
+        ? esito('ok', 'ANIMA_OBBLIGATORIA', {
+            messaggio: `Perno d’acciaio ⌀ ${mm(p.anima.diametro)} presente.`,
             valore: p.anima.diametro,
             soglia: 4,
           })
-        : esito('avviso', 'ANIMA_OBBLIGATORIA', `Oltre 60 mm il ${variante} vuole un perno d’acciaio di almeno 4 mm.`, {
+        : esito('avviso', 'ANIMA_OBBLIGATORIA', {
+            messaggio: `Oltre 60 mm il ${variante} vuole un perno d’acciaio di almeno 4 mm.`,
             valore: p.anima.diametro,
             soglia: 4,
           }),
@@ -1049,24 +1087,26 @@ function verifiche(
     const nelCorpo = distanzaPerno(p, variante);
     esiti.push(
       nelTappo >= 3 && nelCorpo >= 1.5
-        ? esito(
-            'ok',
-            'PERNO_PARETE',
-            `Attorno al perno: ${mm(nelTappo / 2)} nel tappo, almeno ${mm(nelCorpo)} nel corpo.`,
-            { valore: Math.min(nelTappo / 2, nelCorpo), soglia: 1.5 },
-          )
-        : esito(
-            'blocco',
-            'PERNO_PARETE',
-            `Parete attorno al perno sotto 1,5 mm (tappo ${mm(nelTappo / 2)}, corpo ${mm(nelCorpo)}).`,
-            { valore: Math.min(nelTappo / 2, nelCorpo), soglia: 1.5 },
-          ),
+        ? esito('ok', 'PERNO_PARETE', {
+            messaggio: `Attorno al perno: ${mm(nelTappo / 2)} nel tappo, almeno ${mm(nelCorpo)} nel corpo.`,
+            valore: Math.min(nelTappo / 2, nelCorpo),
+            soglia: 1.5,
+          })
+        : esito('blocco', 'PERNO_PARETE', {
+            messaggio: `Parete attorno al perno sotto 1,5 mm (tappo ${mm(nelTappo / 2)}, corpo ${mm(nelCorpo)}).`,
+            valore: Math.min(nelTappo / 2, nelCorpo),
+            soglia: 1.5,
+          }),
     );
   }
   esiti.push(...esitiPezzi(lib, pezzi));
   return esiti;
 }
 
+/**
+ * La famiglia tacco.
+ * @public
+ */
 export const tacco: Famiglia<ParametriTacco> = {
   id: 'tacco',
   versione: 1,
@@ -1082,5 +1122,6 @@ export const tacco: Famiglia<ParametriTacco> = {
   verifiche,
   silhouette: { assi: ['x', 'y', 'z'], simmetrie: ['yz'] },
   materialiAmmessi: ['abs', 'pa6', 'pa_gf30', 'pu', 'legno_faggio', 'alluminio', 'tpu', 'acciaio'],
-  emettiMain: (p, ipotesi, opzioni) => emettiMainFamiglia('tacco', 1, varianteDi(opzioni), p, ipotesi),
+  emettiMain: (p, ipotesi, opzioni) =>
+    emettiMainFamiglia({ id: 'tacco', versione: 1, variante: varianteDi(opzioni) }, p, ipotesi),
 };
