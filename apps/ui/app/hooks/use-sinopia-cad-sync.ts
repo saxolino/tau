@@ -111,9 +111,14 @@ function useLinkQuery() {
       if (link === undefined) {
         return null;
       }
-      // A model moved to another project (an interrupted «cambia», another device): the link follows the row. Offline
-      // the link stays as it is; the next open checks again.
-      return reconcileSinopiaCadLink(recordFiles, `/projects/${projectId}`, link).catch(() => link);
+      // A model moved to another project (an interrupted «cambia», another device): the link follows the row. Any
+      // failure of this check (offline, a refused read) keeps the stored link: it must never turn the link itself into a
+      // failure, which would also switch off the conflict protection. The next open checks again.
+      try {
+        return await reconcileSinopiaCadLink(recordFiles, `/projects/${projectId}`, link);
+      } catch {
+        return link;
+      }
     },
     staleTime: Infinity,
   });
