@@ -107,3 +107,38 @@ describe('logo salvato', () => {
     expect(() => svgDaLogo(logo, 120)).toThrow(ErroreLogo);
   });
 });
+
+describe('SVG di esportazione', () => {
+  it('should ignore defs, clip paths, masks, patterns, symbols, markers and comments', () => {
+    const logo = leggiLogoSvg(
+      svg(
+        '<!-- <rect width="9" height="9"/> --><defs><clipPath id="c"><rect width="100" height="100"/></clipPath><style>.a{fill:none}</style></defs>' +
+          '<g clip-path="url(#c)"><path d="M10 10H60V40H10Z"/></g><mask id="m"><rect width="5" height="5"/></mask><symbol><circle r="3"/></symbol>',
+      ),
+    );
+    expect(logo.contorni).toHaveLength(1);
+    expect(logo.contorni[0]!.buco).toBe(false);
+    expect(logo.larghezza).toBe(50);
+  });
+
+  it('should read fill none from a group and from a style class, and say it', () => {
+    const daGruppo = svg('<g fill="none"><rect width="9" height="9"/></g><rect x="20" width="10" height="10"/>');
+    const logo = leggiLogoSvg(daGruppo);
+    expect(logo.contorni).toHaveLength(1);
+    expect(logo.avvisi.join(' ')).toContain('senza riempimento');
+    const daClasse = svg(
+      '<style>.contorno{fill:none;stroke:#000}</style><path class="contorno" d="M0 0H9V9Z"/><rect x="20" width="10" height="10"/>',
+    );
+    expect(leggiLogoSvg(daClasse).contorni).toHaveLength(1);
+    // Un figlio con riempimento proprio dentro un gruppo senza riempimento resta.
+    expect(leggiLogoSvg(svg('<g fill="none"><rect width="9" height="9" fill="#000"/></g>')).contorni).toHaveLength(1);
+  });
+
+  it('should refuse a logo with too many points', () => {
+    const punti = Array.from(
+      { length: 4100 },
+      (_, k) => `${50 + 40 * Math.cos((k / 4100) * 2 * Math.PI)},${50 + 40 * Math.sin((k / 4100) * 2 * Math.PI)}`,
+    );
+    expect(codiceErrore(svg(`<polygon points="${punti.join(' ')}"/>`))).toBe('SVG_NON_VALIDO');
+  });
+});

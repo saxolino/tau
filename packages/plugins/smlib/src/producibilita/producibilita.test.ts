@@ -346,11 +346,78 @@ describe('placca: scalini sotto la tolleranza', () => {
     }
   });
 
-  it('should still read a real thin wall: a rim 0.8 mm wide AND 3 mm high', () => {
+  it('should read a rim 0.8 mm wide and 1 mm high as a relief (stroke), not as a wall', () => {
     const risposta = analizza(
       { bordo: { rilievo: 1, larghezza: 0.8 }, piastra: { spessore: 3 } },
       'pressofusione_zama',
     );
-    expect(risposta.controlli.find(({ codice }) => codice === 'PARETE_MIN')?.valore).toBeLessThan(1.2);
+    expect(bloccanti(risposta)).toEqual([]);
+    expect(risposta.controlli.find(({ codice }) => codice === 'TRATTO_MIN')).toMatchObject({ livello: 'ok' });
+    expect(risposta.controlli.find(({ codice }) => codice === 'PARETE_MIN')?.valore).toBeGreaterThanOrEqual(1.2);
+  });
+
+  /** I pezzi di prova passano dallo STEP come quelli veri. */
+  const analizzaPezzo = (
+    pezzo: Smlib.Part,
+    processo: 'pressofusione_zama' | 'fusione_cera_persa' = 'pressofusione_zama',
+  ) =>
+    funzioniProducibilita(lib).analizza({
+      step: new TextEncoder().encode(lib.toStep([pezzo.named('Pezzo')], { assembly: true, name: 'prova' })),
+      pezzi: [{ nome: 'Pezzo', processo }],
+      direzione: su,
+    });
+  const lastra = () => lib.Box(20, 20, 1.5, { align: [lib.Align.CENTER, lib.Align.CENTER, lib.Align.MIN] });
+  const filo = (larghezza: number, altezza: number) =>
+    lib
+      .Pos(0, 0, 1.5)
+      .mul(lib.Box(10, larghezza, altezza, { align: [lib.Align.CENTER, lib.Align.CENTER, lib.Align.MIN] }));
+
+  it('should flag a 0.2 mm wide, 0.3 mm high wire on any piece against the relief stroke, not the wall', () => {
+    for (const processo of ['pressofusione_zama', 'fusione_cera_persa'] as const) {
+      const risposta = analizzaPezzo(lastra().fuse(filo(0.2, 0.3)), processo);
+      const tratto = risposta.controlli.find(({ codice }) => codice === 'TRATTO_MIN');
+      expect(tratto?.livello).toBe('blocco');
+      expect(tratto?.valore).toBeCloseTo(0.2, 1);
+      expect(tratto?.soglia).toBe(processo === 'pressofusione_zama' ? 0.4 : 0.3);
+      expect(risposta.controlli.find(({ codice }) => codice === 'PARETE_MIN')?.valore).toBeGreaterThanOrEqual(
+        1.5 - 1e-6,
+      );
+    }
+  });
+
+  it('should keep a 3 mm high wire as a wall, and give a relief-free piece no relief row', () => {
+    const alto = analizzaPezzo(lastra().fuse(filo(0.8, 3)));
+    expect(alto.controlli.find(({ codice }) => codice === 'PARETE_MIN')).toMatchObject({ livello: 'blocco' });
+    expect(alto.controlli.find(({ codice }) => codice === 'TRATTO_MIN')).toBeUndefined();
+  });
+
+  it('should flag a wire that thins to 0.2 mm over less than half of its length', () => {
+    // Largo 0,8 mm per 6 mm, poi 0,2 mm per gli ultimi 4 mm (il 40 %): alto 0,3 mm.
+    const sottile = lib
+      .Polygon([-5, -0.4], [1, -0.4], [1, -0.1], [5, -0.1], [5, 0.1], [1, 0.1], [1, 0.4], [-5, 0.4])
+      .extrude(0.3);
+    const tratto = analizzaPezzo(lastra().fuse(lib.Pos(0, 0, 1.5).mul(sottile))).controlli.find(
+      ({ codice }) => codice === 'TRATTO_MIN',
+    );
+    expect(tratto?.livello).toBe('blocco');
+    expect(tratto?.valore).toBeLessThan(0.3);
+  });
+
+  it('should still read a 0.4 mm relief leaning into an undercut (10° overhang) and pass the same one with a draft', () => {
+    // Filo largo 1 mm alla base e alto 0,4 mm sopra la lastra: i fianchi pendono di 10° in fuori verso l'alto
+    // (sottosquadro: sotto lo sbalzo c'è la lastra) oppure di 10° in dentro (sformo positivo).
+    const filoInclinato = (verso: 1 | -1) => {
+      const sbalzo = 0.4 * Math.tan((10 * Math.PI) / 180) * verso;
+      return lib
+        .Polygon([-0.5, 0], [0.5, 0], [0.5 + sbalzo, 0.4], [-0.5 - sbalzo, 0.4])
+        .on(lib.Plane.XZ)
+        .extrude(10, { both: true });
+    };
+    const sottosquadro = (verso: 1 | -1) =>
+      analizzaPezzo(lastra().fuse(lib.Pos(0, 0, 1.5).mul(filoInclinato(verso)))).controlli.find(
+        ({ codice }) => codice === 'SOTTOSQUADRO',
+      );
+    expect(sottosquadro(1)?.livello).not.toBe('ok');
+    expect(sottosquadro(-1)?.livello).toBe('ok');
   });
 });

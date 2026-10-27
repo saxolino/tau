@@ -112,4 +112,25 @@ describe('LogoSectionView', () => {
       expect(onValori).toHaveBeenCalledWith({ larghezza: 14 });
     });
   });
+
+  it('should keep «Rimuovi» for an unreadable stored SVG, and not claim «In rilievo» when the mode is none', () => {
+    render(<LogoSectionView {...base} logo={undefined} hasSvg valori={{ ...valori, modo: 'nessuno' }} />);
+    expect(screen.getByRole('button', { name: 'Rimuovi' })).toBeInTheDocument();
+    render(<LogoSectionView {...base} logo={leggiLogoSvg(svgUtente)} valori={{ ...valori, modo: 'nessuno' }} />);
+    expect(screen.queryByText('In rilievo')).not.toBeInTheDocument();
+  });
+});
+
+describe('leggiFileLogo: lettura', () => {
+  it('should answer with a refusal, not throw, when the file cannot be read', async () => {
+    const esito = await leggiFileLogo({
+      name: 'logo.svg',
+      size: 10,
+      type: 'image/svg+xml',
+      text: async () => {
+        throw new Error('lettura interrotta');
+      },
+    });
+    expect(esito).toEqual({ ok: false, errore: 'SVG_NON_VALIDO' });
+  });
 });
