@@ -49,7 +49,8 @@ const rispostaSchema = z.object({
 
 /**
  * The second round after the D3 check (specification §3.5): the silhouette of the model (red) over the mask (blue) as a
- * PNG, the question, and the IoU that made the check ask. The function builds the prompt with `rientro: true`.
+ * PNG, the question, and the IoU that made the check ask. Only the PNG travels (as `immagini.differenza`): the function
+ * builds the prompt with `rientro: true`; the question and the IoU stay in the CAD record.
  */
 export type RientroRiconoscimento = Readonly<{ differenzaPng: Uint8Array; testo: string; iou: number }>;
 
@@ -103,18 +104,16 @@ export async function riconosciParte(
       },
       body: JSON.stringify({
         schedaParte: richiesta.schedaParte,
-        immagini: { ritaglio: richiesta.immagini.ritaglio, intera: richiesta.immagini.intera },
+        immagini: {
+          ritaglio: richiesta.immagini.ritaglio,
+          intera: richiesta.immagini.intera,
+          // The function reads the second round from `immagini.differenza` and builds the prompt with `rientro: true`.
+          ...(richiesta.rientro
+            ? { differenza: { mediaType: 'image/png', data: base64(richiesta.rientro.differenzaPng) } }
+            : {}),
+        },
         fattoreRitaglio: richiesta.immagini.fattoreRitaglio,
         lingua: richiesta.lingua,
-        ...(richiesta.rientro
-          ? {
-              rientro: {
-                differenza: base64(richiesta.rientro.differenzaPng),
-                testo: richiesta.rientro.testo,
-                iou: richiesta.rientro.iou,
-              },
-            }
-          : {}),
       }),
       ...(opzioni.segnale ? { signal: opzioni.segnale } : {}),
     });

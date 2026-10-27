@@ -41,6 +41,28 @@ describe('client of /v1/recognize', () => {
     });
   });
 
+  it('should send the second round as `immagini.differenza`, the field the function reads', async () => {
+    let corpo: unknown;
+    const fetch = vi.fn(async (_url: string, init?: RequestInit) => {
+      corpo = JSON.parse(init!.body as string);
+      return Response.json(riconoscimentoRegistrato());
+    }) as unknown as typeof globalThis.fetch;
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    await riconosciParte(
+      {
+        schedaParte: schedaParteDiProva,
+        immagini,
+        lingua: 'it',
+        rientro: { differenzaPng: png, testo: 'x', iou: 0.8 },
+      },
+      { fetch },
+    );
+    expect(corpo).toMatchObject({
+      immagini: { ritaglio: immagini.ritaglio, differenza: { mediaType: 'image/png', data: 'iVBORw0KGgo=' } },
+    });
+    expect(corpo).not.toHaveProperty('rientro');
+  });
+
   it('should turn the function’s errors and a malformed answer into typed errors', async () => {
     const risponde = (risposta: Response) => (async () => risposta) as unknown as typeof globalThis.fetch;
     const richiesta: Parameters<typeof riconosciParte>[0] = { schedaParte: schedaParteDiProva, immagini, lingua: 'it' };
