@@ -18,6 +18,7 @@ import { sinopiaSendMessages } from '#i18n/messages/sinopia-send.js';
 import { sinopiaSyncMessages } from '#i18n/messages/sinopia-sync.js';
 import { libraryMessages } from '#i18n/messages/library.js';
 import { manualEditMessages } from '#i18n/messages/manual-edit.js';
+import { inspectorMessages } from '#i18n/messages/inspector.js';
 
 /**
  * Every area's messages under its own namespace: `t('project.topBar.versions')`. One area per file in
@@ -43,6 +44,7 @@ export const areas = {
   sinopiaSend: sinopiaSendMessages,
   sinopiaSync: sinopiaSyncMessages,
   manualEdit: manualEditMessages,
+  inspector: inspectorMessages,
   library: libraryMessages,
 } as const;
 

@@ -31,6 +31,11 @@ export type DirectEditPick = Readonly<{
 export type DirectEditTool = Readonly<{
   mode: 'translate' | 'rotate' | 'scale' | 'fillet' | 'chamfer';
   selection?: DirectEditSelection;
+  /**
+   * The fillet radius or chamfer size the host previews on the selected edges, in model metres. The ghost is a tube of
+   * that radius around each edge: it shows how much material the operation reaches, not the exact rounded surface.
+   */
+  edgeSize?: number;
   onPick: (pick: DirectEditPick) => void;
   onPreview: (change: DirectEditChange) => void;
   /** Exactly one operation on a changed pointer release. */

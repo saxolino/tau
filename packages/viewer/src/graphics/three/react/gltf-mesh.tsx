@@ -2096,6 +2096,8 @@ export function GltfMesh({
   );
   const activePlanarFaceTool = componentManifest?.mechanism ? undefined : planarFaceTool;
   const activeDirectEditTool = componentManifest?.mechanism ? undefined : directEditTool;
+  const isSubElementSelected =
+    activePlanarFaceTool?.selection !== undefined || (activeDirectEditTool?.selection?.edgeIds?.length ?? 0) > 0;
   const needsMeasurementFeatures =
     hasMeasurementDemand || activePlanarFaceTool !== undefined || activeDirectEditTool !== undefined;
   const measurementDemandRef = useRef(needsMeasurementFeatures);
@@ -2486,7 +2488,8 @@ export function GltfMesh({
       scene,
       componentManifest,
       inventory: getComponentInventory(scene),
-      modelVisualState,
+      // A picked face or picked edges carry their own highlight; washing the whole piece would hide which one it is.
+      modelVisualState: isSubElementSelected ? { ...modelVisualState, selectedComponentIds: [] } : modelVisualState,
       enableSurfaces,
       enableLines,
     });
@@ -2501,6 +2504,7 @@ export function GltfMesh({
     enableSurfaces,
     graphicsBackendThree,
     invalidate,
+    isSubElementSelected,
     matcapTint,
     modelVisualState,
     presentation,
@@ -2879,7 +2883,9 @@ export function GltfMesh({
 
   return (
     <>
-      {activePlanarFaceTool ? <PlanarFaceControls tool={activePlanarFaceTool} artifactKey={presentation.key} /> : null}
+      {activePlanarFaceTool ? (
+        <PlanarFaceControls tool={activePlanarFaceTool} artifactKey={presentation.key} scene={scene} />
+      ) : null}
       {activeDirectEditTool ? (
         <DirectEditControls tool={activeDirectEditTool} artifactKey={presentation.key} scene={scene} />
       ) : null}

@@ -82,6 +82,16 @@ export const gltfEdgeHoverColor = 0xff_d5_4a;
 export const gltfEdgeSelectedColor = gltfEdgeHoverColor;
 
 /**
+ * SinopiaCAD's titanio (`--titanium`, `#B3A895`): the selected face's veil, the selected edges and the ghosts of a manual
+ * operation's preview. One value for both themes, like the edge emphasis above, because it is drawn over the model's
+ * own materials rather than over the page.
+ */
+export const manualSelectionColor = 0xb3_a8_95;
+
+/** The titanio handle of a manual tool (the face arrow), one step darker than the veil so it reads over gold and over the veil. */
+export const manualHandleColor = 0x7a_6f_5c;
+
+/**
  * Default tints for the {@link AxesHelper} XYZ axis lines. Stock Three.js axis hues,
  * desaturated slightly so they read as orientation cues rather than primary geometry.
  * Consumed verbatim by `THREE.Color`; valid in any {@linkcode @react-three/drei} `<Line>`,

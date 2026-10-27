@@ -18,7 +18,7 @@ import { createRaycastClipTest, raycastFirstVisibleMeshHit } from '#graphics/thr
 import type { RaycastClipState } from '#graphics/three/utils/bvh-raycast.js';
 import { planarFacePixelScale } from '#graphics/three/react/planar-face-gesture.js';
 import { setRaycasterFromCamera } from '#graphics/three/utils/raycaster-from-camera.js';
-import { gltfEdgeSelectedColor } from '#graphics/three/overlay-colors.constants.js';
+import { manualSelectionColor } from '#graphics/three/overlay-colors.constants.js';
 import { gltfSurfacePresentationTag } from '#graphics/three/utils/gltf-surface-batches.js';
 import type { DirectEditChange } from '#graphics/three/react/direct-edit-tool.js';
 
@@ -117,7 +117,7 @@ export function createDirectEditGhost(
 ): { group: Group; material: MeshBasicMaterial; dispose: () => void } {
   const group = new Group();
   const material = new MeshBasicMaterial({
-    color: gltfEdgeSelectedColor,
+    color: manualSelectionColor,
     transparent: true,
     opacity: 0.4,
     depthTest: true,

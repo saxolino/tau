@@ -38,7 +38,14 @@ const newChatKeyCombination = {
  * navigation lives in the sidebar; with the sidebar collapsed "New chat" leads
  * the row.
  */
-export function ChatTitleBar({ closeButton }: { readonly closeButton?: ReactNode }): React.JSX.Element {
+export function ChatTitleBar({
+  closeButton,
+  trailing,
+}: {
+  readonly closeButton?: ReactNode;
+  /** Replaces the lane's own hide toggle at the end of the row (the dock under the inspector folds instead). */
+  readonly trailing?: ReactNode;
+}): React.JSX.Element {
   const { t } = useTranslation();
   const { isMobile } = useSidebar();
   // One toggle in the document at a time: the viewer's tab bar holds it while the lane is hidden.
@@ -131,7 +138,7 @@ export function ChatTitleBar({ closeButton }: { readonly closeButton?: ReactNode
           {isMobile ? closeButton : null}
         </FloatingPanelContentHeaderActions>
       </div>
-      {!isMobile && isChatVisible ? <ChatLaneToggle place='lane' /> : null}
+      {trailing ?? (!isMobile && isChatVisible ? <ChatLaneToggle place='lane' /> : null)}
     </>
   );
 }

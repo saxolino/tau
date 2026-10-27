@@ -1,6 +1,8 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { History, XIcon } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
+import { useSelector } from '@xstate/react';
+import type { GeometryComponentManifest } from '@taucad/types';
 import { Button } from '@taucad/ui/components/button';
 import {
   AlertDialog,
@@ -28,7 +30,8 @@ import { useRestoreToPoint } from '#hooks/use-restore-to-point.js';
 import { useTranslation, formatTime } from '#i18n/translate.js';
 import {
   groupVersionDays,
-  parameterChangeSentence,
+  versionChangeLine,
+  versionChangeSentences,
   versionSummary,
 } from '#routes/w.$workspace.$project/revision-history.js';
 import type { VersionEvent } from '#routes/w.$workspace.$project/revision-history.js';
@@ -36,6 +39,12 @@ import { useSinopiaSendEvents } from '#hooks/use-sinopia-send-events.js';
 import { SinopiaConflictVersions } from '#hooks/use-sinopia-cad-conflicts.js';
 import { consumeRevisionReveal, useRevisionReveal } from '#routes/w.$workspace.$project/revision-reveal.js';
 import { toast } from '#components/ui/sonner.js';
+
+/** The same models by path: a re-render of the selection must not refetch every version's sentence. */
+const sameManifests = (
+  left: ReadonlyMap<string, GeometryComponentManifest>,
+  right: ReadonlyMap<string, GeometryComponentManifest>,
+): boolean => left.size === right.size && [...left].every(([path, manifest]) => right.get(path) === manifest);
 
 const RevisionPreview = lazy(async () => {
   const module = await import('#routes/w.$workspace.$project/revision-preview.js');
@@ -83,32 +92,54 @@ function VersionRow({
   readonly onView: (revision: RevisionCard) => void;
   readonly onRestore: (revision: RevisionCard) => void;
 }): React.JSX.Element {
-  const { projectId } = useProject();
+  const { projectId, modelInteractionRef } = useProject();
   const { language, t } = useTranslation();
   const client = useRevisionClient();
   const restoredNumber = targets.find((target) => target.revisionId === revision.restoredFrom)?.n;
   const fallback = versionSummary(revision, t, restoredNumber);
+  const manifests = useSelector(
+    modelInteractionRef,
+    (state) => {
+      const byPath = new Map<string, GeometryComponentManifest>();
+      for (const id of state.context.unitOrder) {
+        const manifest = state.context.unitsById[id]?.manifest;
+        if (manifest?.sourceFile) {
+          byPath.set(manifest.sourceFile, manifest);
+        }
+      }
+      return byPath;
+    },
+    sameManifests,
+  );
   const { data: detail } = useQuery({
-    queryKey: ['version-sentence', projectId, revision.revisionId, language],
+    queryKey: ['version-sentence', projectId, revision.revisionId, language, [...manifests.keys()].join('|')],
     enabled: client !== undefined && revision.restoredFrom === undefined,
     staleTime: Number.POSITIVE_INFINITY,
     retry: false,
     queryFn: async () => {
       const paths = (await client?.diff(revision.revisionId)) ?? [];
-      const parameters = paths.filter(({ path }) => path.startsWith('.tau/parameters/')).slice(0, 4);
-      const sentences = await Promise.all(
-        parameters.map(async ({ path }) => {
+      // Measures and manual operations: the two kinds of change a designer makes and reads back.
+      const relevant = paths
+        .filter(({ path }) => path.startsWith('.tau/parameters/') || path.endsWith('.manual.json'))
+        .slice(0, 6);
+      const files = await Promise.all(
+        relevant.map(async ({ path }) => {
           const comparison = await client?.compare(revision.revisionId, path);
-          return comparison?.kind === 'text' ? parameterChangeSentence({ ...comparison, language }) : undefined;
+          return comparison?.kind === 'text'
+            ? { path, original: comparison.original, modified: comparison.modified }
+            : undefined;
         }),
       );
-      const changed = sentences.filter((sentence) => sentence !== undefined);
-      const first = changed[0];
-      return first === undefined
-        ? fallback
-        : changed.length > 1
-          ? t('versions.otherChanges', { change: first })
-          : first;
+      return (
+        versionChangeLine(
+          versionChangeSentences({
+            files: files.filter((file) => file !== undefined),
+            manifests,
+            language,
+          }),
+          language,
+        ) ?? fallback
+      );
     },
   });
   const name = revision.n === undefined ? t('versions.unnamed') : t('versions.revision', { number: revision.n });

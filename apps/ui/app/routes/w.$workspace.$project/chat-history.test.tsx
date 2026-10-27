@@ -152,7 +152,11 @@ vi.mock('#components/chat/turn-summary-card.js', () => ({
     <div data-testid='turn-revision' data-user-message-id={turnId} />
   ),
 }));
-vi.mock('#components/chat/agent-suggestions.js', () => ({ AgentSuggestions: () => null }));
+vi.mock('#components/chat/assistant-suggestions.js', () => ({
+  AssistantComposerProvider: ({ children }: { readonly children: React.ReactNode }) => <div>{children}</div>,
+  AssistantContextChips: () => <div data-testid='assistant-context-chips' />,
+  AssistantStarts: () => null,
+}));
 
 vi.mock('#routes/w.$workspace.$project/scroll-down-button.js', () => ({
   ScrollDownButton: () => <button type='button' aria-label='Scroll to bottom' />,
