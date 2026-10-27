@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { facceVista } from '#famiglie/viste.js';
 import type { LimiteContratto, SchemaJson } from '#riconoscimento/condiviso.js';
 
 /**
@@ -71,8 +72,11 @@ export const schedaRiconoscimentoSchema = z.strictObject({
   variante: z.strictObject({ id: z.string(), confidenza }),
   vista: z.strictObject({
     nome: z.enum(nomiVista),
-    /** 0 = guarda la faccia −Y del telaio locale (il «fronte» del render), 90 = da +X. */
+    /** La faccia del pezzo che la foto mostra, fra quelle della scheda della famiglia (`viste`): la camera la calcola il codice. */
+    faccia: z.enum(facceVista),
+    /** Scarto dalla vista dritta della faccia, gradi: quanto la camera è spostata verso destra nell'immagine (0 = di fronte). */
     azimuth: z.number().min(-180).max(180),
+    /** Scarto dalla vista dritta della faccia, gradi: quanto la camera è alzata verso l'alto dell'immagine. */
     elevation: z.number().min(-90).max(90),
     /** Rotazione nel piano immagine, gradi. */
     rollo: z.number().min(-45).max(45),

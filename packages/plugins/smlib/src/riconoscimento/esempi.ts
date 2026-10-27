@@ -45,6 +45,7 @@ export const schedaRiconoscimentoDiProva: SchedaRiconoscimento = {
   variante: { id: 'rettangolare', confidenza: 0.86 },
   vista: {
     nome: 'fronte',
+    faccia: 'sopra',
     azimuth: 4,
     elevation: 8,
     rollo: -2,

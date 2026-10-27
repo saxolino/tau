@@ -5,6 +5,7 @@ import { emettiMainFamiglia } from '#famiglie/emetti-main.js';
 import { aspettoMateriale } from '#famiglie/materiali.js';
 import { limita, normalizzaConParametri, predefinitiDaParametri, schemaDaParametri } from '#famiglie/parametri.js';
 import { esitiPezzi, esito, mm, normalizzaForma } from '#famiglie/verifiche-comuni.js';
+import { faccia as f } from '#famiglie/viste.js';
 
 /**
  * Famiglia `occhiello` (specifica §1.4): lamiera d'ottone imbutita, asse Z = asse del pezzo, flangia (testa) a
@@ -254,6 +255,25 @@ export const occhiello: Famiglia<ParametriOcchiello> = {
   costruisci: (lib, p) => costruisciConEsiti(lib, p).pezzi,
   costruisciConEsiti,
   verifiche,
+  viste: {
+    principale: 'sopra',
+    facce: [
+      f('sopra', 0, 90, 'the flange (head) of the eyelet seen straight on: outer diameter of the flange and hole'),
+      f(
+        'fianco_esterno',
+        90,
+        0,
+        'side profile of the eyelet: flange on top, barrel going down (shows barrel length and flange thickness)',
+      ),
+      f('sotto', 180, -90, 'the barrel end seen from below (the flared or rolled side)'),
+    ],
+    nomi: {
+      fronte: { faccia: 'sopra', azimuth: 0, elevation: 0 },
+      tre_quarti: { faccia: 'sopra', azimuth: 25, elevation: 35 },
+      lato: { faccia: 'fianco_esterno', azimuth: 0, elevation: 0 },
+      alto: { faccia: 'sopra', azimuth: 0, elevation: 0 },
+    },
+  },
   silhouette: { assi: ['z'], simmetrie: ['yz', 'xz'] },
   materialiAmmessi: ['ottone', 'alluminio'],
   emettiMain: (p, ipotesi) => emettiMainFamiglia({ id: 'occhiello', versione: 1, variante: 'standard' }, p, ipotesi),

@@ -17,6 +17,7 @@ import { aspettoMateriale } from '#famiglie/materiali.js';
 import { normalizzaConParametri, predefinitiDaParametri, schemaDaParametri } from '#famiglie/parametri.js';
 import { sogliaSformo } from '#famiglie/processi.js';
 import { esitiPezzi, esitiSformo, esito, esitoMinimo, normalizzaForma, sformo } from '#famiglie/verifiche-comuni.js';
+import { faccia as f } from '#famiglie/viste.js';
 
 /**
  * Famiglia `fondo_semplice` (specifica §1.2): zeppa, platform o fondo in cuoio liscio.
@@ -507,6 +508,28 @@ export const fondoSemplice: Famiglia<ParametriFondo> = {
   costruisci: (lib, p) => costruisciConEsiti(lib, p).pezzi,
   costruisciConEsiti,
   verifiche,
+  viste: {
+    principale: 'fianco_esterno',
+    facce: [
+      f(
+        'fianco_esterno',
+        90,
+        0,
+        'outer side profile of the sole on its ground line, toe to the right (shows thickness, platform and toe spring)',
+      ),
+      f('fianco_interno', -90, 0, 'inner (arch) side profile, toe to the left'),
+      f('sopra', 0, 90, 'the sole seen from above (the insole face), toe up: outline and width'),
+      f('sotto', 180, -90, 'the outsole seen from below, toe up'),
+      f('davanti', 180, 0, 'the toe end seen head-on (shows width and thickness at the toe)'),
+      f('dietro', 0, 0, 'the heel end seen from behind'),
+    ],
+    nomi: {
+      fronte: { faccia: 'davanti', azimuth: 0, elevation: 0 },
+      tre_quarti: { faccia: 'fianco_esterno', azimuth: 35, elevation: 25 },
+      lato: { faccia: 'fianco_esterno', azimuth: 0, elevation: 0 },
+      alto: { faccia: 'sopra', azimuth: 0, elevation: 0 },
+    },
+  },
   silhouette: { assi: ['x', 'y', 'z'], simmetrie: ['yz'] },
   materialiAmmessi: ['tr', 'tpu', 'gomma', 'eva', 'pu_espanso', 'cuoio', 'sughero'],
   emettiMain: (p, ipotesi, opzioni) =>

@@ -59,6 +59,12 @@ export type FamigliaCatalogo = {
   versione: number;
   varianti: readonly string[];
   partTypes: readonly string[];
+  /** Le facce del pezzo che una foto può mostrare, con le parole del mestiere (la camera la calcola il CAD). */
+  viste: {
+    principale: string;
+    facce: ReadonlyArray<{ id: string; descrizione: string }>;
+    nomi: Readonly<Record<string, { faccia: string; azimuth: number; elevation: number }>>;
+  };
   parametri: readonly ParametroCatalogo[];
 };
 
@@ -213,19 +219,12 @@ export function promptDiSistema(): string {
   return `You are a senior footwear and leather-goods pattern maker and a goldsmith. From one photo of a single part (with its segmentation mask) you recognise which parametric family the part belongs to and you estimate the numbers of that family's recipe, so that a CAD program can rebuild the part. You never invent precision: every number carries where it comes from and how sure you are.
 
 # Units and frame
-Millimetres and degrees. Every family has a local frame with Z up. The camera angles of \`vista\` are in that frame:
-- azimuth 0: the camera stands on −Y and looks along +Y at the −Y face (the render "front"); azimuth 90: from +X; azimuth 180: from +Y; azimuth −90: from −X.
-- elevation 90: from straight above (+Z); −90: from straight below.
-- rollo: rotation of the picture plane, degrees, positive counter-clockwise (−45…45).
+Millimetres and degrees. You do NOT work out camera axes: each family sheet lists the FACES of the part that a photo can show, in the words of the trade, and marks the main product face. The code turns your answer into a camera.
+- \`vista.faccia\`: the face the photo shows (an id from the sheet of the family you chose). If no listed face is shown squarely, pick the nearest and say so in \`note\`.
+- \`vista.azimuth\`, \`vista.elevation\`: how far the photo is from looking STRAIGHT AT that face (0, 0 = straight on). azimuth: camera moved to the RIGHT of the picture (negative = left); elevation: camera raised toward the TOP of the picture (negative = lowered). A three-quarter look is typically azimuth ±25…45 and elevation 15…35. Never put the angles of the part's own axes here.
+- \`vista.rollo\`: rotation of the picture plane, degrees, positive counter-clockwise (−45…45).
 
-              +Y   (dietro, azimuth 180)
-               ^
-               |
-   (−90) −X <--+--> +X  (fianco, azimuth 90)
-               |
-              −Y   (fronte, azimuth 0)  <- camera at azimuth 0 stands here, looking toward +Y
-
-View names: fronte (az 0, el 0) · dietro (az 180) · fianco_esterno / fianco_interno (az ±90: esterno is the outer side of the foot, interno the arch side; for parts not tied to a foot use fianco_esterno for +X) · tre_quarti (az ≈ ±45 or ±135) · sopra (el ≈ 90) · sotto (el ≈ −90). \`ortografica\` is true when the photo looks taken from far away or with a long lens (parallel edges stay parallel). \`latiOcclusi\` lists the sides of the picture where the part is hidden by something else (for example the seat of a heel under the shoe).
+View names (\`vista.nome\`): fronte = the front of the part, tre_quarti = an oblique look, dietro / fianco_esterno / fianco_interno / sopra / sotto = that face. The family sheet says which face each name means: follow the sheet. \`ortografica\` is true when the photo looks taken from far away or with a long lens (parallel edges stay parallel). \`latiOcclusi\` lists the sides of the picture where the part is hidden by something else (for example the seat of a heel under the shoe).
 
 # Scale (scala), in this order of priority — the first available wins
 1. misura_nota: the user typed a measure of the part ("20 mm = larghezza"). The request gives pxPerMm already measured on the mask: use it.
@@ -240,7 +239,7 @@ View names: fronte (az 0, el 0) · dietro (az 180) · fianco_esterno / fianco_in
 2. Every parameter carries \`fonte\` and \`confidenza\` (0–1) and a short \`motivo\` (≤ 140 characters, in the language the request asks for). Use only parameter keys listed in the family sheet; never output derived parameters. Give \`min\`/\`max\` when you can bound the plausible range seen in the photo.
 3. A parameter you cannot see: \`fonte: "non_visibile"\`, value = the craft default of the sheet, confidence at most 0.4.
 4. \`domande\` only for CRITICAL parameters with confidence below 0.6, at most 3, most important first; each with exactly three proposals in ascending order, the middle one being your estimate.
-5. \`vista.azimuth\` and \`vista.elevation\` are in the family's local frame (drawing above).
+5. \`vista.faccia\` is a face id of the chosen family's sheet; \`vista.azimuth\` and \`vista.elevation\` are offsets from the straight look at that face (see above). For \`libero\` and \`non_modellabile\` use \`sopra\`, 0, 0.
 6. If the part belongs to none of the families, answer \`famiglia.id: "libero"\` (an agent will write a free recipe); if it is an upper, a lining, a material or anything that is not a rigid modelled part, answer \`"non_modellabile"\`. In both cases leave \`parametri\` and \`domande\` empty.
 \`famiglia.alternative\` lists at most two other families you hesitated on, with their confidence. \`materiale.chiave\` is a material key of the sheet's material parameter when one fits. \`note\` is one or two sentences for the designer (≤ 300 characters).`;
 }
@@ -263,6 +262,18 @@ const intervallo = (parametro: ParametroCatalogo): string => {
 
 const predefinito = (valore: unknown): string =>
   typeof valore === 'number' ? numero(valore) : Array.isArray(valore) ? '(outline)' : JSON.stringify(valore);
+
+/** Le righe delle facce di una famiglia: id, parole del mestiere e che cosa vogliono dire le viste per nome. */
+const righeViste = (famiglia: FamigliaCatalogo): string[] => {
+  const { principale, facce, nomi } = famiglia.viste;
+  return [
+    `Faces of this part (\`vista.faccia\`; main product face: ${principale}):`,
+    ...facce.map((faccia) => `- ${faccia.id} — ${faccia.descrizione}`),
+    `View names here: ${Object.entries(nomi)
+      .map(([nome, vista]) => `${nome} = ${vista.faccia}`)
+      .join(' · ')}.`,
+  ];
+};
 
 /**
  * La scheda di una famiglia per il prompt: varianti, tipi e parametri con unità, intervallo, predefinito e bandiere.
@@ -287,6 +298,7 @@ export function schedaFamigliaTesto(famiglia: FamigliaCatalogo): string {
     `## Family \`${famiglia.id}\` (recipe v${famiglia.versione})`,
     `Variants: ${famiglia.varianti.join(' | ')}`,
     `part_type: ${famiglia.partTypes.length > 0 ? famiglia.partTypes.join(', ') : '— (jewellery and accessories, by shape)'}`,
+    ...righeViste(famiglia),
     'Parameters (key — unit — range — default — flags — meaning in Italian):',
     ...righe,
   ].join('\n');

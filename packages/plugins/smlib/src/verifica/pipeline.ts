@@ -5,6 +5,7 @@ import type { LatoOccluso } from '#verifica/maschera.js';
 import type { FonteScala } from '#verifica/ottimizza.js';
 import { parametriSensibili } from '#verifica/ottimizza.js';
 import type { RichiestaVerifica, RispostaVerifica } from '#verifica/verifica-funzioni.js';
+import { cameraDaVista } from '#verifica/vista-famiglia.js';
 
 /**
  * Le regole della pipeline riconoscimento → verifica → (rientro) → consegna (specifica §3.5, task T-D3-06), pure:
@@ -59,6 +60,9 @@ export type SchedaPerVerifica = {
   famiglia: { id: IdFamiglia | 'libero' | 'non_modellabile'; confidenza: number };
   variante: { id: string; confidenza: number };
   vista: {
+    /** Faccia del pezzo che la foto mostra (id di `viste.facce` della famiglia): con lei `azimuth`/`elevation` sono scarti dalla vista dritta. */
+    faccia?: string;
+    nome?: string;
     azimuth: number;
     elevation: number;
     rollo: number;
@@ -100,6 +104,7 @@ export function richiestaDaScheda(
   if (famiglia === 'libero' || famiglia === 'non_modellabile') {
     return null;
   }
+  const camera = cameraDaVista(famiglie[famiglia]!.viste, scheda.vista);
   const parametri: ParametriAnnidati = {};
   const confidenze: Record<string, number> = {};
   const intervalli: Record<string, readonly [number, number]> = {};
@@ -123,7 +128,14 @@ export function richiestaDaScheda(
     famiglia,
     variante: scheda.variante.id,
     stima: { parametri, confidenze, intervalli, nonVisibili },
-    vista: scheda.vista,
+    // La camera di partenza nasce dalla faccia dichiarata e dai dati `viste` della famiglia (deterministico).
+    vista: {
+      confidenza: scheda.vista.confidenza,
+      latiOcclusi: scheda.vista.latiOcclusi,
+      azimuth: camera.azimuth,
+      elevation: camera.elevation,
+      rollo: camera.rollo,
+    },
     scala: { pxPerMmFoto: scheda.scala.pxPerMm, fonte: scheda.scala.fonte },
     maschera: { png },
     opzioni: { ...(fermi.size > 0 ? { chiavi } : {}), ...opzioni },

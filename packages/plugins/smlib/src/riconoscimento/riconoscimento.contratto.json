@@ -1,5 +1,5 @@
 {
-  "versione": 1,
+  "versione": 2,
   "modello": "claude-sonnet-5-5",
   "schemaUscita": {
     "type": "object",
@@ -97,6 +97,19 @@
               "sotto"
             ]
           },
+          "faccia": {
+            "type": "string",
+            "enum": [
+              "sopra",
+              "sotto",
+              "davanti",
+              "dietro",
+              "fianco_esterno",
+              "fianco_interno",
+              "tre_quarti_pietra",
+              "asse_dito"
+            ]
+          },
           "azimuth": {
             "type": "number"
           },
@@ -127,6 +140,7 @@
         },
         "required": [
           "nome",
+          "faccia",
           "azimuth",
           "elevation",
           "rollo",
@@ -713,6 +727,49 @@
         "fascia"
       ],
       "partTypes": [],
+      "viste": {
+        "principale": "tre_quarti_pietra",
+        "facce": [
+          {
+            "id": "tre_quarti_pietra",
+            "descrizione": "three-quarter view on the stone, from a bit above and to one side: the usual jewellery product photo"
+          },
+          {
+            "id": "asse_dito",
+            "descrizione": "along the finger axis: the ring as a circle, stone at the top (shank thickness, setting height)"
+          },
+          {
+            "id": "fianco_esterno",
+            "descrizione": "pure side profile (shank width)"
+          },
+          {
+            "id": "sopra",
+            "descrizione": "straight above the stone (table, shank width)"
+          }
+        ],
+        "nomi": {
+          "fronte": {
+            "faccia": "asse_dito",
+            "azimuth": 0,
+            "elevation": 0
+          },
+          "tre_quarti": {
+            "faccia": "tre_quarti_pietra",
+            "azimuth": 0,
+            "elevation": 0
+          },
+          "lato": {
+            "faccia": "fianco_esterno",
+            "azimuth": 0,
+            "elevation": 0
+          },
+          "alto": {
+            "faccia": "sopra",
+            "azimuth": 0,
+            "elevation": 0
+          }
+        }
+      },
       "parametri": [
         {
           "chiave": "taglia.sistema",
@@ -905,6 +962,45 @@
       "partTypes": [
         "stud"
       ],
+      "viste": {
+        "principale": "sopra",
+        "facce": [
+          {
+            "id": "sopra",
+            "descrizione": "the head of the stud seen from above, straight on (outline and head diameter, pyramid sides)"
+          },
+          {
+            "id": "fianco_esterno",
+            "descrizione": "side profile of the stud: head on top, shank down (shows head height, dome and shank length)"
+          },
+          {
+            "id": "sotto",
+            "descrizione": "the back of the stud seen from below (shank, hollow head)"
+          }
+        ],
+        "nomi": {
+          "fronte": {
+            "faccia": "sopra",
+            "azimuth": 0,
+            "elevation": 0
+          },
+          "tre_quarti": {
+            "faccia": "sopra",
+            "azimuth": 25,
+            "elevation": 40
+          },
+          "lato": {
+            "faccia": "fianco_esterno",
+            "azimuth": 0,
+            "elevation": 0
+          },
+          "alto": {
+            "faccia": "sopra",
+            "azimuth": 0,
+            "elevation": 0
+          }
+        }
+      },
       "parametri": [
         {
           "chiave": "testa.forma",
@@ -1017,6 +1113,49 @@
       "partTypes": [
         "buckle"
       ],
+      "viste": {
+        "principale": "sopra",
+        "facce": [
+          {
+            "id": "sopra",
+            "descrizione": "the face that shows when worn: frame outline, opening and pin; strap enters from the bottom of the picture"
+          },
+          {
+            "id": "sotto",
+            "descrizione": "back of the buckle (mirror image)"
+          },
+          {
+            "id": "fianco_esterno",
+            "descrizione": "side edge (shows frame thickness and profile)"
+          },
+          {
+            "id": "dietro",
+            "descrizione": "strap-entry edge head-on (shows the frame section)"
+          }
+        ],
+        "nomi": {
+          "fronte": {
+            "faccia": "sopra",
+            "azimuth": 0,
+            "elevation": 0
+          },
+          "tre_quarti": {
+            "faccia": "sopra",
+            "azimuth": 30,
+            "elevation": 30
+          },
+          "lato": {
+            "faccia": "fianco_esterno",
+            "azimuth": 0,
+            "elevation": 0
+          },
+          "alto": {
+            "faccia": "sopra",
+            "azimuth": 0,
+            "elevation": 0
+          }
+        }
+      },
       "parametri": [
         {
           "chiave": "cinturino.larghezza",
@@ -1201,6 +1340,57 @@
         "midsole_wedge",
         "welt"
       ],
+      "viste": {
+        "principale": "fianco_esterno",
+        "facce": [
+          {
+            "id": "fianco_esterno",
+            "descrizione": "outer side profile of the sole on its ground line, toe to the right (shows thickness, platform and toe spring)"
+          },
+          {
+            "id": "fianco_interno",
+            "descrizione": "inner (arch) side profile, toe to the left"
+          },
+          {
+            "id": "sopra",
+            "descrizione": "the sole seen from above (the insole face), toe up: outline and width"
+          },
+          {
+            "id": "sotto",
+            "descrizione": "the outsole seen from below, toe up"
+          },
+          {
+            "id": "davanti",
+            "descrizione": "the toe end seen head-on (shows width and thickness at the toe)"
+          },
+          {
+            "id": "dietro",
+            "descrizione": "the heel end seen from behind"
+          }
+        ],
+        "nomi": {
+          "fronte": {
+            "faccia": "davanti",
+            "azimuth": 0,
+            "elevation": 0
+          },
+          "tre_quarti": {
+            "faccia": "fianco_esterno",
+            "azimuth": 35,
+            "elevation": 25
+          },
+          "lato": {
+            "faccia": "fianco_esterno",
+            "azimuth": 0,
+            "elevation": 0
+          },
+          "alto": {
+            "faccia": "sopra",
+            "azimuth": 0,
+            "elevation": 0
+          }
+        }
+      },
       "parametri": [
         {
           "chiave": "pianta.taglia",
@@ -1349,6 +1539,45 @@
       "partTypes": [
         "eyelet"
       ],
+      "viste": {
+        "principale": "sopra",
+        "facce": [
+          {
+            "id": "sopra",
+            "descrizione": "the flange (head) of the eyelet seen straight on: outer diameter of the flange and hole"
+          },
+          {
+            "id": "fianco_esterno",
+            "descrizione": "side profile of the eyelet: flange on top, barrel going down (shows barrel length and flange thickness)"
+          },
+          {
+            "id": "sotto",
+            "descrizione": "the barrel end seen from below (the flared or rolled side)"
+          }
+        ],
+        "nomi": {
+          "fronte": {
+            "faccia": "sopra",
+            "azimuth": 0,
+            "elevation": 0
+          },
+          "tre_quarti": {
+            "faccia": "sopra",
+            "azimuth": 25,
+            "elevation": 35
+          },
+          "lato": {
+            "faccia": "fianco_esterno",
+            "azimuth": 0,
+            "elevation": 0
+          },
+          "alto": {
+            "faccia": "sopra",
+            "azimuth": 0,
+            "elevation": 0
+          }
+        }
+      },
       "parametri": [
         {
           "chiave": "foro.diametro",
@@ -1436,6 +1665,49 @@
         "placchetta"
       ],
       "partTypes": [],
+      "viste": {
+        "principale": "sopra",
+        "facce": [
+          {
+            "id": "sopra",
+            "descrizione": "front face of the charm, jump ring at the top"
+          },
+          {
+            "id": "sotto",
+            "descrizione": "back of the charm (mirror image)"
+          },
+          {
+            "id": "fianco_esterno",
+            "descrizione": "side edge (shows doming, thickness, jump ring profile)"
+          },
+          {
+            "id": "dietro",
+            "descrizione": "bottom edge head-on"
+          }
+        ],
+        "nomi": {
+          "fronte": {
+            "faccia": "sopra",
+            "azimuth": 0,
+            "elevation": 0
+          },
+          "tre_quarti": {
+            "faccia": "sopra",
+            "azimuth": 30,
+            "elevation": 30
+          },
+          "lato": {
+            "faccia": "fianco_esterno",
+            "azimuth": 0,
+            "elevation": 0
+          },
+          "alto": {
+            "faccia": "sopra",
+            "azimuth": 0,
+            "elevation": 0
+          }
+        }
+      },
       "parametri": [
         {
           "chiave": "corpo.forma",
@@ -1547,6 +1819,49 @@
       "partTypes": [
         "ornament"
       ],
+      "viste": {
+        "principale": "sopra",
+        "facce": [
+          {
+            "id": "sopra",
+            "descrizione": "front face with the lettering or logo"
+          },
+          {
+            "id": "sotto",
+            "descrizione": "back of the plate (mirror image)"
+          },
+          {
+            "id": "fianco_esterno",
+            "descrizione": "side edge (shows thickness and relief)"
+          },
+          {
+            "id": "dietro",
+            "descrizione": "bottom edge head-on"
+          }
+        ],
+        "nomi": {
+          "fronte": {
+            "faccia": "sopra",
+            "azimuth": 0,
+            "elevation": 0
+          },
+          "tre_quarti": {
+            "faccia": "sopra",
+            "azimuth": 30,
+            "elevation": 30
+          },
+          "lato": {
+            "faccia": "fianco_esterno",
+            "azimuth": 0,
+            "elevation": 0
+          },
+          "alto": {
+            "faccia": "sopra",
+            "azimuth": 0,
+            "elevation": 0
+          }
+        }
+      },
       "parametri": [
         {
           "chiave": "piastra.forma",
@@ -1746,6 +2061,53 @@
         "quarto_ellissoide"
       ],
       "partTypes": [],
+      "viste": {
+        "principale": "fianco_esterno",
+        "facce": [
+          {
+            "id": "fianco_esterno",
+            "descrizione": "side profile, opening at the back (left), tip to the right (length and height)"
+          },
+          {
+            "id": "sopra",
+            "descrizione": "from above, tip up (length and width)"
+          },
+          {
+            "id": "davanti",
+            "descrizione": "the tip head-on (width and height)"
+          },
+          {
+            "id": "dietro",
+            "descrizione": "the open back from behind (opening, wall thickness)"
+          },
+          {
+            "id": "sotto",
+            "descrizione": "from below, tip up"
+          }
+        ],
+        "nomi": {
+          "fronte": {
+            "faccia": "davanti",
+            "azimuth": 0,
+            "elevation": 0
+          },
+          "tre_quarti": {
+            "faccia": "fianco_esterno",
+            "azimuth": 35,
+            "elevation": 25
+          },
+          "lato": {
+            "faccia": "fianco_esterno",
+            "azimuth": 0,
+            "elevation": 0
+          },
+          "alto": {
+            "faccia": "sopra",
+            "azimuth": 0,
+            "elevation": 0
+          }
+        }
+      },
       "parametri": [
         {
           "chiave": "puntale.lunghezza",
@@ -1828,6 +2190,57 @@
         "heel",
         "top_lift"
       ],
+      "viste": {
+        "principale": "fianco_esterno",
+        "facce": [
+          {
+            "id": "fianco_esterno",
+            "descrizione": "outer side profile of the heel, the foot-side view of a product photo: toe to the right, top lift on the ground line (shows height, curve of the back, seat slope)"
+          },
+          {
+            "id": "fianco_interno",
+            "descrizione": "inner (arch) side profile, toe to the left"
+          },
+          {
+            "id": "davanti",
+            "descrizione": "front of the heel, the face that looks toward the toe (shows width at the seat and at the top lift)"
+          },
+          {
+            "id": "dietro",
+            "descrizione": "back of the heel (dorso) seen from behind the shoe, the classic heel-from-behind view"
+          },
+          {
+            "id": "sopra",
+            "descrizione": "the seat from above, toe up (rare)"
+          },
+          {
+            "id": "sotto",
+            "descrizione": "the top lift (tappo) seen from below, toe up"
+          }
+        ],
+        "nomi": {
+          "fronte": {
+            "faccia": "davanti",
+            "azimuth": 0,
+            "elevation": 0
+          },
+          "tre_quarti": {
+            "faccia": "fianco_esterno",
+            "azimuth": 35,
+            "elevation": 15
+          },
+          "lato": {
+            "faccia": "fianco_esterno",
+            "azimuth": 0,
+            "elevation": 0
+          },
+          "alto": {
+            "faccia": "sopra",
+            "azimuth": 0,
+            "elevation": 0
+          }
+        }
+      },
       "parametri": [
         {
           "chiave": "tacco.altezza",

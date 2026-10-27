@@ -1,5 +1,7 @@
 /* oxlint-disable no-barrel-files/no-barrel-files -- the verification entry of D3 (silhouette ↔ mask). */
 export { assiCamera, pianoDaPixel, proiettore, vistaRender } from '#verifica/camera.js';
+export { cameraDaFaccia, cameraDaVista } from '#verifica/vista-famiglia.js';
+export type { CameraDaVista, VistaDaConvertire } from '#verifica/vista-famiglia.js';
 export type { AssiCamera, CameraVerifica, Vettore3 } from '#verifica/camera.js';
 export { componentePiuGrande, momenti, preparaMaschera, preparaMascheraPng } from '#verifica/maschera.js';
 export type {
