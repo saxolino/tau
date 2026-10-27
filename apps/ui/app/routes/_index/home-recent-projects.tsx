@@ -30,11 +30,15 @@ import { isCloudOnly, toLibraryRows } from '#routes/projects_/cloud-projects.js'
 import { SinopiaReferenceThumbnail } from '#routes/_index/sinopia-project-strip.js';
 import { toast } from '#components/ui/sonner.js';
 import { projectUrlOr } from '#utils/project-url.utils.js';
+import { isPlaceholderProjectName } from '#utils/project-name.utils.js';
 
 /** A bounded home preview; the full collection stays in Projects. */
 export const homeRecentProjectLimit = 10;
 
-const homeProjectGridClassName = 'grid grid-cols-2 gap-4 min-[1367px]:grid-cols-4';
+const homeProjectGridClassName = 'grid grid-cols-2 gap-4 @3xl/home:grid-cols-3 min-[1367px]:grid-cols-4';
+/** The card: the CAD's sheet, lifting its edge on hover; the picture is a 4:3 window like the hero's example. */
+const homeProjectCardClassName = 'flex flex-col gap-0 pb-0 shadow-xs hover:border-foreground/30';
+const homeProjectCardHeaderClassName = 'gap-0.5 px-3.5 py-3';
 const sortParameter = enumParameter(z.enum(['modified', 'name']), 'modified');
 
 const relativeTimes: Readonly<Record<Language, Intl.RelativeTimeFormat>> = {
@@ -94,25 +98,26 @@ const HomeProjectCard = memo(function HomeProjectCard({
 }): React.JSX.Element {
   const { t, language } = useTranslation();
   const thumbnail = useProjectThumbnail(project.id);
+  const name = isPlaceholderProjectName(project.name) ? t('home.recent.untitled') : project.name;
   return (
     <ProjectCard
       to={projectUrlOr(project.slugs)}
-      linkLabel={t('home.recent.open', { name: project.name })}
-      className='flex flex-col'
+      linkLabel={t('home.recent.open', { name })}
+      className={homeProjectCardClassName}
     >
       {/* The card link names the card, so the picture is decorative. */}
-      <div className='relative aspect-8/5 w-full overflow-hidden bg-muted'>
+      <div className='relative aspect-4/3 w-full overflow-hidden border-b border-border/60 bg-muted'>
         {thumbnail.url === undefined ? (
           <div className='flex size-full items-center justify-center text-muted-foreground'>
-            <Box aria-hidden className='size-8' />
+            <Box aria-hidden className='size-7' strokeWidth={1.5} />
           </div>
         ) : (
           <img src={thumbnail.url} alt='' className='size-full object-cover' loading='lazy' />
         )}
       </div>
-      <CardHeader className='gap-1'>
-        <h3 className='line-clamp-1 text-base font-semibold'>{project.name}</h3>
-        <p className='text-sm text-muted-foreground'>
+      <CardHeader className={homeProjectCardHeaderClassName}>
+        <h3 className='line-clamp-1 text-sm font-medium'>{name}</h3>
+        <p className='text-xs text-muted-foreground'>
           {t('home.recent.edited', {
             when: formatLastActivity(project.lastActivityAt, language),
           })}
@@ -149,29 +154,31 @@ const HomeRemoteProjectCard = memo(function HomeRemoteProjectCard({
       setIsOpening(false);
     }
   }, [onOpen, project, t]);
+  const name = isPlaceholderProjectName(project.name) ? t('home.recent.untitled') : project.name;
   return (
     <ProjectCard
       onOpen={open}
       isOpening={isOpening}
-      linkLabel={t(isOpening ? 'sinopiaImages.opening' : 'home.recent.open', { name: project.name })}
+      linkLabel={t(isOpening ? 'sinopiaImages.opening' : 'home.recent.open', { name })}
+      className={homeProjectCardClassName}
     >
       {project.sinopia ? (
         <SinopiaReferenceThumbnail
           userId={project.sinopia.user_id}
           projectId={project.sinopia.project_id}
-          className='aspect-8/5'
+          className='aspect-4/3 border-b border-border/60'
           location={location}
           alt=''
         />
       ) : (
-        <div className='flex aspect-8/5 items-center justify-center bg-muted'>
-          <Box aria-hidden className='size-8 text-muted-foreground' />
+        <div className='flex aspect-4/3 items-center justify-center border-b border-border/60 bg-muted'>
+          <Box aria-hidden className='size-7 text-muted-foreground' strokeWidth={1.5} />
         </div>
       )}
-      <CardHeader className='gap-1'>
-        <h3 className='line-clamp-1 text-base font-semibold'>{project.name}</h3>
+      <CardHeader className={homeProjectCardHeaderClassName}>
+        <h3 className='line-clamp-1 text-sm font-medium'>{name}</h3>
         {project.updatedAt === undefined ? null : (
-          <p className='text-sm text-muted-foreground'>
+          <p className='text-xs text-muted-foreground'>
             {t('home.recent.edited', { when: formatLastActivity(project.updatedAt, language) })}
           </p>
         )}
@@ -222,9 +229,9 @@ export function HomeRecentProjects({
   );
 
   return (
-    <section aria-labelledby={headingId} className='@container/home w-full pt-9 pb-10'>
-      <div className='mb-4 flex flex-wrap items-center justify-between gap-4'>
-        <h2 id={headingId} className='text-lg font-semibold'>
+    <section aria-labelledby={headingId} className='@container/home w-full pt-10 pb-6'>
+      <div className='mb-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-2'>
+        <h2 id={headingId} className='text-lg leading-7 font-semibold tracking-tight'>
           {t('home.recent.title')}
         </h2>
         {recent.length > 0 ? (
@@ -279,10 +286,10 @@ export function HomeRecentProjects({
         <div role='status' aria-busy='true' aria-label={t('home.recent.loading')} className={homeProjectGridClassName}>
           {Array.from({ length: 4 }, (_, index) => (
             // oxlint-disable-next-line react/no-array-index-key -- a fixed set of placeholders
-            <Card key={index} className='overflow-hidden pt-0'>
-              <Skeleton className='aspect-8/5 w-full rounded-none' />
-              <CardHeader>
-                <Skeleton className='h-6 w-3/4' />
+            <Card key={index} className='gap-0 overflow-hidden py-0'>
+              <Skeleton className='aspect-4/3 w-full rounded-none' />
+              <CardHeader className={homeProjectCardHeaderClassName}>
+                <Skeleton className='h-5 w-3/4' />
                 <Skeleton className='h-4 w-1/2' />
               </CardHeader>
             </Card>

@@ -1,4 +1,5 @@
 import { Button } from '@taucad/ui/components/button';
+import { Eyebrow } from '#components/ui/eyebrow.js';
 import { useDraftActions } from '#hooks/use-chat.js';
 import type { ChatTextareaHandle, ChatTextareaProperties } from '#components/chat/chat-textarea-types.js';
 import { useTranslation } from '#i18n/translate.js';
@@ -41,24 +42,29 @@ export function HomeAgentLane({
           <AgentLaneToggleButton place='lane' isOpen onOpenChange={onOpenChange} />
         </FloatingPanelContentHeader>
         <div className='mx-auto flex min-h-0 w-[calc(100%_-_1rem)] max-w-xl flex-1 overflow-y-auto px-3 py-6'>
-          <div className='m-auto space-y-3'>
-            <h2 className='text-base font-semibold'>{t('home.agentLane.emptyTitle')}</h2>
-            <p className='text-sm text-muted-foreground'>{t('home.agentLane.emptyDescription')}</p>
-            <div className='flex flex-col items-start gap-2'>
-              {(['home.agentLane.ring', 'home.agentLane.buckle', 'home.agentLane.pendant'] as const).map((key) => (
-                <Button
-                  key={key}
-                  variant='outline'
-                  className='h-auto text-left whitespace-normal'
-                  disabled={isSubmitting}
-                  onClick={() => {
-                    setDraftText(t(key));
-                    composerRef.current?.focus();
-                  }}
-                >
-                  {t(key)}
-                </Button>
-              ))}
+          <div className='m-auto w-full space-y-4'>
+            <div className='space-y-1.5'>
+              <h2 className='text-base font-semibold'>{t('home.agentLane.emptyTitle')}</h2>
+              <p className='text-sm leading-relaxed text-muted-foreground'>{t('home.agentLane.emptyDescription')}</p>
+            </div>
+            <div className='space-y-1.5'>
+              <Eyebrow as='h3'>{t('home.agentLane.starts')}</Eyebrow>
+              <div className='flex flex-col gap-1.5'>
+                {(['home.agentLane.ring', 'home.agentLane.buckle', 'home.agentLane.pendant'] as const).map((key) => (
+                  <Button
+                    key={key}
+                    variant='outline'
+                    className='h-auto justify-start py-2 text-left whitespace-normal'
+                    disabled={isSubmitting}
+                    onClick={() => {
+                      setDraftText(t(key));
+                      composerRef.current?.focus();
+                    }}
+                  >
+                    {t(key)}
+                  </Button>
+                ))}
+              </div>
             </div>
           </div>
         </div>

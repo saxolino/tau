@@ -6,7 +6,9 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '
 import { Skeleton } from '@taucad/ui/components/skeleton';
 import { randomUuid } from '@taucad/utils/id';
 import { cn } from '@taucad/ui/utils/cn';
+import { SinopiaMark } from '#components/icons/sinopiacad-wordmark.js';
 import { useTranslation } from '#i18n/translate.js';
+import { isPlaceholderProjectName } from '#utils/project-name.utils.js';
 import { useSinopiaSession } from '#hooks/use-sinopia-session.js';
 import {
   downloadSinopiaReferenceImage,
@@ -27,9 +29,6 @@ type ImageProperties = Readonly<{
   alt: string;
   className?: string;
 }>;
-
-/** Sinopia's own default project name, stored in English: shown in the interface language instead. */
-const isSinopiaPlaceholderName = (name: string): boolean => name.trim().toLowerCase() === 'untitled project';
 
 /** Authenticated thumbnails load only when visible, with document-local object URLs disposed on identity changes. */
 export const SinopiaReferenceThumbnail = memo(function SinopiaReferenceThumbnail({
@@ -385,7 +384,7 @@ function OwnedProjectStrip({
   const collection = projects.isPending ? (
     <div role='status' aria-busy='true' aria-label={t('sinopiaImages.loading')} className='flex gap-3'>
       {['a', 'b', 'c', 'd', 'e'].map((key) => (
-        <Skeleton key={key} className='aspect-4/3 w-44 shrink-0 rounded-lg' />
+        <Skeleton key={key} className='aspect-4/3 w-44 shrink-0 rounded-xl' />
       ))}
     </div>
   ) : projects.isError ? (
@@ -418,40 +417,44 @@ function OwnedProjectStrip({
             onClick={() => {
               chooseProject(item);
             }}
-            className='w-full overflow-hidden rounded-lg border bg-card text-left hover:bg-muted focus-visible:focus-outline'
+            className='w-full overflow-hidden rounded-xl border bg-card text-left shadow-xs transition-colors hover:border-foreground/30 focus-visible:focus-outline'
           >
             <SinopiaReferenceThumbnail
               userId={userId}
               projectId={item.thumbnail?.projectId ?? item.id}
               location={item.thumbnail}
+              className='border-b border-border/60'
               alt=''
             />
-            <span className='block truncate px-3 pt-2 text-sm font-medium'>
-              {isSinopiaPlaceholderName(item.name) ? t('sinopiaImages.untitled') : item.name}
+            <span className='block truncate px-3.5 pt-3 text-sm font-medium'>
+              {isPlaceholderProjectName(item.name) ? t('sinopiaImages.untitled') : item.name}
             </span>
-            {item.imageCount === undefined ? null : (
-              <span className='block px-3 pt-1 text-xs text-muted-foreground'>
-                {t(item.imageCount === 1 ? 'sinopiaImages.imageCountOne' : 'sinopiaImages.imageCount', {
-                  count: item.imageCount,
-                })}
-              </span>
-            )}
-            {item.updatedAt ? (
-              <span className='block px-3 pt-1 pb-3 text-xs text-muted-foreground'>
-                {t('sinopiaImages.updated', {
-                  date: new Intl.DateTimeFormat(language, { dateStyle: 'short' }).format(new Date(item.updatedAt)),
-                })}
-              </span>
-            ) : null}
+            <span className='block px-3.5 pt-0.5 pb-3 text-xs text-muted-foreground'>
+              {[
+                item.imageCount === undefined
+                  ? undefined
+                  : t(item.imageCount === 1 ? 'sinopiaImages.imageCountOne' : 'sinopiaImages.imageCount', {
+                      count: item.imageCount,
+                    }),
+                item.updatedAt
+                  ? t('sinopiaImages.updated', {
+                      date: new Intl.DateTimeFormat(language, { dateStyle: 'short' }).format(new Date(item.updatedAt)),
+                    })
+                  : undefined,
+              ]
+                .filter(Boolean)
+                .join(' · ')}
+            </span>
           </button>
         </li>
       ))}
     </ul>
   );
   return (
-    <section aria-labelledby={headingId} className='mt-10 space-y-4'>
+    <section aria-labelledby={headingId} className='mt-4 space-y-4 border-t border-border pt-8 pb-6'>
       <div className='space-y-1'>
-        <h2 id={headingId} className='text-lg font-semibold'>
+        <h2 id={headingId} className='flex items-center gap-2 text-lg leading-7 font-semibold tracking-tight'>
+          <SinopiaMark aria-hidden className='size-5' />
           {t('sinopiaImages.title')}
         </h2>
         <p className='text-sm text-muted-foreground'>{t('sinopiaImages.subtitle')}</p>
