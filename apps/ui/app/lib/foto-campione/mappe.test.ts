@@ -1,9 +1,8 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import { scatole } from '#lib/foto-campione/cubo.fixture.js';
-import { definizioniViste, rendiMappe } from '#lib/foto-campione/mappe.js';
-import type { MappeFoto } from '#lib/foto-campione/mappe.js';
-import { iouSagome } from '#lib/foto-campione/sagoma.js';
+import { definizioniViste, iouSagome, rendiMappe } from '#lib/foto-campione/mappe-condivise.js';
+import type { MappeFoto } from '#lib/foto-campione/mappe-condivise.js';
 
 const cubo = scatole({ min: [-10, -10, -10], max: [10, 10, 10] });
 const lato = 256;

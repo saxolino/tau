@@ -1,4 +1,4 @@
-import type { ImmagineRaster, MascheraBinaria } from '@taucad/smlib/verifica';
+import type { RasterFoto, SagomaFoto } from '#lib/foto-campione/mappe-condivise.js';
 
 /**
  * The acceptance measure of the sample photo (SinopiaCAD D6): the photo's silhouette against the render's, as IoU. The
@@ -24,7 +24,7 @@ const mediana = (valori: number[]): number => {
  * @param lato - The side of the render's silhouette.
  * @returns The binary silhouette at `lato` × `lato`.
  */
-export function sagomaDaFoto(immagine: ImmagineRaster, lato: number): MascheraBinaria {
+export function sagomaDaFoto(immagine: RasterFoto, lato: number): SagomaFoto {
   const { larghezza, altezza, canali, dati } = immagine;
   const colore = canali >= 3 ? 3 : 1;
   const alfa = canali === 2 || canali === 4 ? canali - 1 : undefined;
@@ -61,24 +61,4 @@ export function sagomaDaFoto(immagine: ImmagineRaster, lato: number): MascheraBi
     }
   }
   return { larghezza: lato, altezza: lato, dati: uscita };
-}
-
-/**
- * Intersection over union of two silhouettes of the same size.
- *
- * @param a - One silhouette.
- * @param b - The other.
- * @returns IoU in [0, 1]; 1 when both are empty.
- */
-export function iouSagome(a: MascheraBinaria, b: MascheraBinaria): number {
-  if (a.larghezza !== b.larghezza || a.altezza !== b.altezza) {
-    throw new Error('Sample photo: silhouettes of different sizes.');
-  }
-  let [intersezione, unione] = [0, 0];
-  for (let p = 0; p < a.dati.length; p++) {
-    const [x, y] = [a.dati[p]!, b.dati[p]!];
-    intersezione += x & y;
-    unione += x | y;
-  }
-  return unione === 0 ? 1 : intersezione / unione;
 }

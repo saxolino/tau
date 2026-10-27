@@ -813,6 +813,13 @@ describe('SinopiaCAD delivery of an SMLib model (E3a): SMLib writes and checks, 
       return;
     }
     const document = await new WebIO().registerExtensions(allExtensions).readBinary(result.files[0]!.bytes);
+    // The B-rep topology goes with it: Sinopia's sample photo trusts only a model that carries it.
+    expect(
+      document
+        .getRoot()
+        .listExtensionsUsed()
+        .map((extension) => extension.extensionName),
+    ).toContain('TAU_cad_topology');
     const ottone = document
       .getRoot()
       .listMaterials()

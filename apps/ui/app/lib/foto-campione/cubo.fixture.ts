@@ -1,4 +1,4 @@
-import type { MeshFoto } from '#lib/foto-campione/glb-mesh.js';
+import type { MeshFoto } from '#lib/foto-campione/mappe-condivise.js';
 
 /**
  * Axis-aligned boxes as the maps' tests need them: twelve triangles each with their face normals, and the twelve edges.

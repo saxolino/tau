@@ -982,3 +982,15 @@ Blocchi C1, C2, C5 e D4 del piano di Claude (`PIANO-CLAUDE-2026-10-26.md`), dall
   (`network_cad_attachments_enabled`, rilevamento fail-closed) e il server ne ha letto il contenuto
   (`verifica-allegato-cad`); altrimenti il messaggio di prima (`apps/ui/app/services/sinopia-consegna.ts`,
   `routes/w.$workspace.$project/project-delivery-section.tsx`, `i18n/messages/consegna.ts`).
+
+## 27 ottobre 2026 — foto del campione resa da Sinopia dalla versione inviata (D6, provenienza)
+
+- **Codice gemello delle mappe.** `apps/ui/app/lib/foto-campione/mappe-condivise.ts` (nuovo, al posto di `glb-mesh.ts` e
+  `mappe.ts`): lettura del GLB con tetti contro i file ostili, z-buffer, PNG e impronta della foto; lo stesso file vive
+  nella funzione `sinopiacad` di Sinopia, che rende le mappe dal GLB inviato. Confronto «modello a schermo = versione
+  inviata» per forma (`confronto.ts`).
+- **Ispettore.** La foto ritrae l'ultima versione inviata con il GLB; senza invio, o con il modello cambiato dopo
+  l'invio, il pulsante chiede «Invia a Sinopia» (`routes/w.$workspace.$project/inspector-photos.tsx`,
+  `services/sinopia-foto.ts`, `services/foto-campione-immagini.ts`, `i18n/messages/foto-campione.ts`).
+- **Consegna.** Il GLB di un modello SMLib porta la topologia B-rep (`services/project-export.ts`): Sinopia considera
+  «generato» solo un pezzo che la porta.

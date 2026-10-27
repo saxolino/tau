@@ -138,7 +138,13 @@ export async function prepareProjectExport(input: {
     if (!route || route.kernelId !== source.kernelId) {
       return { status: 'needsFix', problem: 'prepare' };
     }
-    const result = await exportDocumentWithValidatedInput(source.document, route, { signal });
+    // SinopiaCAD's GLB carries its B-rep topology (faces and edges by piece): Sinopia renders the sample photo from the
+    // GLB sent to it and only trusts as «generated» a model that carries it (a 3D scan has none).
+    const result = await exportDocumentWithValidatedInput(
+      source.document,
+      route,
+      format === 'glb' && source.kernelId === 'smlib' ? { signal, content: { includeTopology: true } } : { signal },
+    );
     if (!current()) {
       return { status: 'needsFix', problem: 'changed' };
     }

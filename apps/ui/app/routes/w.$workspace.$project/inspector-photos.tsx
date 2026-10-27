@@ -13,8 +13,6 @@ import { randomUuid } from '@taucad/utils/id';
 import { findPieceMaterial, pieceFinishes, pieceMaterials } from '@taucad/viewer/cad/piece-materials';
 import type { PieceFinish, PieceMaterialId } from '@taucad/viewer/cad/piece-materials';
 import { getModelInteractionUnitState } from '@taucad/viewer/machines/model-interaction.machine';
-import type { MascheraBinaria } from '@taucad/smlib/verifica';
-import { codificaPng } from '@taucad/smlib/verifica';
 import { Eyebrow } from '#components/ui/eyebrow.js';
 import { useInspectorSelection } from '#hooks/use-inspector-selection.js';
 import { useProject } from '#hooks/use-project.js';
@@ -25,33 +23,42 @@ import type { PlainMessageKey } from '#i18n/translate.js';
 import type { cadMachine } from '#machines/cad.machine.js';
 import { chiaveFoto, fotoPronta, statiFoto, ultimePerChiave } from '#lib/foto-campione/galleria.js';
 import type { FotoCampione, StatoFoto } from '#lib/foto-campione/galleria.js';
-import { meshDaGlb } from '#lib/foto-campione/glb-mesh.js';
-import type { MeshFoto } from '#lib/foto-campione/glb-mesh.js';
+import { stessaForma } from '#lib/foto-campione/confronto.js';
 import { improntaFoto, materialeNormale } from '#lib/foto-campione/impronta.js';
 import type { LivelloFoto, MaterialeFoto } from '#lib/foto-campione/impronta.js';
-import { latoMappe, rendiMappe, vistePhoto } from '#lib/foto-campione/mappe.js';
-import type { MappeFoto, VistaFoto } from '#lib/foto-campione/mappe.js';
+import {
+  codificaPngFoto,
+  iouSagome,
+  latoMappe,
+  meshDaGlb,
+  rendiMappe,
+  sha256Foto,
+  vistePhoto,
+} from '#lib/foto-campione/mappe-condivise.js';
+import type { MeshFoto, SagomaFoto, VistaFoto } from '#lib/foto-campione/mappe-condivise.js';
 import { fotoDiProva } from '#lib/foto-campione/prova.js';
-import { iouSagome, sagomaDaFoto, sogliaIouFoto } from '#lib/foto-campione/sagoma.js';
-import { decodificaFoto, mappeInPng } from '#services/foto-campione-immagini.js';
+import { sagomaDaFoto, sogliaIouFoto } from '#lib/foto-campione/sagoma.js';
+import { decodificaFoto } from '#services/foto-campione-immagini.js';
 import {
   elencaFotoCampione,
   ErroreFoto,
   generaFotoCampione,
   leggiPrezziCad,
   scaricaFoto,
-  ultimaVersioneConsegnata,
+  versioneInviata,
 } from '#services/sinopia-foto.js';
 import type { CodiceErroreFoto, PrezzoCad } from '#services/sinopia-foto.js';
 
 /**
  * «Foto del campione» in the inspector (SinopiaCAD D6): pick a view and a material (the piece's own, by default) and a
- * level, see the cost, make one photo. The maps come from the model on screen, for free, in the browser; the photo comes
- * from Sinopia and lands among the project's images (Riepilogo, Shooting, Lookbook). Each photo carries the fingerprint
- * of the model it shows: when a measure changes it turns grey («Da rifare») and waits for «Rigenera» — nothing is made
- * again by itself, a slider drag costs nothing.
+ * level, see the cost, make one photo. The photo shows the version sent to Sinopia: Sinopia renders the maps from that
+ * version's GLB (the request carries no picture) and the photo lands among the project's images (Riepilogo, Shooting,
+ * Lookbook). The CAD downloads the same GLB to know the fingerprint, to measure the photo's silhouette with the same
+ * twin renderer and to see whether the model on screen is still that version. A changed measure or a new delivery turns
+ * the photos grey («Da rifare»); nothing is made again by itself, a slider drag costs nothing.
  *
- * `?prova=foto` (development builds only) swaps Sinopia for a local stand-in: no call, no credit.
+ * `?prova=foto` (development builds only) swaps Sinopia for a local stand-in: the model on screen plays the sent
+ * version, no call, no credit.
  */
 
 const selectRendering = (state: SnapshotFrom<typeof cadMachine> | undefined) => state?.context.rendering;
@@ -66,6 +73,8 @@ const messaggioErrore: Readonly<Partial<Record<CodiceErroreFoto, PlainMessageKey
   CREDIT_COST_CHANGED: 'fotoCampione.errors.creditCostChanged',
   INSUFFICIENT_CREDITS: 'fotoCampione.errors.insufficientCredits',
   CAD_MODEL_NOT_FOUND: 'fotoCampione.errors.cadModelNotFound',
+  CAD_VERSION_MISSING: 'fotoCampione.errors.versionMissing',
+  CAD_MODEL_UNREADABLE: 'fotoCampione.errors.modelUnreadable',
   PHOTO_REFUSED: 'fotoCampione.errors.photoRefused',
   PROVIDER_SPEND_BLOCKED: 'fotoCampione.errors.levelPaused',
   RATE_LIMITED: 'fotoCampione.errors.rateLimited',
@@ -158,6 +167,20 @@ export function InspectorPhotos(): React.JSX.Element {
     queryFn: async () => elencaFotoCampione(link!),
     enabled: !isTrial && link !== undefined,
   });
+  // The last version sent with a GLB: what the photo shows. A delivery made meanwhile shows up within half a minute.
+  const consegna = useQuery({
+    queryKey: ['sinopia', 'versione-inviata', link?.modelId],
+    queryFn: async () => (await versioneInviata(link!)) ?? null,
+    enabled: !isTrial && link !== undefined,
+    staleTime: 15_000,
+    refetchInterval: 30_000,
+  });
+  const glbInviato = useQuery({
+    queryKey: ['sinopia', 'glb-inviato', consegna.data?.glb.path],
+    queryFn: async () => scaricaFoto(consegna.data!.glb),
+    enabled: !isTrial && consegna.data !== undefined && consegna.data !== null,
+    staleTime: Infinity,
+  });
   const [locali, setLocali] = useState<FotoCampione[]>([]);
   const galleria = useMemo(
     () => ultimePerChiave(isTrial ? locali : (remote.data ?? [])),
@@ -169,9 +192,13 @@ export function InspectorPhotos(): React.JSX.Element {
   const [iou, setIou] = useState<ReadonlyMap<string, number>>(new Map());
   const [miniature, setMiniature] = useState<ReadonlyMap<string, string>>(new Map());
   const [improntaCorrente, setImprontaCorrente] = useState<string | undefined>(undefined);
+  /** The sent version as the photo sees it: the SHA-256 of its GLB and its mesh. */
+  const [inviata, setInviata] = useState<Readonly<{ sha: string; mesh: MeshFoto }> | undefined>(undefined);
+  /** Whether the screen still shows the sent version; `undefined` while it cannot be told. */
+  const [schermoUguale, setSchermoUguale] = useState<boolean | undefined>(undefined);
 
-  const mesh = useRef<{ modello: string; mesh: MeshFoto } | undefined>(undefined);
-  const sagome = useRef(new Map<string, MascheraBinaria>());
+  const meshSchermo = useRef<{ modello: string; mesh: MeshFoto } | undefined>(undefined);
+  const sagome = useRef(new Map<string, SagomaFoto>());
   const pendenti = useRef(new Map<string, string>());
   const caricate = useRef(new Set<string>());
   const misurate = useRef(new Set<string>());
@@ -188,26 +215,77 @@ export function InspectorPhotos(): React.JSX.Element {
     };
   }, []);
 
-  /** The maps of a view for the model on screen (the mesh is read once per model). */
-  const mappeDi = useCallback(
-    (perVista: VistaFoto): MappeFoto | undefined => {
-      if (modello === undefined || contenuto === undefined) {
-        return undefined;
-      }
-      if (mesh.current?.modello !== modello) {
-        mesh.current = { modello, mesh: meshDaGlb(contenuto) };
-      }
-      const mappe = rendiMappe(mesh.current.mesh, perVista, latoMappe);
-      sagome.current.set(`${modello}:${perVista}`, mappe.sagoma);
-      return mappe;
-    },
-    [contenuto, modello],
-  );
-
-  // Each photo against the model on screen: «Pronta» or «Da rifare».
+  // The sent version's GLB → fingerprint and mesh (in the trial the model on screen plays the sent version).
+  const byteInviati = isTrial ? contenuto : glbInviato.data;
   useEffect(() => {
     let attuale = true;
-    void statiFoto(galleria, modello).then((prossimi) => {
+    if (byteInviati === undefined) {
+      setInviata(undefined);
+      return;
+    }
+    // async-iife: one digest and one parse per sent GLB; a GLB that cannot be read leaves the photo unavailable.
+    void (async (): Promise<void> => {
+      try {
+        const sha = await sha256Foto(byteInviati);
+        const mesh = meshDaGlb(byteInviati);
+        if (attuale) {
+          setInviata({ sha, mesh });
+        }
+      } catch (error) {
+        console.error('Failed to read the sent GLB:', error);
+        if (attuale) {
+          setInviata(undefined);
+        }
+      }
+    })();
+    return () => {
+      attuale = false;
+    };
+  }, [byteInviati]);
+
+  // Is the model on screen still the sent version? Compared by shape (sizes, silhouette and depth at 256²).
+  useEffect(() => {
+    if (isTrial) {
+      setSchermoUguale(true);
+      return;
+    }
+    if (inviata === undefined || modello === undefined || contenuto === undefined) {
+      setSchermoUguale(undefined);
+      return;
+    }
+    try {
+      if (meshSchermo.current?.modello !== modello) {
+        meshSchermo.current = { modello, mesh: meshDaGlb(contenuto) };
+      }
+      setSchermoUguale(stessaForma(inviata.mesh, meshSchermo.current.mesh).stessa);
+    } catch (error) {
+      console.error('Failed to compare the model with the sent version:', error);
+      setSchermoUguale(undefined);
+    }
+  }, [contenuto, inviata, isTrial, modello]);
+
+  /** The silhouette of a view of the sent version (the twin renderer: the same Sinopia rendered the maps with). */
+  const sagomaDi = useCallback(
+    (perVista: VistaFoto): SagomaFoto | undefined => {
+      if (inviata === undefined) {
+        return undefined;
+      }
+      const chiave = `${inviata.sha}:${perVista}`;
+      const nota = sagome.current.get(chiave);
+      if (nota) {
+        return nota;
+      }
+      const sagoma = rendiMappe(inviata.mesh, perVista, latoMappe).sagoma;
+      sagome.current.set(chiave, sagoma);
+      return sagoma;
+    },
+    [inviata],
+  );
+
+  // Each photo against the sent version and the screen: «Pronta» or «Da rifare».
+  useEffect(() => {
+    let attuale = true;
+    void statiFoto(galleria, inviata?.sha, schermoUguale !== false).then((prossimi) => {
       if (attuale) {
         setStati(prossimi);
       }
@@ -215,16 +293,16 @@ export function InspectorPhotos(): React.JSX.Element {
     return () => {
       attuale = false;
     };
-  }, [galleria, modello]);
+  }, [galleria, inviata, schermoUguale]);
 
   // The fingerprint of the photo the button would ask for: the cache check.
   useEffect(() => {
     let attuale = true;
-    if (modello === undefined) {
+    if (inviata === undefined) {
       setImprontaCorrente(undefined);
       return;
     }
-    void improntaFoto({ modello, vista, materiale, livello }).then((impronta) => {
+    void improntaFoto({ glb: inviata.sha, vista, materiale, livello }).then((impronta) => {
       if (attuale) {
         setImprontaCorrente(impronta);
       }
@@ -232,7 +310,7 @@ export function InspectorPhotos(): React.JSX.Element {
     return () => {
       attuale = false;
     };
-  }, [livello, materiale, modello, vista]);
+  }, [inviata, livello, materiale, vista]);
 
   // Thumbnails of the photos kept on Sinopia (one download each, kept for the silhouette check).
   useEffect(() => {
@@ -260,7 +338,7 @@ export function InspectorPhotos(): React.JSX.Element {
     }
   }, [galleria]);
 
-  // The silhouette check of each photo that still shows the model on screen (the maps of its view, made once).
+  // The silhouette check of each photo that still shows the sent version (the maps of its view, made once).
   useEffect(() => {
     for (const foto of galleria) {
       const bytes = byteFoto.current.get(foto.id);
@@ -271,7 +349,7 @@ export function InspectorPhotos(): React.JSX.Element {
       // async-iife: decode and compare; a photo that cannot be decoded keeps no measure.
       void (async (): Promise<void> => {
         try {
-          const sagoma = sagome.current.get(`${modello}:${foto.vista}`) ?? mappeDi(foto.vista)?.sagoma;
+          const sagoma = sagomaDi(foto.vista);
           if (!sagoma) {
             return;
           }
@@ -284,11 +362,11 @@ export function InspectorPhotos(): React.JSX.Element {
         }
       })();
     }
-  }, [galleria, iou, mappeDi, miniature, modello, stati]);
+  }, [galleria, iou, miniature, sagomaDi, stati]);
 
   const genera = useCallback(
     async (scelta: Scelta): Promise<void> => {
-      if (modello === undefined) {
+      if (inviata === undefined) {
         return;
       }
       const materialeFoto = materialeNormale(scelta.materiale);
@@ -312,22 +390,16 @@ export function InspectorPhotos(): React.JSX.Element {
       };
       let improntaChiesta: string | undefined;
       try {
-        const impronta = await improntaFoto({ modello, ...scelta, materiale: materialeFoto });
+        const impronta = await improntaFoto({ glb: inviata.sha, ...scelta, materiale: materialeFoto });
         improntaChiesta = impronta;
-        // Let the card show before the maps take the main thread for a moment.
-        await new Promise((resolve) => {
-          setTimeout(resolve, 30);
-        });
-        const mappe = mappeDi(scelta.vista);
-        if (!mappe) {
-          throw new Error('No committed model to photograph');
-        }
         if (isTrial) {
+          // Let the card show before the stand-in takes the main thread for a moment.
           await new Promise((resolve) => {
             setTimeout(resolve, 900);
           });
+          const mappe = rendiMappe(inviata.mesh, scelta.vista, latoMappe);
           const immagine = fotoDiProva(mappe, materialeFoto, scelta.livello);
-          const bytes = await codificaPng(immagine);
+          const bytes = await codificaPngFoto(immagine);
           const url = URL.createObjectURL(new Blob([bytes as Uint8Array<ArrayBuffer>], { type: 'image/png' }));
           urls.current.push(url);
           const id = randomUuid();
@@ -345,14 +417,14 @@ export function InspectorPhotos(): React.JSX.Element {
               impronta,
               creata: Date.now(),
               sorgente: { tipo: 'url', url },
-              aiAct: 'ai-modified',
+              aiAct: 'ai-generated',
             },
           ]);
           fine();
           return;
         }
-        if (!link) {
-          throw new ErroreFoto('CAD_MODEL_NOT_FOUND', 0, 'No Sinopia link');
+        if (!link || !consegna.data) {
+          throw new ErroreFoto(link ? 'CAD_VERSION_MISSING' : 'CAD_MODEL_NOT_FOUND', 0, 'No sent version');
         }
         const costo = listino?.[prezzoDi[scelta.livello]];
         if (costo === undefined) {
@@ -361,19 +433,21 @@ export function InspectorPhotos(): React.JSX.Element {
         // The same fingerprint retried after a lost answer keeps its request id: Sinopia replays it, it does not charge twice.
         const requestId = pendenti.current.get(impronta) ?? randomUuid();
         pendenti.current.set(impronta, requestId);
-        const [png, versionNumber] = await Promise.all([mappeInPng(mappe), ultimaVersioneConsegnata(link)]);
         const esito = await generaFotoCampione({
           requestId,
           maxCreditCost: costo,
           cadModelId: link.modelId,
-          versionNumber,
+          versionNumber: consegna.data.versionNumber,
           vista: scelta.vista,
           materiale: materialeFoto,
           livello: scelta.livello,
-          impronta,
-          mappe: png,
         });
         pendenti.current.delete(impronta);
+        if (esito.impronta !== impronta) {
+          // Sinopia rendered a different GLB than the one read here (a delivery in between): the gallery will say so.
+          console.warn('Sample photo: Sinopia fingerprinted another GLB', esito.versionNumber);
+          void queryClient.invalidateQueries({ queryKey: ['sinopia', 'versione-inviata', link.modelId] });
+        }
         await queryClient.invalidateQueries({ queryKey: ['sinopia', 'foto-campione', link.modelId] });
         console.info('Sample photo saved in Sinopia:', esito.assetId, esito.replayed ? '(replayed)' : '');
         fine();
@@ -389,6 +463,9 @@ export function InspectorPhotos(): React.JSX.Element {
           // Refunded: the request id is spent on Sinopia's side, the next click needs a new one.
           pendenti.current.delete(improntaChiesta);
         }
+        if (error instanceof ErroreFoto && error.codice === 'CAD_VERSION_MISSING' && link) {
+          void queryClient.invalidateQueries({ queryKey: ['sinopia', 'versione-inviata', link.modelId] });
+        }
         fine({
           ...scelta,
           materiale: materialeFoto,
@@ -399,7 +476,7 @@ export function InspectorPhotos(): React.JSX.Element {
         });
       }
     },
-    [isTrial, link, listino, mappeDi, modello, queryClient],
+    [consegna.data, inviata, isTrial, link, listino, queryClient],
   );
 
   const pronta = fotoPronta(
@@ -411,22 +488,35 @@ export function InspectorPhotos(): React.JSX.Element {
   const collegato = isTrial || (userId !== undefined && link !== undefined);
   const prezzoInLettura = !isTrial && prezzi.isPending && userId !== undefined;
 
+  const versioneInLettura = !isTrial && link !== undefined && (consegna.isPending || glbInviato.isPending);
   const motivo: PlainMessageKey | undefined =
     !isTrial && userId === undefined
       ? 'fotoCampione.signedOut'
       : !isTrial && link === undefined
         ? 'fotoCampione.unlinked'
-        : modello === undefined
-          ? isBuilding
-            ? 'fotoCampione.modelBuilding'
-            : 'fotoCampione.noModel'
-          : prezzoInLettura
-            ? 'fotoCampione.priceLoading'
-            : costo === undefined
-              ? 'fotoCampione.priceMissing'
-              : pronta
-                ? 'fotoCampione.alreadyReady'
-                : undefined;
+        : !isTrial && consegna.isError
+          ? 'fotoCampione.versionUnreadable'
+          : !isTrial && consegna.data === null
+            ? 'fotoCampione.notDelivered'
+            : versioneInLettura
+              ? 'fotoCampione.versionLoading'
+              : !isTrial && glbInviato.isError
+                ? 'fotoCampione.versionUnreadable'
+                : modello === undefined
+                  ? isBuilding
+                    ? 'fotoCampione.modelBuilding'
+                    : 'fotoCampione.noModel'
+                  : inviata === undefined
+                    ? 'fotoCampione.versionLoading'
+                    : schermoUguale === false
+                      ? 'fotoCampione.changedSinceDelivery'
+                      : prezzoInLettura
+                        ? 'fotoCampione.priceLoading'
+                        : costo === undefined
+                          ? 'fotoCampione.priceMissing'
+                          : pronta
+                            ? 'fotoCampione.alreadyReady'
+                            : undefined;
   const isDisabled = motivo !== undefined || inCorso;
 
   const definito = findPieceMaterial(materiale.id);
@@ -441,9 +531,16 @@ export function InspectorPhotos(): React.JSX.Element {
       className='border-t border-border px-4 pt-3 pb-4'
       data-slot='inspector-photos'
       data-modello={modello}
+      data-glb={inviata?.sha}
+      data-stesso-modello={schermoUguale === undefined ? undefined : String(schermoUguale)}
     >
       <Eyebrow as='h3'>{t('fotoCampione.title')}</Eyebrow>
       <p className='mt-1 text-xs leading-relaxed text-muted-foreground'>{t('fotoCampione.hint')}</p>
+      {!isTrial && consegna.data ? (
+        <p className='mt-1 text-[11px] leading-4 text-titanium-foreground' data-slot='sample-photo-version'>
+          {t('fotoCampione.version', { number: consegna.data.versionNumber })}
+        </p>
+      ) : null}
       {isTrial ? (
         <p className='mt-1 text-[11px] leading-4 text-titanium-foreground'>{t('fotoCampione.trial')}</p>
       ) : null}
@@ -624,7 +721,7 @@ export function InspectorPhotos(): React.JSX.Element {
                     variant='ghost'
                     size='xs'
                     className='mt-0.5 -ml-2'
-                    disabled={modello === undefined}
+                    disabled={inviata === undefined || schermoUguale === false}
                     onClick={() => {
                       void genera(voce);
                     }}
@@ -690,7 +787,11 @@ export function InspectorPhotos(): React.JSX.Element {
                       variant='ghost'
                       size='xs'
                       className='mt-0.5 -ml-2'
-                      disabled={modello === undefined || listino?.[prezzoDi[foto.livello]] === undefined}
+                      disabled={
+                        inviata === undefined ||
+                        schermoUguale === false ||
+                        listino?.[prezzoDi[foto.livello]] === undefined
+                      }
                       onClick={() => {
                         void genera(foto);
                       }}
@@ -703,7 +804,7 @@ export function InspectorPhotos(): React.JSX.Element {
               })}
           </ul>
         </div>
-      ) : collegato && modello !== undefined ? (
+      ) : collegato && inviata !== undefined ? (
         <p className='mt-3 text-[11px] leading-4 text-muted-foreground'>{t('fotoCampione.empty')}</p>
       ) : null}
     </section>

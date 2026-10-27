@@ -4,11 +4,13 @@ import { scatole } from '#lib/foto-campione/cubo.fixture.js';
 import { chiaveFoto, fotoPronta, statiFoto, ultimePerChiave } from '#lib/foto-campione/galleria.js';
 import type { FotoCampione } from '#lib/foto-campione/galleria.js';
 import { improntaFoto } from '#lib/foto-campione/impronta.js';
-import { rendiMappe } from '#lib/foto-campione/mappe.js';
+import { iouSagome, improntaFotoCampione, rendiMappe } from '#lib/foto-campione/mappe-condivise.js';
 import { fotoDiProva } from '#lib/foto-campione/prova.js';
-import { iouSagome, sagomaDaFoto, sogliaIouFoto } from '#lib/foto-campione/sagoma.js';
+import { sagomaDaFoto, sogliaIouFoto } from '#lib/foto-campione/sagoma.js';
 
-const base = { modello: 'sha-model-a', vista: 'fronte', materiale: { id: 'brass' }, livello: 'standard' } as const;
+const glbA = 'a'.repeat(64);
+const glbB = 'b'.repeat(64);
+const base = { glb: glbA, vista: 'fronte', materiale: { id: 'brass' }, livello: 'standard' } as const;
 
 describe('sample photo fingerprint', () => {
   it('should be 64 hexadecimal digits, the same for the same inputs', async () => {
@@ -17,10 +19,10 @@ describe('sample photo fingerprint', () => {
     expect(await improntaFoto({ ...base })).toBe(impronta);
   });
 
-  it('should change with the model, the view, the material, the finish and the level — and only with them', async () => {
+  it('should change with the sent GLB, the view, the material, the finish and the level — and only with them', async () => {
     const impronta = await improntaFoto(base);
     const varianti = await Promise.all([
-      improntaFoto({ ...base, modello: 'sha-model-b' }),
+      improntaFoto({ ...base, glb: glbB }),
       improntaFoto({ ...base, vista: 'tre-quarti' }),
       improntaFoto({ ...base, materiale: { id: 'zamak' } }),
       improntaFoto({ ...base, materiale: { id: 'brass', finitura: 'satin' } }),
@@ -31,6 +33,12 @@ describe('sample photo fingerprint', () => {
     expect(await improntaFoto({ ...base, materiale: { id: 'brass', finitura: 'polished' } })).toBe(impronta);
     expect(await improntaFoto({ ...base, materiale: { id: 'leather', finitura: 'satin' } })).toBe(
       await improntaFoto({ ...base, materiale: { id: 'leather' } }),
+    );
+  });
+
+  it('should equal the twin function Sinopia uses, given the normalised material', async () => {
+    expect(await improntaFoto(base)).toBe(
+      await improntaFotoCampione({ ...base, materiale: { id: 'brass', finitura: 'polished' } }),
     );
   });
 });
@@ -60,12 +68,13 @@ describe('sample photo gallery', () => {
     );
   });
 
-  it('should mark a photo «da rifare» as soon as the model changes, and never before', async () => {
+  it('should mark a photo «da rifare» on a new delivery or a changed screen, and never before', async () => {
     const impronta = await improntaFoto(base);
     const galleria = [foto('f1', 1, impronta)];
-    expect((await statiFoto(galleria, 'sha-model-a')).get('f1')).toBe('pronta');
-    expect((await statiFoto(galleria, 'sha-model-b')).get('f1')).toBe('da-rifare');
-    // The model still building: no verdict yet.
+    expect((await statiFoto(galleria, glbA)).get('f1')).toBe('pronta');
+    expect((await statiFoto(galleria, glbB)).get('f1')).toBe('da-rifare');
+    expect((await statiFoto(galleria, glbA, false)).get('f1')).toBe('da-rifare');
+    // The sent version not read yet: no verdict.
     expect((await statiFoto(galleria, undefined)).size).toBe(0);
   });
 
@@ -73,7 +82,7 @@ describe('sample photo gallery', () => {
     const impronta = await improntaFoto(base);
     const galleria = [foto('f1', 1, impronta)];
     expect(fotoPronta(galleria, impronta)?.id).toBe('f1');
-    expect(fotoPronta(galleria, await improntaFoto({ ...base, modello: 'sha-model-b' }))).toBeUndefined();
+    expect(fotoPronta(galleria, await improntaFoto({ ...base, glb: glbB }))).toBeUndefined();
     expect(fotoPronta(galleria, undefined)).toBeUndefined();
   });
 });
