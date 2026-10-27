@@ -56,7 +56,7 @@ export function AssistantContextChips({ className }: { readonly className?: stri
           key={suggestion}
           variant='outline'
           size='xs'
-          className='h-auto min-h-7 max-w-full justify-start rounded-full py-1 text-left leading-snug font-normal whitespace-normal'
+          className='h-auto min-h-7 max-w-full justify-start rounded-lg py-1 text-left leading-snug font-normal whitespace-normal'
           onClick={() => {
             setDraftText(suggestion);
             focusComposer();

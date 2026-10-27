@@ -14,11 +14,17 @@ export function TabletLane({
   side,
   onClose,
   children,
+  isViewerInteractive = false,
 }: {
   readonly label: string;
   readonly side: 'left' | 'right';
   readonly onClose: () => void;
   readonly children: React.ReactNode;
+  /**
+   * The inspector works on what is clicked on the model, so its sheet leaves the viewer usable: no veil that closes it
+   * on the first click. The sheet still closes from its own button and Escape.
+   */
+  readonly isViewerInteractive?: boolean;
 }): React.JSX.Element {
   const { t } = useTranslation();
   const ref = useRef<HTMLDivElement>(null);
@@ -52,13 +58,15 @@ export function TabletLane({
         }
       }}
     >
-      <button
-        type='button'
-        tabIndex={-1}
-        aria-label={t('common.close')}
-        className='absolute inset-0 z-20 bg-foreground/10'
-        onClick={onClose}
-      />
+      {isViewerInteractive ? null : (
+        <button
+          type='button'
+          tabIndex={-1}
+          aria-label={t('common.close')}
+          className='absolute inset-0 z-20 bg-foreground/10'
+          onClick={onClose}
+        />
+      )}
       <Dialog.Content
         ref={ref}
         data-slot='tablet-lane'

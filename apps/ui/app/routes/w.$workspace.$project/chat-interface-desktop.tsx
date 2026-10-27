@@ -198,6 +198,7 @@ export const ChatInterfaceDesktop = memo(function (): React.JSX.Element {
                     <TabletLane
                       label={t(chatVisible ? 'inspector.label' : 'project.lanes.measures')}
                       side={chatVisible ? 'right' : 'left'}
+                      isViewerInteractive={chatVisible}
                       onClose={() => {
                         (chatVisible ? setChatOpen : setWorkbenchOpen)(false);
                       }}

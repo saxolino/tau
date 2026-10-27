@@ -854,7 +854,8 @@ Blocchi C1, C2, C5 e D4 del piano di Claude (`PIANO-CLAUDE-2026-10-26.md`), dall
   solido e modificabile in proporzione, gli strumenti del visore montati lì con un portale (`chat-viewer.tsx`), le misure
   del pezzo (`piece-measures-pane.tsx`, `chat-parameters.tsx`) e la cronologia; sotto, l'assistente sempre presente
   (`components/chat/assistant-dock.tsx`), che si apre nella conversazione con ⌃J (`chat-history.tsx` variante `dock`,
-  `chat-title-bar.tsx`). Su tablet la corsia è un foglio richiudibile.
+  `chat-title-bar.tsx`). Su tablet la corsia è un foglio richiudibile che lascia usabile il modello sotto
+  (`tablet-lane.tsx`).
 - **Strumenti per la selezione.** `manual-edit-panel.tsx`: filtro Pezzo · Faccia · Spigolo sempre visibile, strumento
   principale e secondari con icona, «Altri strumenti» nel menu, Applica (Invio) e Annulla (Esc) unici, cronologia che
   dice cosa, quanto e su quale pezzo (`lib/inspector-selection.ts`). La selezione è una sola: un pezzo preso con uno
