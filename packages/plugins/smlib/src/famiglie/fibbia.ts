@@ -29,6 +29,7 @@ import {
   normalizzaForma,
   sformoDuePiani,
 } from '#famiglie/verifiche-comuni.js';
+import { misuraPezzo } from '#famiglie/sonda-tempi.js';
 
 /**
  * Famiglia `fibbia` (specifica §1.3): telaio piatto su XY, faccia a vista +Z, il cinturino entra lungo −Y; la
@@ -530,7 +531,7 @@ function costruisciConEsiti(lib: Lib, p: ParametriFibbia, opzioni?: OpzioniFamig
   const pezzi: PezzoFamiglia[] = [];
   const materiali = { telaio: p.costruzione.materiale, ardiglione: p.ardiglione.materiale };
   try {
-    const telaio = costruisciTelaio(lib, p, { variante, esiti });
+    const telaio = misuraPezzo('Telaio', () => costruisciTelaio(lib, p, { variante, esiti }));
     pezzi.push({
       name: 'Telaio',
       shape: telaio,
@@ -547,7 +548,7 @@ function costruisciConEsiti(lib: Lib, p: ParametriFibbia, opzioni?: OpzioniFamig
     );
   }
   try {
-    const ardiglione = costruisciArdiglione(lib, p, esiti);
+    const ardiglione = misuraPezzo('Ardiglione', () => costruisciArdiglione(lib, p, esiti));
     pezzi.push({
       name: 'Ardiglione',
       shape: ardiglione,
