@@ -67,6 +67,11 @@ export const VISTE_SINTETICHE: Readonly<
   occhiello: { az: [-30, 30], el: [35, 60], ro: [-10, 10] },
   borchia: { az: [-30, 30], el: [20, 40], ro: [-10, 10] },
   anello: { az: [-25, 25], el: [10, 30], ro: [-10, 10] },
+  // Fianco come il tacco: lo spessore del fondo si legge solo di lato.
+  fondo_semplice: { az: [60, 95], el: [3, 15], ro: [-6, 6] },
+  pendente: { az: [-20, 20], el: [60, 85], ro: [-25, 25] },
+  // Tre quarti dall'alto: la calotta del puntale mostra lunghezza e altezza insieme.
+  puntale: { az: [30, 70], el: [20, 45], ro: [-8, 8] },
 };
 
 const tra = (casuale: () => number, [a, b]: readonly [number, number]): number => a + (b - a) * casuale();

@@ -47,6 +47,21 @@ export const SET_SINTETICO: readonly VoceSet[] = [
     variante,
     seme: 601 + indice,
   })),
+  ...['platform', 'platform', 'zeppa', 'zeppa', 'cuoio_liscio'].map((variante, indice) => ({
+    famiglia: 'fondo_semplice' as const,
+    variante,
+    seme: 701 + indice,
+  })),
+  ...['disco', 'cuore', 'goccia', 'placchetta', 'disco'].map((variante, indice) => ({
+    famiglia: 'pendente' as const,
+    variante,
+    seme: 801 + indice,
+  })),
+  ...[1, 2, 3, 4, 5].map((indice) => ({
+    famiglia: 'puntale' as const,
+    variante: 'quarto_ellissoide',
+    seme: 900 + indice,
+  })),
   { famiglia: 'fibbia', variante: 'ovale', seme: 290, nota: 'fuori budget (costruzione ≈ 870 ms)' },
 ];
 
