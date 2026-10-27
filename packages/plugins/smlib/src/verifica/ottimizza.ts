@@ -34,6 +34,10 @@ import type { MascheraBinaria, MeshPiatta } from '#verifica/silhouette.js';
  *   100–200 ms invece dei 330 stimati, quindi il budget di 45 s ne contiene di più.
  * - **C, congiunta** (60): A ∪ B, solo se B ha migliorato l'obiettivo di più di 0,01.
  *
+ * Obiettivo: IoU morbido (silhouette sovracampionata 4×4 contro la copertura frazionaria della maschera, continuo sotto
+ * il pixel) + chamfer + prior dei parametri (§3.3); un prior della vista è disponibile come opzione (provato: non
+ * migliora il set sintetico).
+ *
  * Arresto anticipato: IoU sopra soglia, ristagno (miglioramento < 0,002 nelle ultime max(10, 2·(n+1)) valutazioni
  * dopo il simplesso iniziale), budget di tempo (45 s) o `AbortSignal`. Sincrono: gira nel worker dedicato della
  * verifica (`verifica.worker.ts`), dove `KernelWorker` lo interrompe terminando il worker; nel processo il segnale si
@@ -57,8 +61,9 @@ export type OpzioniOttimizzatore = {
   budgetMs?: number;
   valutazioni?: { camera?: number; parametri?: number; congiunta?: number };
   /**
-   * IoU oltre cui una fase si ferma: 0,95 per la camera (§3.4), 0,985 per parametri e congiunta (con 0,95 sui
-   * sintetici restavano 0,5–1,5 mm sulle misure; il pavimento di discretizzazione a 256² è 0,988–0,996).
+   * IoU oltre cui una fase si ferma (predefinito 0,985 per tutte; §3.4 diceva 0,95): con 0,95 sui sintetici restavano
+   * 0,5–1,5 mm sulle misure, e una fase camera saltata a 0,953 lasciava alla geometria un errore di vista da
+   * compensare; il pavimento di discretizzazione a 256² è 0,988–0,996 e la fase camera costa pochi ms.
    */
   iouArresto?: { camera?: number; parametri?: number };
   /** Ristagno: finestra di valutazioni e miglioramento minimo (predefinito 10 e 0,002). */
@@ -67,6 +72,8 @@ export type OpzioniOttimizzatore = {
   passoParametri?: number;
   /** Giri parametri → riallineamento della camera (predefinito 3). */
   giriParametri?: number;
+  /** Prior della vista stimata nell'obiettivo (predefinito no: provato, non migliora; peso = confidenza della vista). */
+  priorVista?: boolean;
   /** Ricentra (baricentro) ogni geometria candidata della fase B (predefinito sì). */
   centraParametri?: boolean;
   /** Campioni per lato di pixel della silhouette nell'obiettivo (predefinito 4: IoU morbido; 1 = binario). */
@@ -192,7 +199,7 @@ export function verificaSilhouette(lib: typeof Smlib, ingresso: IngressoVerifica
   const scadenza = inizio + (opzioni.budgetMs ?? 45_000);
   const variante = ingresso.variante;
   const valutazioniMassime = { ...VALUTAZIONI, ...opzioni.valutazioni };
-  const iouCamera = opzioni.iouArresto?.camera ?? 0.95;
+  const iouCamera = opzioni.iouArresto?.camera ?? 0.985;
   const iouParametri = opzioni.iouArresto?.parametri ?? 0.985;
   const finestra = opzioni.ristagno?.finestra ?? 10;
   const sogliaRistagno = opzioni.ristagno?.soglia ?? 0.002;
@@ -260,6 +267,27 @@ export function verificaSilhouette(lib: typeof Smlib, ingresso: IngressoVerifica
     return risultato;
   };
 
+  // Prior della vista (facoltativo, spento): come quello dei parametri (§3.3) con σ = metà dell'escursione della fase A
+  // (12,5° di azimut, 10° di elevazione, 7,5° di rollo) e peso la confidenza della vista. Provato sui tacchi sintetici,
+  // dove la camera assorbe gli errori della geometria stimata: errore totale invariato sul set (43,96 → 42,76 mm su
+  // quattro tacchi), peggiore sul tacco di fianco del test (altezza 0,15 → 1,51 mm). Resta come opzione.
+  const pesoVista = opzioni.priorVista === true ? (ingresso.vista.confidenza ?? 0.5) : 0;
+  // La vista di partenza dell'avvio in corso, poi quella dell'avvio scelto.
+  let vistaPrior: CameraVerifica | undefined;
+  const priorCamera = (camera: CameraVerifica): number => {
+    const riferimento0 = vistaPrior;
+    if (pesoVista === 0 || !riferimento0) {
+      return 0;
+    }
+    const scarto = (a: number, b: number): number => ((((a - b + 180) % 360) + 360) % 360) - 180;
+    return (
+      pesoVista *
+      ((scarto(camera.azimuth, riferimento0.azimuth) / 12.5) ** 2 +
+        ((camera.elevation - riferimento0.elevation) / 10) ** 2 +
+        (scarto(camera.rollo, riferimento0.rollo) / 7.5) ** 2)
+    );
+  };
+
   type Valutazione = { f: number; iou: number; chamferMm: number; silhouette: MascheraBinaria };
   const valuta = (stato: Stato): Valutazione => {
     const { mesh, violazioni, prior: termine } = geometria(stato.parametri);
@@ -271,14 +299,24 @@ export function verificaSilhouette(lib: typeof Smlib, ingresso: IngressoVerifica
     if (sovracampionamento <= 1) {
       const silhouette = silhouetteMesh(mesh, stato.camera, { larghezza, altezza });
       const { iou, chamferMm } = confronta(silhouette, riferimento, stato.camera.pxPerMm);
-      return { f: obiettivo({ iou, chamferMm, prior: termine, violazioni }), iou, chamferMm, silhouette };
+      return {
+        f: obiettivo({ iou, chamferMm, prior: termine + priorCamera(stato.camera), violazioni }),
+        iou,
+        chamferMm,
+        silhouette,
+      };
     }
     // Obiettivo sull'IoU morbido (coperture frazionarie), soglie e risultato sull'IoU binario del §3.3.
     const morbida = silhouetteMeshMorbida(mesh, stato.camera, { larghezza, altezza, fattore: sovracampionamento });
     const silhouette: MascheraBinaria = { larghezza, altezza, dati: morbida.dati };
     const { iou, chamferMm } = confronta(silhouette, riferimento, stato.camera.pxPerMm);
     const iouF = iouMorbido(morbida.copertura, riferimento);
-    return { f: obiettivo({ iou: iouF, chamferMm, prior: termine, violazioni }), iou, chamferMm, silhouette };
+    return {
+      f: obiettivo({ iou: iouF, chamferMm, prior: termine + priorCamera(stato.camera), violazioni }),
+      iou,
+      chamferMm,
+      silhouette,
+    };
   };
 
   const controllaTempo = (): void => {
@@ -554,6 +592,7 @@ export function verificaSilhouette(lib: typeof Smlib, ingresso: IngressoVerifica
       if (meshStima) {
         camera = allinea(camera, meshStima, confidenzaVista < 0.5);
       }
+      vistaPrior = camera;
       const variabili = variabiliCamera(camera, cameraNelPiano);
       const risultato = fase(
         'camera',
@@ -570,6 +609,7 @@ export function verificaSilhouette(lib: typeof Smlib, ingresso: IngressoVerifica
         riferimento0 = camera;
       }
     }
+    vistaPrior = riferimento0;
     // Fase B a giri: parametri con la camera ferma, poi la camera si riallinea (costa solo proiezioni) e i parametri
     // ripartono con un simplesso dimezzato. Il riavvio rimedia al simplesso che si appiattisce con 8–10 variabili.
     const dopoCamera = corrente!.valutazione.f;
