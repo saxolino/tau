@@ -30,6 +30,8 @@ const { mockCreateProject, mockSession, mockProjects } = vi.hoisted(() => ({
 vi.mock('@better-auth-ui/react', () => ({ useSession: () => mockSession() }));
 vi.mock('#lib/auth-client.js', () => ({ authClient: {} }));
 vi.mock('#hooks/use-projects.js', () => ({ useProjects: () => mockProjects() }));
+/* `useOpenCloudProject` reads the record files to check a Sinopia model's link; a Tau Cloud project has none. */
+vi.mock('#hooks/use-file-manager.js', () => ({ useFileManager: () => ({ recordFiles: {} }) }));
 vi.mock('#hooks/use-project-manager.js', () => ({
   useProjectManager: () => ({ createProject: mockCreateProject, getProjects: async () => [] }),
 }));

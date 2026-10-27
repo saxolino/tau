@@ -1,11 +1,23 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { act, render, screen, fireEvent } from '@testing-library/react';
+import { act, render, renderHook, screen } from '@testing-library/react';
 import type { ActorRefFrom } from 'xstate';
 import type { FileParameterEntry } from '@taucad/types';
 import type { cadMachine } from '#machines/cad.machine.js';
-import { ChatParameters } from '#routes/w.$workspace.$project/chat-parameters.js';
+import { ChatParameters, useProjectParametersSource } from '#routes/w.$workspace.$project/chat-parameters.js';
 
-vi.mock('#hooks/use-project-availability.js', () => ({ useProjectAvailability: () => 'ready' }));
+const availability = vi.hoisted(() => ({ current: 'ready' as 'ready' | 'downloading' }));
+vi.mock('#hooks/use-project-availability.js', () => ({ useProjectAvailability: () => availability.current }));
+/* The pane's own behaviour is proved in `piece-measures-pane.test.tsx`; here it only receives the project's source. */
+const paneSource = vi.hoisted(() => ({ current: undefined as unknown }));
+vi.mock('#routes/w.$workspace.$project/piece-measures-pane.js', () => ({
+  PieceMeasuresPane: ({ source }: { source: unknown }) => {
+    paneSource.current = source;
+    return <div data-testid='piece-measures-pane' />;
+  },
+}));
+vi.mock('#routes/w.$workspace.$project/project-sync-placeholder.js', () => ({
+  ProjectSyncPlaceholder: ({ state }: { state: string }) => <div data-testid='sync-placeholder'>{state}</div>,
+}));
 
 vi.mock('@xstate/react', () => ({
   useSelector: (actor: { getSnapshot: () => unknown } | undefined, selector: (state: unknown) => unknown) => {
@@ -133,8 +145,6 @@ const mockSetGeometryUnitParameters = vi.fn();
 const mockSwitchParameterGroup = vi.fn();
 const mockProjectSend = vi.fn();
 const mockEditorSend = vi.fn();
-const mockPaneSetExpanded = vi.fn();
-let mockScrubFinal = Promise.resolve(true);
 let mockParameterEntries = new Map<string, FileParameterEntry>();
 const mockResolveParameterEntry = vi.fn();
 const mockEmptyParameterEntries = new Map<string, FileParameterEntry>();
@@ -217,6 +227,13 @@ vi.mock('#hooks/use-project.js', () => ({
       on: vi.fn(() => ({ unsubscribe: vi.fn() })),
       send: mockProjectSend,
     },
+    // The model summary row counts the pieces of the model-interaction units; a model with none counts none.
+    modelInteractionRef: {
+      getSnapshot: vi.fn(() => ({ context: { unitOrder: [], unitsById: {} } })),
+      subscribe: vi.fn(() => ({ unsubscribe: vi.fn() })),
+      on: vi.fn(() => ({ unsubscribe: vi.fn() })),
+      send: vi.fn(),
+    },
     editorRef: {
       getSnapshot: vi.fn(() => ({ context: {} })),
       subscribe: vi.fn(() => ({ unsubscribe: vi.fn() })),
@@ -240,142 +257,6 @@ vi.mock('#hooks/use-project.js', () => ({
   useParameterSetActor: (entryPath: string) => mockParameterService.actor(entryPath),
 }));
 
-vi.mock('dockview-react', () => ({
-  PaneviewReact: ({
-    onReady,
-    components,
-    headerComponents,
-  }: {
-    onReady: (event: { api: { addPanel: (options: Record<string, unknown>) => void } }) => void;
-    components: Record<string, React.ComponentType<{ params: Record<string, unknown> }>>;
-    headerComponents?: Record<string, React.ComponentType<{ api: unknown; params: Record<string, unknown> }>>;
-  }) => {
-    type MockPanel = {
-      id: string;
-      title: string;
-      component: string;
-      headerComponent?: string;
-      headerSize: number;
-      isExpanded: boolean;
-      params: Record<string, unknown> & { entryPath: string };
-      api: { updateParameters: (newParams: Record<string, unknown>) => void };
-    };
-    const panels: MockPanel[] = [];
-    const api = {
-      panels,
-      addPanel: (options: Record<string, unknown>) => {
-        const panel = options as unknown as Omit<MockPanel, 'api'>;
-        panels.push({
-          ...panel,
-          api: {
-            updateParameters: (newParams: Record<string, unknown>) => {
-              Object.assign(panel.params, newParams);
-            },
-          },
-        });
-      },
-    };
-    onReady({ api });
-    const noop = () => undefined;
-    const mockPanelApi = {
-      isExpanded: true,
-      onDidExpansionChange: () => ({ dispose: noop }),
-      setExpanded: mockPaneSetExpanded,
-      setSize: noop,
-      updateParameters: noop,
-    };
-    return (
-      <div data-testid='paneview'>
-        {panels.map((p) => {
-          const Component = components[p.component];
-          const HeaderComponent = p.headerComponent && headerComponents?.[p.headerComponent];
-          return (
-            <div
-              key={p.id}
-              data-testid={`param-pane-${p.id}`}
-              data-expanded={p.isExpanded}
-              data-header-size={p.headerSize}
-            >
-              {HeaderComponent ? <HeaderComponent api={mockPanelApi} params={p.params} /> : p.params.entryPath}
-              {Component ? <Component params={p.params} /> : null}
-            </div>
-          );
-        })}
-      </div>
-    );
-  },
-}));
-
-vi.mock('@taucad/viewer/parameters/parameters', () => ({
-  Parameters: ({
-    parameters,
-    className,
-    enableSearch,
-    filterTerm,
-    onParametersChange,
-    units,
-    parameterEdit,
-  }: {
-    parameters: Record<string, unknown>;
-    className?: string;
-    enableSearch?: boolean;
-    filterTerm?: string;
-    onParametersChange: (params: Record<string, unknown>) => void;
-    units: { length: { displaySymbol: string } };
-    parameterEdit?: {
-      kind: 'authoritative';
-      commit: {
-        scrub?: (field: { pointer: string; value: string }) => void;
-        endScrub?: (final?: Promise<boolean>) => Promise<void>;
-      };
-    };
-  }) => (
-    <div
-      data-testid='parameters-component'
-      data-params={JSON.stringify(parameters)}
-      data-class-name={className}
-      data-enable-search={String(enableSearch)}
-      data-filter-term={filterTerm}
-      data-display-symbol={units.length.displaySymbol}
-    >
-      <button
-        type='button'
-        data-testid='change-params'
-        onClick={() => {
-          onParametersChange({ width: 42 });
-        }}
-      >
-        Change
-      </button>
-      <button
-        type='button'
-        data-testid='scrub-param'
-        onClick={() => parameterEdit?.commit.scrub?.({ pointer: '/width', value: '21 in' })}
-      >
-        Scrub
-      </button>
-      <button
-        type='button'
-        data-testid='release-scrub'
-        onClick={() => {
-          void parameterEdit?.commit.endScrub?.(mockScrubFinal);
-        }}
-      >
-        Release scrub
-      </button>
-      <button
-        type='button'
-        data-testid='cancel-scrub'
-        onClick={() => {
-          void parameterEdit?.commit.endScrub?.();
-        }}
-      >
-        Cancel scrub
-      </button>
-    </div>
-  ),
-}));
-
 vi.mock('@taucad/ui/components/keyboard', () => ({
   useKeybinding: () => ({ formattedKeyCombination: 'Ctrl+X' }),
 }));
@@ -388,41 +269,12 @@ vi.mock('#components/ui/floating-panel.js', () => ({
   ),
   FloatingPanelContentHeader: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   FloatingPanelContentHeaderActions: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  FloatingPanelContentTitle: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  FloatingPanelContentTitle: ({ children }: { children: React.ReactNode }) => <h2>{children}</h2>,
   FloatingPanelClose: () => <button type='button'>Close</button>,
-  FloatingPanelMenuButton: ({
-    children,
-    onClick,
-    ...rest
-  }: {
-    children: React.ReactNode;
-    onClick?: () => void;
-    'aria-label'?: string;
-  }) => (
-    <button type='button' aria-label={rest['aria-label']} onClick={onClick}>
-      {children}
-    </button>
-  ),
-  FloatingPanelButtonGroup: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
 
 vi.mock('@taucad/ui/components/key-shortcut', () => ({
   KeyShortcut: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
-}));
-
-vi.mock('@taucad/utils/schema', () => ({
-  hasJsonSchemaObjectProperties: (schema: unknown) =>
-    Boolean(schema && typeof schema === 'object' && 'properties' in schema),
-}));
-
-vi.mock('@taucad/ui/components/tooltip', () => ({
-  Tooltip: ({ children }: { children: React.ReactNode }): React.ReactNode => children,
-  TooltipContent: () => null,
-  TooltipTrigger: ({ children }: { children: React.ReactNode }): React.ReactNode => children,
-}));
-
-vi.mock('@taucad/ui/components/combobox-responsive', () => ({
-  ComboBoxResponsive: ({ children }: { children: React.ReactNode }): React.ReactNode => children,
 }));
 
 vi.mock('#routes/w.$workspace.$project/use-chat-interface-state.js', () => ({
@@ -430,201 +282,135 @@ vi.mock('#routes/w.$workspace.$project/use-chat-interface-state.js', () => ({
     savedState: {},
     connectApi: vi.fn(),
   }),
-  getInitialPanelOptions: (
-    _saved: Record<string, unknown>,
-    _panelId: string,
-    defaults: { isExpanded: boolean; size?: number },
-  ) => defaults,
 }));
 
 vi.mock('#components/files/export-selector.js', () => ({
   ExportSelector: () => <div data-testid='export-selector'>ExportSelector</div>,
 }));
 
-vi.mock('@taucad/ui/components/context-menu', () => ({
-  ContextMenu: ({ children }: { children: React.ReactNode }) => <div data-testid='context-menu'>{children}</div>,
-  ContextMenuTrigger: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
-  ContextMenuContent: ({ children }: { children: React.ReactNode }) => (
-    <div data-testid='context-menu-content'>{children}</div>
-  ),
-  ContextMenuItem: ({
-    children,
-    onSelect,
-    disabled: isDisabled,
-  }: {
-    children: React.ReactNode;
-    onSelect?: () => void;
-    // oxlint-disable-next-line react-js/boolean-prop-naming -- mocking shadcn ContextMenuItem prop API
-    disabled?: boolean;
-  }) => (
-    <button
-      type='button'
-      data-testid='context-menu-item'
-      data-disabled={isDisabled ? 'true' : undefined}
-      disabled={isDisabled}
-      onClick={() => {
-        if (!isDisabled) {
-          onSelect?.();
-        }
-      }}
-    >
-      {children}
-    </button>
-  ),
-  ContextMenuSeparator: () => <hr />,
-  ContextMenuSub: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  ContextMenuSubContent: ({ children }: { children: React.ReactNode }) => (
-    <div data-testid='context-menu-sub-content'>{children}</div>
-  ),
-  ContextMenuSubTrigger: ({ children }: { children: React.ReactNode }) => (
-    <button type='button' data-testid='context-menu-sub-trigger'>
-      {children}
-    </button>
-  ),
-}));
+type ProjectSource = ReturnType<typeof useProjectParametersSource>;
 
-vi.mock('@taucad/ui/components/dropdown-menu', () => ({
-  DropdownMenu: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  DropdownMenuTrigger: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
-  DropdownMenuContent: ({ children }: { children: React.ReactNode }) => (
-    <div data-testid='dropdown-menu-content'>{children}</div>
-  ),
-  DropdownMenuItem: ({
-    children,
-    onSelect,
-    disabled: isDisabled,
-  }: {
-    children: React.ReactNode;
-    onSelect?: () => void;
-    // oxlint-disable-next-line react-js/boolean-prop-naming -- mocking shadcn DropdownMenuItem prop API
-    disabled?: boolean;
-  }) => (
-    <button
-      type='button'
-      data-testid='dropdown-menu-item'
-      data-disabled={isDisabled ? 'true' : undefined}
-      disabled={isDisabled}
-      onClick={() => {
-        if (!isDisabled) {
-          onSelect?.();
-        }
-      }}
-    >
-      {children}
-    </button>
-  ),
-  DropdownMenuSeparator: () => <hr />,
-  DropdownMenuSub: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  DropdownMenuSubContent: ({ children }: { children: React.ReactNode }) => (
-    <div data-testid='dropdown-menu-sub-content'>{children}</div>
-  ),
-  DropdownMenuSubTrigger: ({ children }: { children: React.ReactNode }) => (
-    <button type='button' data-testid='dropdown-menu-sub-trigger'>
-      {children}
-    </button>
-  ),
-}));
+/** The project's Parameters source, as the measures pane receives it. */
+const projectSource = (): ProjectSource => renderHook(() => useProjectParametersSource()).result.current;
+
+const resetProject = (): void => {
+  mockGeometryUnits = new Map<string, ActorRefFrom<typeof cadMachine>>();
+  mockSetParameters.mockClear();
+  mockSetGeometryUnitParameters.mockClear();
+  mockSwitchParameterGroup.mockClear();
+  mockProjectSend.mockClear();
+  mockEditorSend.mockClear();
+  mockResolveParameterEntry.mockClear();
+  mockParameterState = 'ready';
+  mockParameterActorSend.mockClear();
+  availability.current = 'ready';
+  paneSource.current = undefined;
+  vi.mocked(mockCadRef.send).mockClear();
+  mockParameterEntries = new Map<string, FileParameterEntry>([
+    ['main.ts', { activeGroup: 'default', groups: { default: { values: { width: 15 } } } }],
+  ]);
+};
 
 describe('ChatParameters', () => {
-  beforeEach(() => {
-    mockGeometryUnits = new Map<string, ActorRefFrom<typeof cadMachine>>();
-    mockSetParameters.mockClear();
-    mockSetGeometryUnitParameters.mockClear();
-    mockSwitchParameterGroup.mockClear();
-    mockPaneSetExpanded.mockClear();
-    mockScrubFinal = Promise.resolve(true);
-    mockParameterState = 'ready';
-    mockParameterActorSend.mockClear();
-    vi.mocked(mockCadRef.send).mockClear();
-    mockParameterEntries = new Map<string, FileParameterEntry>([
-      [
-        'main.ts',
-        {
-          activeGroup: 'default',
-          groups: { default: { values: { width: 15 } } },
-        },
-      ],
-    ]);
-  });
+  beforeEach(resetProject);
 
-  it('should render single geometry unit inside PaneviewReact', async () => {
+  it('titles the panel and hands the measures pane the project source', () => {
     mockGeometryUnits.set('main.ts', mockCadRef);
 
     render(<ChatParameters isExpanded setIsExpanded={vi.fn()} />);
 
-    expect(screen.getByTestId('paneview')).toBeInTheDocument();
-    expect(screen.getByTestId('param-pane-main.ts')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Pieces and measures' })).toBeInTheDocument();
+    expect(screen.getByTestId('piece-measures-pane')).toBeInTheDocument();
+    expect(paneSource.current).toEqual(expect.objectContaining({ useEntry: expect.any(Function) }));
   });
 
-  it('renders PaneviewReact for multiple geometry units', async () => {
-    mockGeometryUnits.set('main.ts', mockCadRef);
-    mockGeometryUnits.set('helper.ts', mockCadRef2);
+  it('shows the sync placeholder instead of the pane while the project files are not on this device', () => {
+    availability.current = 'downloading';
 
     render(<ChatParameters isExpanded setIsExpanded={vi.fn()} />);
 
-    expect(screen.getByTestId('paneview')).toBeInTheDocument();
+    expect(screen.getByTestId('sync-placeholder')).toHaveTextContent('downloading');
+    expect(screen.queryByTestId('piece-measures-pane')).not.toBeInTheDocument();
+  });
+});
+
+describe('project parameters source', () => {
+  beforeEach(resetProject);
+
+  it('names the main entry «Model» and any other entry by its file name without the extension', () => {
+    const source = projectSource();
+
+    expect(source.entryTitle?.('main.ts')).toBe('Model');
+    expect(source.entryTitle?.('lib/helper.scad')).toBe('helper');
   });
 
-  it('passes the shared display unit while each manifest retains its native unit', async () => {
+  it('lists every admitted geometry unit and none when the project has no unit', () => {
     mockGeometryUnits.set('main.ts', mockCadRef);
     mockGeometryUnits.set('helper.ts', mockCadRef2);
+    const source = projectSource();
+    expect(renderHook(() => source.useEntryPaths?.()).result.current).toEqual(['main.ts', 'helper.ts']);
 
-    render(<ChatParameters isExpanded setIsExpanded={vi.fn()} />);
-
-    const parameters = screen.getAllByTestId('parameters-component');
-    expect(parameters[0]).toHaveAttribute('data-display-symbol', 'mm');
-    expect(parameters[1]).toHaveAttribute('data-display-symbol', 'mm');
+    mockGeometryUnits = new Map();
+    expect(renderHook(() => source.useEntryPaths?.()).result.current).toEqual([]);
   });
 
-  it('places mainFile pane first', async () => {
+  it('reads the entry from the authority actor active group and the manifest from the unit', () => {
+    mockGeometryUnits.set('main.ts', mockCadRef);
+    const source = projectSource();
+
+    const { result } = renderHook(() => source.useEntry('main.ts'));
+
+    expect(result.current.entry?.groups['default']?.values).toEqual({ width: 15 });
+    expect(result.current.manifest?.defaults).toEqual({ width: 10, height: 20 });
+    expect(result.current.failure).toBeUndefined();
+    // The authority already holds this manifest revision, so nothing is resolved again.
+    expect(mockResolveParameterEntry).not.toHaveBeenCalled();
+  });
+
+  it('resolves the authority entry again when the unit republishes a different manifest revision', () => {
     mockGeometryUnits.set('helper.ts', mockCadRef2);
-    mockGeometryUnits.set('main.ts', mockCadRef);
+    const source = projectSource();
 
-    render(<ChatParameters isExpanded setIsExpanded={vi.fn()} />);
+    renderHook(() => source.useEntry('helper.ts'));
 
-    const panes = screen.getAllByTestId(/^param-pane-/);
-    expect(panes[0]!.dataset['testid']).toBe('param-pane-main.ts');
+    expect(mockResolveParameterEntry).toHaveBeenCalledWith(
+      'helper.ts',
+      expect.objectContaining({ revision: 'manifest-2' }),
+    );
   });
 
-  it('expands mainFile pane by default', async () => {
-    mockGeometryUnits.set('helper.ts', mockCadRef2);
+  it('reads an empty record when the entry has none', () => {
+    mockParameterEntries = new Map();
     mockGeometryUnits.set('main.ts', mockCadRef);
+    const source = projectSource();
 
-    render(<ChatParameters isExpanded setIsExpanded={vi.fn()} />);
+    const { result } = renderHook(() => source.useEntry('main.ts'));
 
-    const mainPane = screen.getByTestId('param-pane-main.ts');
-    expect(mainPane.dataset['expanded']).toBe('true');
-
-    const helperPane = screen.getByTestId('param-pane-helper.ts');
-    expect(helperPane.dataset['expanded']).toBe('false');
+    expect(result.current.entry?.groups['default']?.values).toEqual({});
   });
 
-  it('reads parameter values from the authority actor active group', async () => {
-    mockGeometryUnits.set('main.ts', mockCadRef);
-
-    render(<ChatParameters isExpanded setIsExpanded={vi.fn()} />);
-
-    const paramsComponent = screen.getByTestId('parameters-component');
-    const params: unknown = JSON.parse(paramsComponent.dataset['params']!);
-    expect(params).toEqual({ width: 15 });
-  });
-
-  it('should offer Retry while the write outcome is uncertain', async () => {
+  it('reports the authority failure and retries by resolving the entry again while the write outcome is uncertain', () => {
     mockParameterState = 'uncertain';
     mockGeometryUnits.set('main.ts', mockCadRef);
+    const source = projectSource();
 
-    render(<ChatParameters isExpanded setIsExpanded={vi.fn()} />);
+    const { result } = renderHook(() => source.useEntry('main.ts'));
+    expect(result.current.failure).toEqual({
+      code: 'WRITE_UNCERTAIN',
+      message: 'The last write could not be confirmed.',
+    });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    source.retry?.('main.ts', result.current.manifest);
     expect(mockParameterActorSend).toHaveBeenCalledWith({ type: 'resolve', resolution: {} });
   });
 
-  it('calls setGeometryUnitParameters when parameters change', async () => {
+  it('replaces the active group values on the unit', async () => {
     mockGeometryUnits.set('main.ts', mockCadRef);
+    const source = projectSource();
+    const { result } = renderHook(() => source.useEntry('main.ts'));
 
-    render(<ChatParameters isExpanded setIsExpanded={vi.fn()} />);
+    await source.replaceValues('main.ts', result.current.manifest!, { width: 42 });
 
-    fireEvent.click(screen.getByTestId('change-params'));
     expect(mockSetGeometryUnitParameters).toHaveBeenCalledWith(
       'main.ts',
       expect.objectContaining({ defaults: { width: 10, height: 20 } }),
@@ -632,38 +418,62 @@ describe('ChatParameters', () => {
     );
   });
 
-  it('should send only the dragged source-unit field through the scrub lane', () => {
+  it('forwards the group operations, shows the entry in a viewer and closes it, but never opens the source', () => {
+    const source = projectSource();
+    const manifest = mockCadRef.getSnapshot().context.parameterManifest!;
+
+    source.groups?.select('main.ts', manifest, 'preset1');
+    expect(mockSwitchParameterGroup).toHaveBeenCalledWith('main.ts', manifest, 'preset1');
+
+    source.openInViewer?.('main.ts');
+    expect(mockProjectSend).toHaveBeenCalledWith({ type: 'openInViewer', entryPath: 'main.ts' });
+    source.closeEntry?.('helper.ts');
+    expect(mockProjectSend).toHaveBeenCalledWith({ type: 'destroyGeometryUnit', entryPath: 'helper.ts' });
+
+    // SinopiaCAD: Misure never leads to the code; developers open it from the command palette.
+    expect(source.openInEditor).toBeUndefined();
+    expect(mockEditorSend).not.toHaveBeenCalled();
+  });
+});
+
+describe('project parameters scrub lane', () => {
+  beforeEach(resetProject);
+
+  const field = { pointer: '/width', value: '21 in' } as const;
+  const isScrubSent = (unit: ActorRefFrom<typeof cadMachine>): boolean =>
+    vi.mocked(unit.send).mock.calls.some(([event]) => event.type === 'scrubParameters');
+  const withImmediateFrames = (): (() => void) => {
     const requestFrame = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((callback) => {
       callback(0);
       return 1;
     });
+    return () => {
+      requestFrame.mockRestore();
+    };
+  };
+
+  it('should send only the dragged source-unit field through the scrub lane', () => {
+    const restore = withImmediateFrames();
     mockGeometryUnits.set('main.ts', mockCadRef);
+    const source = projectSource();
 
-    render(<ChatParameters isExpanded setIsExpanded={vi.fn()} />);
-    fireEvent.click(screen.getByTestId('scrub-param'));
+    const { result } = renderHook(() => source.useScrub?.('main.ts'));
+    result.current?.scrub?.(field);
 
-    expect(mockCadRef.send).toHaveBeenCalledWith({
-      type: 'scrubParameters',
-      parameters: { width: '21 in' },
-    });
-    requestFrame.mockRestore();
+    expect(mockCadRef.send).toHaveBeenCalledWith({ type: 'scrubParameters', parameters: { width: '21 in' } });
+    restore();
   });
 
   it('should keep a kernel that cannot cancel off the drag lane until its last render fits the budget', () => {
-    const requestFrame = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((callback) => {
-      callback(0);
-      return 1;
-    });
+    const restore = withImmediateFrames();
     let now = 0;
     const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
     try {
       const unit = createUncancellableCadRef();
       mockGeometryUnits.set('main.ts', unit.ref);
-      const isScrubSent = () => vi.mocked(unit.ref.send).mock.calls.some(([event]) => event.type === 'scrubParameters');
-
-      render(<ChatParameters isExpanded setIsExpanded={vi.fn()} />);
-      fireEvent.click(screen.getByTestId('scrub-param'));
-      expect(isScrubSent()).toBe(false);
+      const source = projectSource();
+      const { result } = renderHook(() => source.useScrub?.('main.ts'));
+      expect(result.current?.scrub).toBeUndefined();
 
       act(() => {
         now = 1000;
@@ -671,8 +481,8 @@ describe('ChatParameters', () => {
         now = 1400;
         unit.enter('idle');
       });
-      fireEvent.click(screen.getByTestId('scrub-param'));
-      expect(isScrubSent()).toBe(false);
+      expect(result.current?.scrub).toBeUndefined();
+      expect(isScrubSent(unit.ref)).toBe(false);
 
       act(() => {
         now = 2000;
@@ -680,26 +490,23 @@ describe('ChatParameters', () => {
         now = 2040;
         unit.enter('idle');
       });
-      fireEvent.click(screen.getByTestId('scrub-param'));
+      result.current?.scrub?.(field);
       expect(unit.ref.send).toHaveBeenCalledWith({ type: 'scrubParameters', parameters: { width: '21 in' } });
     } finally {
       clock.mockRestore();
-      requestFrame.mockRestore();
+      restore();
     }
   });
 
   it('should time from the first rendering status when the same request is re-emitted', () => {
-    const requestFrame = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((callback) => {
-      callback(0);
-      return 1;
-    });
+    const restore = withImmediateFrames();
     let now = 0;
     const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
     try {
       const unit = createUncancellableCadRef();
       mockGeometryUnits.set('main.ts', unit.ref);
-      const isScrubSent = () => vi.mocked(unit.ref.send).mock.calls.some(([event]) => event.type === 'scrubParameters');
-      render(<ChatParameters isExpanded setIsExpanded={vi.fn()} />);
+      const source = projectSource();
+      const { result } = renderHook(() => source.useScrub?.('main.ts'));
       act(() => {
         now = 1000;
         unit.enter('rendering');
@@ -708,33 +515,30 @@ describe('ChatParameters', () => {
         now = 1300;
         unit.enter('idle');
       });
-      fireEvent.click(screen.getByTestId('scrub-param'));
-      expect(isScrubSent()).toBe(false);
+      expect(result.current?.scrub).toBeUndefined();
       act(() => {
         now = 2000;
         unit.enter('rendering');
         now = 2040;
         unit.enter('idle');
       });
-      fireEvent.click(screen.getByTestId('scrub-param'));
-      expect(isScrubSent()).toBe(true);
+      result.current?.scrub?.(field);
+      expect(isScrubSent(unit.ref)).toBe(true);
     } finally {
       clock.mockRestore();
-      requestFrame.mockRestore();
+      restore();
     }
   });
 
   it('should time the replacement when a render request is superseded', () => {
-    const requestFrame = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((callback) => {
-      callback(0);
-      return 1;
-    });
+    const restore = withImmediateFrames();
     let now = 0;
     const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
     try {
       const unit = createUncancellableCadRef();
       mockGeometryUnits.set('main.ts', unit.ref);
-      render(<ChatParameters isExpanded setIsExpanded={vi.fn()} />);
+      const source = projectSource();
+      const { result } = renderHook(() => source.useScrub?.('main.ts'));
       act(() => {
         now = 1000;
         unit.enter('rendering');
@@ -743,28 +547,25 @@ describe('ChatParameters', () => {
         now = 1440;
         unit.enter('idle');
       });
-      fireEvent.click(screen.getByTestId('scrub-param'));
+      result.current?.scrub?.(field);
       expect(unit.ref.send).toHaveBeenCalledWith({ type: 'scrubParameters', parameters: { width: '21 in' } });
     } finally {
       clock.mockRestore();
-      requestFrame.mockRestore();
+      restore();
     }
   });
 
   it('should not restore the old record when a cancelled second gesture ends while the first final is committing', async () => {
-    const requestFrame = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((callback) => {
-      callback(0);
-      return 1;
-    });
+    const restore = withImmediateFrames();
     try {
       const final = Promise.withResolvers<boolean>();
-      mockScrubFinal = final.promise;
       mockGeometryUnits.set('main.ts', mockCadRef);
+      const source = projectSource();
+      const { result } = renderHook(() => source.useScrub?.('main.ts'));
 
-      render(<ChatParameters isExpanded setIsExpanded={vi.fn()} />);
-      fireEvent.click(screen.getByTestId('scrub-param'));
-      fireEvent.click(screen.getByTestId('release-scrub'));
-      fireEvent.click(screen.getByTestId('cancel-scrub'));
+      result.current?.scrub?.(field);
+      void result.current?.endScrub?.(final.promise);
+      void result.current?.endScrub?.();
 
       expect(mockCadRef.send).not.toHaveBeenCalledWith({ type: 'restoreParameters' });
       await act(async () => {
@@ -773,23 +574,20 @@ describe('ChatParameters', () => {
       });
       expect(mockCadRef.send).not.toHaveBeenCalledWith({ type: 'restoreParameters' });
     } finally {
-      requestFrame.mockRestore();
+      restore();
     }
   });
 
   it('should restore the committed record when the scrub final is refused', async () => {
-    const requestFrame = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((callback) => {
-      callback(0);
-      return 1;
-    });
+    const restore = withImmediateFrames();
     try {
       const final = Promise.withResolvers<boolean>();
-      mockScrubFinal = final.promise;
       mockGeometryUnits.set('main.ts', mockCadRef);
+      const source = projectSource();
+      const { result } = renderHook(() => source.useScrub?.('main.ts'));
 
-      render(<ChatParameters isExpanded setIsExpanded={vi.fn()} />);
-      fireEvent.click(screen.getByTestId('scrub-param'));
-      fireEvent.click(screen.getByTestId('release-scrub'));
+      result.current?.scrub?.(field);
+      void result.current?.endScrub?.(final.promise);
       expect(mockCadRef.send).not.toHaveBeenCalledWith({ type: 'restoreParameters' });
 
       await act(async () => {
@@ -798,252 +596,7 @@ describe('ChatParameters', () => {
       });
       expect(mockCadRef.send).toHaveBeenCalledWith({ type: 'restoreParameters' });
     } finally {
-      requestFrame.mockRestore();
+      restore();
     }
-  });
-
-  it('shows empty message when no geometry units', async () => {
-    render(<ChatParameters isExpanded setIsExpanded={vi.fn()} />);
-
-    expect(screen.getByText('No geometry units.')).toBeInTheDocument();
-  });
-
-  it('returns empty params when entry is missing', async () => {
-    mockParameterEntries = new Map();
-    mockGeometryUnits.set('main.ts', mockCadRef);
-
-    render(<ChatParameters isExpanded setIsExpanded={vi.fn()} />);
-
-    const paramsComponent = screen.getByTestId('parameters-component');
-    const params: unknown = JSON.parse(paramsComponent.dataset['params']!);
-    expect(params).toEqual({});
-  });
-});
-
-describe('ParameterGroupSelector', () => {
-  beforeEach(() => {
-    mockGeometryUnits = new Map<string, ActorRefFrom<typeof cadMachine>>();
-    mockSwitchParameterGroup.mockClear();
-    mockParameterEntries = new Map<string, FileParameterEntry>([
-      [
-        'main.ts',
-        {
-          activeGroup: 'default',
-          groups: {
-            default: { values: {} },
-            preset1: { values: { width: 50 } },
-          },
-        },
-      ],
-    ]);
-  });
-
-  it('renders group selector with multiple groups in multi-geometry-unit paneview header', async () => {
-    mockGeometryUnits.set('main.ts', mockCadRef);
-    mockGeometryUnits.set('helper.ts', mockCadRef2);
-    mockParameterEntries = new Map<string, FileParameterEntry>([
-      [
-        'main.ts',
-        {
-          activeGroup: 'default',
-          groups: {
-            default: { values: {} },
-            preset1: { values: { width: 50 } },
-          },
-        },
-      ],
-      [
-        'helper.ts',
-        {
-          activeGroup: 'default',
-          groups: { default: { values: {} } },
-        },
-      ],
-    ]);
-
-    render(<ChatParameters isExpanded setIsExpanded={vi.fn()} />);
-
-    expect(screen.getByTestId('paneview')).toBeInTheDocument();
-  });
-
-  it('renders the group selector for every geometry unit, even those without a parameter entry', async () => {
-    // Two geometry units, but only main.ts has an entry — helper.ts has none, mirroring the
-    // real-world case where lib/* geometry units have not had parameters set yet.
-    mockGeometryUnits.set('main.ts', mockCadRef);
-    mockGeometryUnits.set('helper.ts', mockCadRef2);
-    mockParameterEntries = new Map<string, FileParameterEntry>([
-      [
-        'main.ts',
-        {
-          activeGroup: 'default',
-          groups: { default: { values: {} } },
-        },
-      ],
-    ]);
-
-    render(<ChatParameters isExpanded setIsExpanded={vi.fn()} />);
-
-    // The active group ('default') text appears once per pane via the
-    // selector's trigger — including for the geometry unit with no entry, which
-    // previously rendered nothing. Two panes -> two 'default' triggers.
-    const groupTriggers = screen.getAllByLabelText('Parameter groups');
-    expect(groupTriggers).toHaveLength(2);
-  });
-});
-
-describe('ParametersPanelHeader context menu', () => {
-  beforeEach(() => {
-    mockGeometryUnits = new Map<string, ActorRefFrom<typeof cadMachine>>();
-    mockProjectSend.mockClear();
-    mockEditorSend.mockClear();
-    mockParameterEntries = new Map<string, FileParameterEntry>([
-      [
-        'main.ts',
-        {
-          activeGroup: 'default',
-          groups: { default: { values: {} } },
-        },
-      ],
-    ]);
-  });
-
-  it('renders Quick Export and Close renderer items in dropdown menu', async () => {
-    mockGeometryUnits.set('main.ts', mockCadRef);
-    mockGeometryUnits.set('helper.ts', mockCadRef2);
-
-    render(<ChatParameters isExpanded setIsExpanded={vi.fn()} />);
-
-    const dropdownContents = screen.getAllByTestId('dropdown-menu-content');
-    expect(dropdownContents.length).toBeGreaterThan(0);
-
-    const closeItems = screen.getAllByText('Close renderer');
-    expect(closeItems.length).toBeGreaterThan(0);
-
-    const quickExportLabels = screen.getAllByText('Quick export');
-    expect(quickExportLabels.length).toBeGreaterThan(0);
-  });
-
-  it('renders the same items in the right-click context menu', async () => {
-    mockGeometryUnits.set('main.ts', mockCadRef);
-    mockGeometryUnits.set('helper.ts', mockCadRef2);
-
-    render(<ChatParameters isExpanded setIsExpanded={vi.fn()} />);
-
-    expect(screen.getAllByTestId('context-menu-content').length).toBeGreaterThan(0);
-    expect(screen.getAllByTestId('context-menu-sub-content').length).toBeGreaterThan(0);
-  });
-
-  it('dispatches destroyGeometryUnit when "Close" is selected', async () => {
-    mockGeometryUnits.set('main.ts', mockCadRef);
-    mockGeometryUnits.set('helper.ts', mockCadRef2);
-
-    render(<ChatParameters isExpanded setIsExpanded={vi.fn()} />);
-
-    // Use the dropdown-menu close button for the helper pane (second occurrence)
-    const dropdownItems = screen.getAllByTestId('dropdown-menu-item');
-    const helperCloseItem = dropdownItems.find(
-      (node) => String(node.textContent).includes('Close renderer') && node.dataset['disabled'] !== 'true',
-    );
-    expect(helperCloseItem).toBeDefined();
-    fireEvent.click(helperCloseItem!);
-
-    expect(mockProjectSend).toHaveBeenCalledWith(expect.objectContaining({ type: 'destroyGeometryUnit' }));
-  });
-
-  it('disables Close renderer when only one geometry unit remains', async () => {
-    mockGeometryUnits.set('main.ts', mockCadRef);
-
-    render(<ChatParameters isExpanded setIsExpanded={vi.fn()} />);
-
-    const closeItems = screen
-      .getAllByTestId('dropdown-menu-item')
-      .filter((node) => String(node.textContent).includes('Close renderer'));
-    expect(closeItems.length).toBeGreaterThan(0);
-    for (const item of closeItems) {
-      expect(item.dataset['disabled']).toBe('true');
-    }
-  });
-
-  it('does not dispatch destroyGeometryUnit when Close is disabled', async () => {
-    mockGeometryUnits.set('main.ts', mockCadRef);
-
-    render(<ChatParameters isExpanded setIsExpanded={vi.fn()} />);
-
-    const closeItem = screen
-      .getAllByTestId('dropdown-menu-item')
-      .find((node) => String(node.textContent).includes('Close renderer'));
-    expect(closeItem).toBeDefined();
-    fireEvent.click(closeItem!);
-
-    expect(mockProjectSend).not.toHaveBeenCalled();
-  });
-
-  it('renders an "Open in viewer" item in both menus', async () => {
-    mockGeometryUnits.set('main.ts', mockCadRef);
-    mockGeometryUnits.set('helper.ts', mockCadRef2);
-
-    render(<ChatParameters isExpanded setIsExpanded={vi.fn()} />);
-
-    const dropdownOpenItems = screen
-      .getAllByTestId('dropdown-menu-item')
-      .filter((node) => String(node.textContent).includes('Open in viewer'));
-    expect(dropdownOpenItems.length).toBeGreaterThan(0);
-
-    const contextOpenItems = screen
-      .getAllByTestId('context-menu-item')
-      .filter((node) => String(node.textContent).includes('Open in viewer'));
-    expect(contextOpenItems.length).toBeGreaterThan(0);
-  });
-
-  it('dispatches openInViewer when "Open in viewer" is selected from the dropdown', async () => {
-    mockGeometryUnits.set('main.ts', mockCadRef);
-    mockGeometryUnits.set('helper.ts', mockCadRef2);
-
-    render(<ChatParameters isExpanded setIsExpanded={vi.fn()} />);
-
-    const helperOpenItem = screen.getAllByTestId('dropdown-menu-item').find(
-      (node) =>
-        String(node.textContent).includes('Open in viewer') &&
-        // The dropdown is per-pane, so target the helper pane's instance.
-        // We assume the second occurrence corresponds to helper.ts (paneview
-        // mock preserves panel order).
-        true,
-    );
-    expect(helperOpenItem).toBeDefined();
-    fireEvent.click(helperOpenItem!);
-
-    expect(mockProjectSend).toHaveBeenCalledWith(expect.objectContaining({ type: 'openInViewer' }));
-  });
-
-  it('dispatches openInViewer when "Open in viewer" is selected from the context menu', async () => {
-    mockGeometryUnits.set('main.ts', mockCadRef);
-    mockGeometryUnits.set('helper.ts', mockCadRef2);
-
-    render(<ChatParameters isExpanded setIsExpanded={vi.fn()} />);
-
-    const contextOpenItem = screen
-      .getAllByTestId('context-menu-item')
-      .find((node) => String(node.textContent).includes('Open in viewer'));
-    expect(contextOpenItem).toBeDefined();
-    fireEvent.click(contextOpenItem!);
-
-    expect(mockProjectSend).toHaveBeenCalledWith(expect.objectContaining({ type: 'openInViewer' }));
-  });
-
-  // SinopiaCAD: Misure never leads to the code; developers open it from the command palette.
-  it('offers no "Open in editor" item in either menu and never opens the source', async () => {
-    mockGeometryUnits.set('main.ts', mockCadRef);
-    mockGeometryUnits.set('helper.ts', mockCadRef2);
-
-    render(<ChatParameters isExpanded setIsExpanded={vi.fn()} />);
-
-    const editorItems = [
-      ...screen.getAllByTestId('dropdown-menu-item'),
-      ...screen.getAllByTestId('context-menu-item'),
-    ].filter((node) => String(node.textContent).includes('Open in editor'));
-    expect(editorItems).toEqual([]);
-    // The rest of the entry menu stays.
-    expect(screen.getAllByText('Close renderer').length).toBeGreaterThan(0);
-    expect(mockEditorSend).not.toHaveBeenCalled();
   });
 });

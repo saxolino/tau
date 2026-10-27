@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 /**
- * B-27, D-UI-16: a phone loads the mobile shell and the panel it shows, not the
- * desktop shell (dockview workbench) or every other tab's panel.
+ * B-27, D-UI-16: SinopiaCAD has one workspace shell for computers and tablets, loaded on demand; a phone loads
+ * neither that shell nor any panel and gets the supported-devices notice (`chat-interface.tsx`). The separate
+ * mobile shell with one tab at a time is gone, so no panel is loaded until the desktop shell itself mounts them.
  */
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
@@ -15,7 +16,8 @@ const panel = vi.hoisted(() => (name: string, label: string) => () => {
   return { [name]: () => label };
 });
 
-vi.mock('@taucad/ui/hooks/use-mobile', () => ({ useIsMobile: () => true }));
+const viewport = vi.hoisted(() => ({ current: 'phone' as 'phone' | 'tablet' | 'desktop' }));
+vi.mock('#hooks/use-cad-viewport.js', () => ({ useCadViewport: () => viewport.current }));
 vi.mock('#providers/part-thumbnail-provider.js', () => ({
   PartThumbnailProvider: ({ children }: { children: React.ReactNode }): React.ReactNode => children,
 }));
@@ -57,10 +59,21 @@ vi.mock('#routes/w.$workspace.$project/chat-interface-nav.js', () => ({ ChatInte
 vi.mock('#routes/w.$workspace.$project/workspace-skeleton.js', () => ({ WorkspaceSkeleton: () => null }));
 
 describe('ChatInterface code splitting (B-27, D-UI-16)', () => {
-  it('loads only the mobile shell and the open tab on a phone', async () => {
+  /* `loaded` only grows (a module factory runs once), so the phone case runs first and proves nothing was imported. */
+  it('loads neither the workspace shell nor any panel on a phone', async () => {
+    viewport.current = 'phone';
     render(<ChatInterface />);
 
-    expect(await screen.findByText('Chat history')).toBeInTheDocument();
-    expect([...loaded]).toEqual(['ChatHistory']);
+    expect(await screen.findByText('SinopiaCAD works on computers and tablets from 7 inches up.')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Open Sinopia' })).toHaveAttribute('href', 'https://sinopialab.com');
+    expect([...loaded]).toEqual([]);
+  });
+
+  it.each(['tablet', 'desktop'] as const)('loads only the workspace shell, not its panels, on a %s', async (kind) => {
+    viewport.current = kind;
+    render(<ChatInterface />);
+
+    expect(await screen.findByText('Desktop shell')).toBeInTheDocument();
+    expect([...loaded]).toEqual(['ChatInterfaceDesktop']);
   });
 });
