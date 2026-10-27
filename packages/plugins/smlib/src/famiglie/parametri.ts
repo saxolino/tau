@@ -63,6 +63,9 @@ const schemaFoglia = (definizione: DefinizioneParametro): z.ZodType => {
     case 'testo': {
       return z.string().max(definizione.lunghezzaMassima ?? 200);
     }
+    case 'contorno': {
+      return z.array(z.tuple([z.number(), z.number()])).max(definizione.lunghezzaMassima ?? 64);
+    }
     case 'n': {
       let schema = z.number().int();
       schema = definizione.min === undefined ? schema : schema.min(definizione.min);
@@ -167,6 +170,22 @@ export function normalizzaConParametri<P>(definizioni: readonly DefinizioneParam
       }
       case 'testo': {
         valore = typeof grezzo === 'string' ? grezzo.slice(0, definizione.lunghezzaMassima ?? 200) : predefinito;
+        break;
+      }
+      case 'contorno': {
+        const punti = Array.isArray(grezzo) ? (grezzo as unknown[]) : undefined;
+        const validi = punti?.every(
+          (punto) =>
+            Array.isArray(punto) &&
+            punto.length === 2 &&
+            punto.every((v) => typeof v === 'number' && Number.isFinite(v)),
+        );
+        valore =
+          punti && validi
+            ? (punti as [number, number][])
+                .slice(0, definizione.lunghezzaMassima ?? 64)
+                .map(([x, y]) => [x, y] as const)
+            : predefinito;
         break;
       }
       default: {

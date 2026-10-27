@@ -31,14 +31,14 @@ export type IdFamiglia =
   | 'anello'
   | 'pendente';
 
-/** Unità di un parametro: `testo` per le stringhe libere (contenuto della placca). */
-export type UnitaParametro = 'mm' | 'deg' | 'n' | 'bool' | 'enum' | 'frazione' | 'testo';
+/** Unità di un parametro: `testo` per le stringhe libere (contenuto della placca), `contorno` per un elenco di punti. */
+export type UnitaParametro = 'mm' | 'deg' | 'n' | 'bool' | 'enum' | 'frazione' | 'testo' | 'contorno';
 
 /** Da dove viene il valore predefinito: regola del mestiere, calcolo da altri, o scelta nostra dichiarata. */
 export type FonteDefault = 'mestiere' | 'derivato' | 'scelta_nostra';
 
 /** Valore di un parametro foglia. */
-export type ValoreParametro = number | string | boolean;
+export type ValoreParametro = number | string | boolean | ReadonlyArray<readonly [number, number]>;
 
 /** Parametri annidati per pezzo (`{ tacco: { altezza: 85 } }`), come chiede la skill delle Misure. */
 export type ParametriAnnidati = { [chiave: string]: ValoreParametro | ParametriAnnidati };

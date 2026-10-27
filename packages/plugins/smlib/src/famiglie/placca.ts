@@ -11,6 +11,7 @@ import type {
 } from '#famiglie/famiglia.js';
 import { emettiMainFamiglia } from '#famiglie/emetti-main.js';
 import { estrudiSformato, ovale } from '#famiglie/profili.js';
+import { poligonoSemplice } from '#famiglie/fondo-pianta-canonica.js';
 import { aspettoMateriale } from '#famiglie/materiali.js';
 import { normalizzaConParametri, predefinitiDaParametri, radianti, schemaDaParametri } from '#famiglie/parametri.js';
 import { sogliaParete, sogliaSformo } from '#famiglie/processi.js';
@@ -40,7 +41,8 @@ export type VariantePlacca = 'rettangolo' | 'ovale' | 'cerchio' | 'scudo';
 
 export type ParametriPlacca = {
   piastra: {
-    forma: VariantePlacca;
+    forma: VariantePlacca | 'contorno';
+    contorno: [number, number][];
     lunghezza: number;
     larghezza: number;
     spessore: number;
@@ -72,10 +74,19 @@ const parametri: readonly DefinizioneParametro[] = [
   {
     chiave: 'piastra.forma',
     unita: 'enum',
-    valori: [...varianti],
+    valori: [...varianti, 'contorno'],
     default: 'rettangolo',
     fonteDefault: 'mestiere',
     descrizione: 'Forma della piastra',
+  },
+  {
+    chiave: 'piastra.contorno',
+    unita: 'contorno',
+    default: [],
+    lunghezzaMassima: 64,
+    fonteDefault: 'scelta_nostra',
+    descrizione:
+      'Punti del contorno (forma «contorno»): curva chiusa che passa per i punti, portata a lunghezza × larghezza',
   },
   {
     chiave: 'piastra.lunghezza',
@@ -279,7 +290,8 @@ const vincoli = (p: ParametriPlacca): { chiave: string; messaggio: string }[] =>
 const normalizza = (grezzi: unknown, opzioni?: OpzioniFamiglia): ParametriPlacca => {
   const variante = opzioni?.variante === undefined ? undefined : varianteDi(opzioni);
   const p = normalizzaConParametri(parametri, grezzi, predefiniti(variante));
-  if (variante) {
+  // Un contorno dato esplicitamente vince sulla variante.
+  if (variante && p.piastra.forma !== 'contorno') {
     p.piastra.forma = variante;
   }
   if (p.piastra.forma === 'cerchio') {
@@ -294,10 +306,59 @@ const normalizza = (grezzi: unknown, opzioni?: OpzioniFamiglia): ParametriPlacca
   return p;
 };
 
+/**
+ * La forma «contorno»: la curva chiusa per i punti dati (spline, poi poligono se la spline non chiude una regione),
+ * riportata a lunghezza × larghezza e centrata; undefined se i punti non bastano o il poligono si autointerseca.
+ */
+function sagomaDaContorno(lib: Lib, p: ParametriPlacca): Smlib.Sketch | undefined {
+  const { contorno, lunghezza, larghezza } = p.piastra;
+  if (contorno.length < 3 || !poligonoSemplice(contorno)) {
+    return undefined;
+  }
+  const xs = contorno.map(([x]) => x);
+  const ys = contorno.map(([, y]) => y);
+  const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+  if (x1 - x0 <= 0 || y1 - y0 <= 0) {
+    return undefined;
+  }
+  const scalati = contorno.map(([x, y]): [number, number] => [
+    ((x - (x0 + x1) / 2) * lunghezza) / (x1 - x0),
+    ((y - (y0 + y1) / 2) * larghezza) / (y1 - y0),
+  ]);
+  // In senso antiorario (normale +Z): una faccia girata al contrario rifiuta l'estrusione sformata.
+  const area = scalati.reduce((somma, [x, y], indice) => {
+    const [xn, yn] = scalati[(indice + 1) % scalati.length]!;
+    return somma + x * yn - xn * y;
+  }, 0);
+  const punti = area < 0 ? scalati.toReversed() : scalati;
+  try {
+    const curva = lib.makeFace(lib.Spline(...punti, { closed: true }));
+    const { size } = curva.bbox();
+    // La spline può uscire dai punti: si riporta l'ingombro a lunghezza × larghezza.
+    return curva.scale([lunghezza / size.x, larghezza / size.y, 1], curva.bbox().center);
+  } catch {
+    return lib.Polygon(punti);
+  }
+}
+
 /** Il contorno della piastra (schizzo su XY, centrato). */
-function sagoma(lib: Lib, p: ParametriPlacca): Smlib.Sketch {
+function sagoma(lib: Lib, p: ParametriPlacca, esiti: Esito[] = []): Smlib.Sketch {
   const { forma, lunghezza, larghezza, raggioAngoli } = p.piastra;
   const r = Math.min(raggioAngoli, 0.49 * Math.min(lunghezza, larghezza));
+  if (forma === 'contorno') {
+    const daContorno = sagomaDaContorno(lib, p);
+    if (daContorno) {
+      return daContorno.translate(-daContorno.bbox().center.x, -daContorno.bbox().center.y);
+    }
+    esiti.push(
+      esito(
+        'avviso',
+        'CONTORNO',
+        'Contorno assente, con meno di 3 punti o che si autointerseca: piastra rettangolare.',
+        { pezzo: 'Placca' },
+      ),
+    );
+  }
   if (forma === 'ovale') {
     return ovale(lib, lunghezza / 2, larghezza / 2);
   }
@@ -332,7 +393,13 @@ function sagomaRistretta(lib: Lib, p: ParametriPlacca, sagomaPiena: Smlib.Sketch
   if (forma === 'cerchio') {
     return lib.Circle(lunghezza / 2 - distanza);
   }
-  return sagomaPiena.offset(-distanza, { corners: 'round' });
+  try {
+    return sagomaPiena.offset(-distanza, { corners: 'round' });
+  } catch {
+    // Offset rifiutato (curve libere, distanze piccole): restringimento in scala attorno al centro.
+    const { size, center } = sagomaPiena.bbox();
+    return sagomaPiena.scale([(size.x - 2 * distanza) / size.x, (size.y - 2 * distanza) / size.y, 1], center);
+  }
 }
 
 /** Il testo ridotto finché sta nello spazio dentro il bordo (passi del 10 %), con l'altezza effettiva. */
@@ -367,7 +434,7 @@ function costruisciPlacca(lib: Lib, p: ParametriPlacca, esiti: Esito[]): Smlib.P
   const { piastra, bordo, testo, fissaggio, costruzione } = p;
   const zama = costruzione.processo === 'pressofusione_zama';
   const sformo = zama ? costruzione.sformo : 0;
-  const base = sagoma(lib, p);
+  const base = sagoma(lib, p, esiti);
   const bombata = piastra.bombatura > 0;
   const altezzaPiastra = piastra.spessore + piastra.bombatura;
   // Ovale: archi che si toccano fra loro, sformati col draft dei fianchi (col taper diventerebbero B-spline).
@@ -387,7 +454,9 @@ function costruisciPlacca(lib: Lib, p: ParametriPlacca, esiti: Esito[]): Smlib.P
     corpo = corpo.intersect(calotta(0));
   }
   const ritiroCima = sformo > 0 ? piastra.spessore * Math.tan(radianti(sformo)) : 0;
-  const cima = sagomaRistretta(lib, p, base, ritiroCima);
+  // Sulle curve libere l'offset dello schizzo non coincide al centesimo col bordo della piastra sformata: il bordo in
+  // rilievo sta 0,02 mm dentro (altrimenti la fusione tocca solo lungo uno spigolo).
+  const cima = sagomaRistretta(lib, p, base, ritiroCima + (piastra.forma === 'contorno' ? 0.02 : 0));
   const rilievi: Smlib.Part[] = [];
   if (bordo.rilievo > 0) {
     const cornice = cima.cut(sagomaRistretta(lib, p, base, ritiroCima + bordo.larghezza));

@@ -10,6 +10,9 @@ const identificatore = /^[A-Za-z_$][\w$]*$/;
 const chiave = (nome: string): string => (identificatore.test(nome) ? nome : JSON.stringify(nome));
 
 const letterale = (valore: ValoreParametro | ParametriAnnidati | Record<string, string>): string => {
+  if (Array.isArray(valore)) {
+    return `[${(valore as ReadonlyArray<readonly [number, number]>).map(([x, y]) => `[${x}, ${y}]`).join(', ')}]`;
+  }
   if (typeof valore === 'object') {
     const campi = Object.entries(valore).map(([nome, figlio]) => `${chiave(nome)}: ${letterale(figlio)}`);
     return `{ ${campi.join(', ')} }`;

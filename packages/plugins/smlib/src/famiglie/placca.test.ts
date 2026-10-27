@@ -139,6 +139,44 @@ describe('famiglia placca', () => {
     expect(codice(tranciata, 'RIBATTINI')?.livello).toBe('info');
   });
 
+  it('should cut a plate to a free outline scaled to its length and width, with the text inside', () => {
+    // A cloud-like badge: eight points, any scale.
+    const contorno: [number, number][] = [
+      [0, 10],
+      [6, 8],
+      [10, 4],
+      [9, -3],
+      [4, -8],
+      [-4, -8],
+      [-9, -3],
+      [-10, 4],
+    ];
+    const p = placca.normalizza({
+      piastra: { forma: 'contorno', contorno, lunghezza: 36, larghezza: 20 },
+      testo: { contenuto: 'SINOPIA' },
+    });
+    const valutazione = valutaFamiglia(lib, placca, p);
+    const piastra = forma(valutazione);
+    expect(piastra.isValid()).toBe(true);
+    expect(piastra.bbox().size.x).toBeCloseTo(36, 1);
+    expect(piastra.bbox().size.y).toBeCloseTo(20, 1);
+    expect(valutazione.esiti.filter(({ livello }) => livello === 'blocco')).toEqual([]);
+    expect(placca.emettiMain(p, {})).toContain('contorno: [[0, 10], [6, 8]');
+    // A self-intersecting outline falls back to the rectangle and says so.
+    const storto = placca.normalizza({
+      piastra: {
+        forma: 'contorno',
+        contorno: [
+          [0, 0],
+          [10, 10],
+          [10, 0],
+          [0, 10],
+        ],
+      },
+    });
+    expect(codice(valutaFamiglia(lib, placca, storto), 'CONTORNO')?.livello).toBe('avviso');
+  });
+
   it('should rebuild within the rebuild budget and export to STEP', () => {
     const p = placca.normalizza({ testo: { contenuto: 'SINOPIA' } });
     const { tempo, valore: pezzi } = cronometra(() => placca.costruisci(lib, p));
