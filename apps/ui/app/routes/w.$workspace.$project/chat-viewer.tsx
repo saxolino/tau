@@ -30,6 +30,7 @@ import { canonicalJson } from '@taucad/utils/hash';
 import type { IDockviewPanelHeaderProps } from 'dockview-react';
 import { FileX, FolderOpen, PlayCircle } from 'lucide-react';
 import { CadViewer } from '@taucad/viewer/cad/cad-viewer';
+import { createModelAssembly } from '@taucad/viewer/graphics/three/react/model-assembly';
 import { useModelComponentMenuActions } from '#components/geometry/cad/model-component-action-menu.js';
 import { useOptionalPartThumbnailService } from '#providers/part-thumbnail-provider.js';
 import { canonicalPartPreviews, sourceGlbDigest } from '#services/part-thumbnail-visual.js';
@@ -50,6 +51,7 @@ import { GraphicsProvider, useGraphics, useGraphicsSelector } from '@taucad/view
 import type { ViewCameraSeed } from '@taucad/viewer/services/graphics-camera-registry';
 import { ViewerIssues } from '#routes/w.$workspace.$project/chat-stack-trace.js';
 import { ChatViewerStatus } from '#routes/w.$workspace.$project/chat-viewer-status.js';
+import { ViewerAgentLayer } from '#routes/w.$workspace.$project/viewer-cantiere.js';
 import { ChatViewerControls } from '#routes/w.$workspace.$project/chat-viewer-controls.js';
 import { ViewerKernelSettings } from '#routes/w.$workspace.$project/chat-viewer-kernel-settings.js';
 import { ViewerProjectionPicker } from '#routes/w.$workspace.$project/chat-viewer-projection-picker.js';
@@ -637,6 +639,14 @@ const ViewerContent = memo(function ({
     [evaluation, knownArtifact],
   );
   const artifact = rendering?.success && !emptyModel ? rendering.artifact : undefined;
+  // SinopiaCAD: a model the agent builds from nothing enters one piece at a time (viewer-cantiere.tsx).
+  const [assembly] = useState(createModelAssembly);
+  useEffect(
+    () => () => {
+      assembly.dispose();
+    },
+    [assembly],
+  );
   const failureIssues = useCadSelector(selectCadFailureIssues, undefined);
   const failureMessage =
     failureIssues?.find((issue) => issue.severity === 'error')?.message ?? failureIssues?.[0]?.message;
@@ -1101,6 +1111,7 @@ const ViewerContent = memo(function ({
       : directTool.controls.isDragging && directTool.controls.preview
         ? directTool.controls.preview
         : undefined);
+  const isModelShown = !isGeometryUnitClosed && Boolean(artifact && presentedArtifact);
   return (
     <div className='@container/manual-viewer relative h-full min-h-0 min-w-0'>
       <div className='flex h-full min-h-0 min-w-0'>
@@ -1111,7 +1122,7 @@ const ViewerContent = memo(function ({
           data-testid='chat-viewer-layout'
           partMenu={partMenu}
           decoratePartMenu={decoratePartMenu}
-          isModelShown={!isGeometryUnitClosed && Boolean(artifact && presentedArtifact)}
+          isModelShown={isModelShown}
           status={overlayFailureMessage ? { kind: 'failed', message: overlayFailureMessage } : undefined}
           statusExtra={
             <>
@@ -1126,6 +1137,8 @@ const ViewerContent = memo(function ({
               ) : null}
             </>
           }
+          // Working on the model during its assembly draws every piece at once.
+          onPointerDownCapture={assembly.finish}
           onKeyDown={(event) => {
             if (
               event.altKey ||
@@ -1182,6 +1195,7 @@ const ViewerContent = memo(function ({
                 eventSource={eventSource}
                 gizmoContainer={gizmoContainer}
                 onModelComponentSecondaryPointerCandidate={onComponentSecondaryPointerCandidate}
+                assembly={profile === 'editor' ? assembly : undefined}
               />
             )
           }
@@ -1246,6 +1260,14 @@ const ViewerContent = memo(function ({
             </>
           }
         >
+          {profile === 'editor' ? (
+            <ViewerAgentLayer
+              assembly={assembly}
+              entryPath={entryPath}
+              isModelShown={isModelShown}
+              isModelEmpty={emptyModel}
+            />
+          ) : null}
           <SelectedPieceChip entryPath={entryPath} location='viewer' />
           {gestureQuota === undefined ? null : (
             <GestureQuota

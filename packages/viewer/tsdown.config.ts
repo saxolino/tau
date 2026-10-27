@@ -69,6 +69,7 @@ const baseConfig: UserConfig = {
     'src/graphics/three/post-processing-settings.ts',
     'src/graphics/three/react/exact-measurement.tsx',
     'src/graphics/three/react/gltf-mesh.tsx',
+    'src/graphics/three/react/model-assembly.ts',
     'src/graphics/three/react/producibility-overlay.types.ts',
     'src/graphics/three/render-frame-timing.ts',
     'src/graphics/three/render-loop-observer.ts',

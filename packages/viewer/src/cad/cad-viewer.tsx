@@ -2,6 +2,7 @@ import type { DirectEditTool } from '#graphics/three/react/direct-edit-tool.js';
 import type { PlanarFaceTool } from '#graphics/three/react/planar-face-tool.js';
 import type { SketchTool } from '#graphics/three/react/sketch-tool.js';
 import type { ProducibilityOverlay } from '#graphics/three/react/producibility-overlay.types.js';
+import type { ModelAssembly } from '#graphics/three/react/model-assembly.js';
 import { memo } from 'react';
 import type { CanvasProps } from '@react-three/fiber';
 import { asKnownArtifact } from '@taucad/runtime';
@@ -36,6 +37,8 @@ type CadViewerProperties = Omit<ThreeViewerProperties, 'graphicsBackend'> &
     readonly onModelComponentSecondaryPointerCandidate?: (
       target: ModelComponentSecondaryPointerTarget | undefined,
     ) => void;
+    /** Lets a first model after none enter one piece at a time while the host has it armed. */
+    readonly assembly?: ModelAssembly;
   };
 
 /**
@@ -56,6 +59,7 @@ export const CadViewer = memo(
     enableLines = true,
     enableMatcap = false,
     onModelComponentSecondaryPointerCandidate,
+    assembly,
     ...properties
   }: CadViewerProperties): React.JSX.Element => {
     const { graphicsBackend } = useViewerEnvironment();
@@ -85,6 +89,7 @@ export const CadViewer = memo(
           enableSurfaces={enableSurfaces}
           enableLines={enableLines}
           onModelComponentSecondaryPointerCandidate={onModelComponentSecondaryPointerCandidate}
+          assembly={assembly}
         />
       );
     } else if (artifact !== undefined) {
