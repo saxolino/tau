@@ -20,12 +20,19 @@ import { SinopiaCadWordmark, SinopiaMark } from '#components/icons/sinopiacad-wo
 import { Commands } from '#components/layout/command-palette.js';
 import { DesktopUpdate } from '#components/nav/desktop-update.js';
 import { NavUser } from '#components/nav/nav-user.js';
+import { baseUrl } from '#lib/base-path.js';
 import { isDesktopTarget } from '#lib/build-target.js';
 import { cn } from '@taucad/ui/utils/cn';
 import { useTranslation } from '#i18n/translate.js';
 
-/** Where «Torna a Sinopia» goes: the CAD lives under `/cad` of the same site, so this is a full navigation. */
-export const sinopiaDashboardUrl = 'https://sinopialab.com/dashboard';
+/**
+ * Where «Torna a Sinopia» goes: under `/cad` of sinopialab.com the CAD shares Sinopia's origin, so a path is enough (a
+ * full navigation, same session); on its own origins (development, previews) the address is sinopialab.com's.
+ *
+ * @returns The dashboard's address.
+ */
+export const sinopiaDashboardUrl = (): string =>
+  baseUrl() === '/cad/' ? '/dashboard' : 'https://sinopialab.com/dashboard';
 
 /**
  * A row's class on top of the sidebar button: the current page is named by its weight and by its glyph in Sinopia's
@@ -120,7 +127,7 @@ export function AppSidebar({ ...properties }: React.ComponentProps<typeof Sideba
           <SidebarMenuItem>
             <SidebarMenuButton asChild className='text-sidebar-foreground'>
               {/* Another app on the same origin: a full navigation, never a route of this router. */}
-              <a href={sinopiaDashboardUrl} title={t('shell.sidebar.backToSinopiaHint')}>
+              <a href={sinopiaDashboardUrl()} title={t('shell.sidebar.backToSinopiaHint')}>
                 <SinopiaMark aria-hidden className='size-4' />
                 <span className='flex-1'>{t('shell.sidebar.backToSinopia')}</span>
                 <ArrowUpRight aria-hidden className='size-3.5! text-muted-foreground' />
