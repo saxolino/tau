@@ -99,6 +99,25 @@ describe('progressive-disclosure system skill budgets', () => {
     }).not.toThrow();
   });
 
+  it('should keep sinopia-producibilita within the doctrine budget and carry the method and the sources', () => {
+    const skillMarkdown = getSkillMarkdown('sinopia-producibilita');
+    expect(() => {
+      assertSkillBudget('sinopia-producibilita', skillMarkdown);
+    }).not.toThrow();
+    // Measure first, cite the threshold's source, declare what is unverified, and no finding is not an approval.
+    for (const rule of [
+      'Misura prima di affermare',
+      'Cita la fonte',
+      'Dichiara cosa non è verificato',
+      "non è un'approvazione",
+    ]) {
+      expect(skillMarkdown).toContain(rule);
+    }
+    // Our thresholds only: never those of third parties.
+    expect(skillMarkdown).toContain('Sinopia');
+    expect(skillMarkdown).not.toMatch(/protolabs|hubs|sendcutsend/i);
+  });
+
   it('should include exactly one generated selection row for every offered engine', () => {
     expect(() => {
       assertCreateModelSelectionRows(getCreateModelSkillMarkdown());

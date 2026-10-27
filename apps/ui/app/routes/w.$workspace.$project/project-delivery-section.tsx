@@ -9,9 +9,11 @@ import { useProject } from '#hooks/use-project.js';
 import { useSinopiaCadLink } from '#hooks/use-sinopia-cad-sync.js';
 import { useSinopiaSendEvents } from '#hooks/use-sinopia-send-events.js';
 import { useTranslation } from '#i18n/translate.js';
-import { misureLibreria } from '#lib/consegna.js';
+import { misureLibreria, righeControlli } from '#lib/consegna.js';
 import type { PezzoDellaConsegna } from '#lib/consegna.js';
 import { pezzoPiano } from '@taucad/smlib/consegna';
+import { useProducibilita } from '#routes/w.$workspace.$project/producibilita-context.js';
+import { nomeControllo, valoreControllo } from '#routes/w.$workspace.$project/inspector-producibilita.js';
 import type { PreparedExport } from '#services/project-export.types.js';
 import type { ProjectExportRows } from '#services/project-export.js';
 import {
@@ -30,6 +32,8 @@ import type { TipoPezzo } from '#services/sinopia-consegna.js';
 
 /** Sinopia's own address, where the Library and the single inbox live. */
 const sinopiaOrigin = 'https://sinopialab.com';
+
+type QuoteProducibility = NonNullable<Parameters<typeof testoPreventivo>[0]['producibilita']>;
 
 type Props = Readonly<{
   name: string;
@@ -84,6 +88,22 @@ export function ProjectDeliverySection({
   );
   const step = fileOf(rows.step, 'verified');
   const measured = rows.step?.status === 'verified' ? rows.step.measured : undefined;
+  // The manufacturability outcome the quote carries: only checks that describe the model on screen count.
+  const producibilita = useProducibilita();
+  const producibility = useMemo((): QuoteProducibility => {
+    if (!producibilita?.aggiornati) {
+      return { verificata: false, righe: [] };
+    }
+    return {
+      verificata: true,
+      righe: righeControlli({
+        controlli: producibilita.controlli,
+        nome: (controllo) => nomeControllo(t, controllo.codice),
+        valore: (controllo) => valoreControllo(controllo, t, language),
+        ...(selectedNames ? { selezionati: selectedNames } : {}),
+      }).filter(({ livello }) => livello === 'blocco' || livello === 'avviso'),
+    };
+  }, [language, producibilita, selectedNames, t]);
   const failure = (error: unknown): void => {
     const problema = error instanceof SinopiaConsegnaError ? error.problema : 'failed';
     toast.error(t(`consegna.errors.${problema}`));
@@ -189,6 +209,7 @@ export function ProjectDeliverySection({
           rows={rows}
           capture={capture}
           pieces={chosen}
+          producibility={producibility}
           partType={partType}
           lastVersion={Math.max(0, ...events.map(({ versionNumber }) => versionNumber)) || undefined}
           busy={busy}
@@ -211,6 +232,7 @@ function QuotePanel({
   rows,
   capture,
   pieces,
+  producibility,
   partType,
   lastVersion,
   busy,
@@ -225,6 +247,7 @@ function QuotePanel({
   rows: ProjectExportRows;
   capture: Props['capture'];
   pieces: readonly PezzoDellaConsegna[];
+  producibility: QuoteProducibility;
   partType: TipoPezzo | undefined;
   lastVersion: number | undefined;
   busy: 'library' | 'quote' | undefined;
@@ -239,6 +262,10 @@ function QuotePanel({
   const [supplierId, setSupplierId] = useState<string>();
   const [quantity, setQuantity] = useState('');
   const [note, setNote] = useState('');
+  const [finish, setFinish] = useState('');
+  const [tolerances, setTolerances] = useState('');
+  // The summary the person confirms before anything leaves.
+  const [isReviewing, setReviewing] = useState(false);
   const clientId = useRef(randomUuid());
   const suppliers = useQuery({
     queryKey: ['sinopia-quote-suppliers', link.userId, type],
@@ -261,41 +288,57 @@ function QuotePanel({
   const stepAtteso = cadAttachments.data === true && stepAllegabile(step);
   const measured = rows.step?.status === 'verified' ? rows.step.measured : undefined;
 
+  const amount = Number.parseInt(quantity, 10);
+  const hasQuantity = Number.isFinite(amount) && amount > 0;
+  const pesoTotale = pieces.every((pezzo) => pezzo.pesoGrammi !== undefined)
+    ? pieces.reduce((somma, pezzo) => somma + (pezzo.pesoGrammi ?? 0), 0)
+    : undefined;
+  // The same text is the summary the person confirms and the message the supplier reads.
+  const buildText = (stepAllegato: boolean, allegati: ReadonlyArray<string | undefined>): string =>
+    testoPreventivo({
+      progetto: name,
+      tipo: type ? t(`consegna.quote.types.${type}`) : '',
+      quantita: hasQuantity ? amount : undefined,
+      nota: note,
+      pezzi: pieces.map((pezzo) => {
+        const size = measured?.pieces.find((piece) => piece.name === pezzo.nome)?.size;
+        return {
+          nome: pezzo.nome,
+          ...(pezzo.materiale ? { materiale: pezzo.materiale.nome } : {}),
+          ...(pezzo.processo ? { processo: t(`producibilita.processes.${pezzo.processo}`) } : {}),
+          ...(pezzo.pesoGrammi === undefined ? {} : { pesoGrammi: pezzo.pesoGrammi }),
+          ...(size ? { ingombro: size } : {}),
+        };
+      }),
+      misure: [],
+      ...(measured ? { ingombroTotale: measured.size } : {}),
+      ...(pesoTotale === undefined ? {} : { pesoTotaleGrammi: pesoTotale }),
+      finitura: finish,
+      tolleranze: tolerances,
+      producibilita: producibility,
+      allegati: allegati.filter((nome): nome is string => Boolean(nome)),
+      ...(lastVersion === undefined ? {} : { versione: lastVersion }),
+      stepAllegato,
+      lingua: language,
+    });
+  const summary = buildText(stepAtteso, [
+    sheet?.name,
+    t('consegna.quote.photoName'),
+    stepAtteso ? `${name}.step` : undefined,
+  ]);
+
   const send = async (): Promise<void> => {
     const signal = sectionAbort.current?.signal;
-    if (!signal || !supplier || !type || busy) {
+    if (!signal || !supplier || !type || !hasQuantity || busy) {
       return;
     }
     setBusy('quote');
     try {
       const photo = fileOf(await capture(signal), 'ready');
-      const amount = Number.parseInt(quantity, 10);
       // The step file is named after the project, as the supplier will save it.
       const stepFile = step ? { ...step, name: `${name}.step` } : undefined;
       const testo = (stepAllegato: boolean): string =>
-        testoPreventivo({
-          progetto: name,
-          tipo: t(`consegna.quote.types.${type}`),
-          quantita: Number.isFinite(amount) && amount > 0 ? amount : undefined,
-          nota: note,
-          pezzi: pieces.map((pezzo) => {
-            const size = measured?.pieces.find((piece) => piece.name === pezzo.nome)?.size;
-            return {
-              nome: pezzo.nome,
-              ...(pezzo.materiale ? { materiale: pezzo.materiale.nome } : {}),
-              ...(pezzo.processo ? { processo: t(`producibilita.processes.${pezzo.processo}`) } : {}),
-              ...(pezzo.pesoGrammi === undefined ? {} : { pesoGrammi: pezzo.pesoGrammi }),
-              ...(size ? { ingombro: size } : {}),
-            };
-          }),
-          misure: [],
-          allegati: [sheet?.name, photo?.name, stepAllegato ? stepFile?.name : undefined].filter(
-            (nome): nome is string => Boolean(nome),
-          ),
-          ...(lastVersion === undefined ? {} : { versione: lastVersion }),
-          stepAllegato,
-          lingua: language,
-        });
+        buildText(stepAllegato, [sheet?.name, photo?.name, stepAllegato ? stepFile?.name : undefined]);
       const { conversazione: conversation, stepAllegato } = await chiediPreventivo({
         link,
         fornitoreId: supplier.id,
@@ -412,7 +455,9 @@ function QuotePanel({
           <span className='text-xs text-muted-foreground'>{t('consegna.quote.quantity')}</span>
           <Input
             inputMode='numeric'
+            required
             value={quantity}
+            disabled={isReviewing}
             onChange={(event) => {
               setQuantity(event.target.value.replaceAll(/\D/gu, '').slice(0, 7));
             }}
@@ -422,6 +467,7 @@ function QuotePanel({
           <span className='text-xs text-muted-foreground'>{t('consegna.quote.note')}</span>
           <Input
             value={note}
+            disabled={isReviewing}
             maxLength={1000}
             placeholder={t('consegna.quote.notePlaceholder')}
             onChange={(event) => {
@@ -430,6 +476,41 @@ function QuotePanel({
           />
         </label>
       </div>
+      <div className='grid gap-2 sm:grid-cols-2'>
+        <label className='grid gap-1'>
+          <span className='text-xs text-muted-foreground'>{t('consegna.quote.finish')}</span>
+          <Input
+            value={finish}
+            disabled={isReviewing}
+            maxLength={200}
+            placeholder={t('consegna.quote.finishPlaceholder')}
+            onChange={(event) => {
+              setFinish(event.target.value);
+            }}
+          />
+        </label>
+        <label className='grid gap-1'>
+          <span className='text-xs text-muted-foreground'>{t('consegna.quote.tolerances')}</span>
+          <Input
+            value={tolerances}
+            disabled={isReviewing}
+            maxLength={200}
+            placeholder={t('consegna.quote.tolerancesPlaceholder')}
+            onChange={(event) => {
+              setTolerances(event.target.value);
+            }}
+          />
+        </label>
+      </div>
+      {hasQuantity ? null : <p className='text-xs text-muted-foreground'>{t('consegna.quote.needsQuantity')}</p>}
+      {isReviewing ? (
+        <section aria-label={t('consegna.quote.summary')} className='space-y-1.5'>
+          <h4 className='text-xs font-medium'>{t('consegna.quote.summary')}</h4>
+          <pre className='max-h-56 overflow-auto rounded-md border bg-background p-2 text-xs whitespace-pre-wrap'>
+            {summary}
+          </pre>
+        </section>
+      ) : null}
       <p className='text-xs text-muted-foreground'>
         {stepAtteso ? t('consegna.quote.attachmentsWithStep') : t('consegna.quote.attachments')}
       </p>
@@ -437,19 +518,45 @@ function QuotePanel({
         <Button variant='ghost' size='sm' className='pointer-coarse:min-h-11' onClick={onDone}>
           {t('consegna.quote.close')}
         </Button>
-        <Button
-          size='sm'
-          className='h-auto min-h-8 whitespace-normal pointer-coarse:min-h-11'
-          aria-busy={busy === 'quote'}
-          disabled={!supplier || !sheet || busy !== undefined}
-          onClick={() => {
-            void send();
-          }}
-        >
-          {busy === 'quote'
-            ? t('consegna.quote.sending')
-            : t('consegna.quote.send', { supplier: supplier?.nome ?? '…' })}
-        </Button>
+        {isReviewing ? (
+          <>
+            <Button
+              variant='outline'
+              size='sm'
+              className='pointer-coarse:min-h-11'
+              disabled={busy !== undefined}
+              onClick={() => {
+                setReviewing(false);
+              }}
+            >
+              {t('consegna.quote.edit')}
+            </Button>
+            <Button
+              size='sm'
+              className='h-auto min-h-8 whitespace-normal pointer-coarse:min-h-11'
+              aria-busy={busy === 'quote'}
+              disabled={!supplier || !sheet || !hasQuantity || busy !== undefined}
+              onClick={() => {
+                void send();
+              }}
+            >
+              {busy === 'quote'
+                ? t('consegna.quote.sending')
+                : t('consegna.quote.send', { supplier: supplier?.nome ?? '…' })}
+            </Button>
+          </>
+        ) : (
+          <Button
+            size='sm'
+            className='h-auto min-h-8 whitespace-normal pointer-coarse:min-h-11'
+            disabled={!supplier || !sheet || !hasQuantity || busy !== undefined}
+            onClick={() => {
+              setReviewing(true);
+            }}
+          >
+            {t('consegna.quote.review')}
+          </Button>
+        )}
       </div>
     </div>
   );

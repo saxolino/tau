@@ -407,6 +407,22 @@ export type DatiPreventivo = Readonly<{
   >;
   misure: readonly string[];
   allegati: readonly string[];
+  /** Overall size of the chosen pieces together, read from the verified STEP. */
+  ingombroTotale?: Ingombro;
+  /** Weight of the chosen pieces together (g), when every one is known. */
+  pesoTotaleGrammi?: number;
+  /** Finish the person asked for, if any (free text, as written). */
+  finitura?: string;
+  /** Tolerances the person asked for, if any (free text, as written). */
+  tolleranze?: string;
+  /**
+   * What the manufacturability checks said when the request was prepared: `verificata: false` when they were missing or
+   * not up to date with the model; `righe` are the blocks and warnings only (worst first).
+   */
+  producibilita?: Readonly<{
+    verificata: boolean;
+    righe: ReadonlyArray<Readonly<{ livello: 'blocco' | 'avviso' | 'info' | 'ok'; testo: string }>>;
+  }>;
   /** The Sinopia delivery the STEP and GLB are in, when the model was sent. */
   versione?: number;
   /** The verified STEP travels with the message (the inbox admits CAD files and the server checked it). */
@@ -437,8 +453,50 @@ const righeFile = ({ lingua, versione, stepAllegato }: DatiPreventivo): string =
     : `STEP and GLB are version ${String(versione)} of the CAD in the Sinopia project: I can forward them here.`;
 };
 
+/** Most checks the message lists by name; the rest are counted. */
+const righeProducibilitaMassime = 8;
+
+/** What the message says of manufacturability: measured outcome with its threshold source, or «not verified». */
+const righeProducibilita = (dati: DatiPreventivo): string[] => {
+  const it = dati.lingua === 'it';
+  const titolo = it
+    ? 'Producibilità (controlli di SinopiaCAD sul solido; soglie di mestiere da confermare con te):'
+    : 'Manufacturability (SinopiaCAD checks on the solid; trade thresholds to confirm with you):';
+  if (!dati.producibilita?.verificata) {
+    return [
+      titolo,
+      it
+        ? '· Non verificata: i controlli non erano pronti o non descrivevano la versione inviata.'
+        : '· Not verified: the checks were not ready or did not describe the version sent.',
+    ];
+  }
+  const { righe } = dati.producibilita;
+  const blocchi = righe.filter(({ livello }) => livello === 'blocco').length;
+  const avvisi = righe.filter(({ livello }) => livello === 'avviso').length;
+  const sintesi =
+    blocchi + avvisi === 0
+      ? it
+        ? '· Nessun blocco né avviso sui controlli eseguiti. Non è un’approvazione: tolleranze, finitura e costi non sono verificati.'
+        : '· No blocks or warnings on the checks run. This is not an approval: tolerances, finish and cost are not verified.'
+      : it
+        ? `· ${String(blocchi)} blocchi, ${String(avvisi)} avvisi.`
+        : `· ${String(blocchi)} blocks, ${String(avvisi)} warnings.`;
+  const elenco = righe.slice(0, righeProducibilitaMassime).map(({ livello, testo }) => {
+    const etichetta = livello === 'blocco' ? (it ? 'BLOCCO' : 'BLOCK') : it ? 'Avviso' : 'Warning';
+    return `  - ${etichetta}: ${testo}`;
+  });
+  const altri = righe.length - elenco.length;
+  return [
+    titolo,
+    sintesi,
+    ...elenco,
+    ...(altri > 0 ? [it ? `  - … e altri ${String(altri)}.` : `  - … and ${String(altri)} more.`] : []),
+  ];
+};
+
 /**
- * The first message of the quote request: what the part is, of what, how big and heavy, how many, which files.
+ * The first message of the quote request: what the part is, of what, how big and heavy, how many, the manufacturability
+ * outcome with its warnings, finish and tolerances, which files. It says what it did not verify.
  * @param dati - The request.
  * @returns Plain text (at most 4000 characters).
  */
@@ -466,9 +524,25 @@ export function testoPreventivo(dati: DatiPreventivo): string {
         .filter(Boolean)
         .join(' — '),
     ),
+    ...(dati.ingombroTotale || dati.pesoTotaleGrammi !== undefined
+      ? [
+          `${it ? 'Insieme:' : 'Overall:'} ${[
+            dati.ingombroTotale ? `${dati.ingombroTotale.map((valore) => numero(valore)).join(' × ')} mm` : undefined,
+            dati.pesoTotaleGrammi === undefined ? undefined : `${numero(dati.pesoTotaleGrammi, 1)} g`,
+          ]
+            .filter(Boolean)
+            .join(' — ')}`,
+        ]
+      : []),
     ...(dati.misure.length > 0
       ? ['', it ? 'Misure principali:' : 'Main dimensions:', ...dati.misure.map((riga) => `· ${riga}`)]
       : []),
+    '',
+    ...righeProducibilita(dati),
+    '',
+    it
+      ? `Finitura: ${dati.finitura?.trim() || 'non indicata'}. Tolleranze: ${dati.tolleranze?.trim() || 'non indicate'}.`
+      : `Finish: ${dati.finitura?.trim() || 'not specified'}. Tolerances: ${dati.tolleranze?.trim() || 'not specified'}.`,
     '',
     it ? `Allegati: ${dati.allegati.join(', ')}.` : `Attached: ${dati.allegati.join(', ')}.`,
     righeFile(dati),
