@@ -500,3 +500,17 @@ describe('SliderInput', () => {
     expect(onInputCommit).not.toHaveBeenCalled();
   });
 });
+
+describe('SliderInput plausible band', () => {
+  it('should draw a band between from and to on the track, in the value’s units, and nothing without one', () => {
+    const { container, rerender } = renderSlider({ min: 0, max: 100, band: { from: 60, to: 20 } });
+    const band = container.querySelector<HTMLElement>('[data-slot="slider-input-band"]');
+    expect(band).not.toBeNull();
+    expect(band?.style.left).toBe('20%');
+    expect(band?.style.width).toBe('40%');
+    rerender(<SliderInput {...defaultProperties} band={{ from: -50, to: 250 }} />);
+    expect(container.querySelector<HTMLElement>('[data-slot="slider-input-band"]')?.style.width).toBe('100%');
+    rerender(<SliderInput {...defaultProperties} />);
+    expect(container.querySelector('[data-slot="slider-input-band"]')).toBeNull();
+  });
+});

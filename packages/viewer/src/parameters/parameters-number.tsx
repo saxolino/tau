@@ -78,6 +78,8 @@ type ParametersNumberProps = {
   readonly min?: number;
   readonly max?: number;
   readonly step?: number;
+  /** A plausible band in the field's native unit (a photo recognition's min–max), drawn on the slider. */
+  readonly band?: Readonly<{ min: number; max: number }>;
   readonly id?: string;
   // oxlint-disable-next-line react-js/boolean-prop-naming -- Mirrors the native input prop.
   readonly autoFocus?: boolean;
@@ -157,6 +159,7 @@ export const ParametersNumber = React.memo(function ParametersNumber({
   min,
   max,
   step,
+  band,
   id,
   autoFocus,
   readOnly,
@@ -463,6 +466,11 @@ export const ParametersNumber = React.memo(function ParametersNumber({
       }
       rangeMin={rangeMin}
       rangeMax={rangeMax}
+      band={
+        band === undefined
+          ? undefined
+          : { from: displayValue(band.min, binding, displayUnit), to: displayValue(band.max, binding, displayUnit) }
+      }
       // Without a declared bound, that end of the range is only a scrub window.
       hasMinimum={min !== undefined}
       hasMaximum={max !== undefined}

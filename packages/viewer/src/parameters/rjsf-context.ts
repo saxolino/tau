@@ -77,6 +77,8 @@ export type ParameterPresentation = Readonly<{
   embedFirstLevel?: boolean;
   fieldLabel?: (path: readonly string[], fallback: string) => string;
   fieldNote?: (path: readonly string[]) => ReactNode;
+  /** A plausible band (native unit) to draw on a numeric field's slider, e.g. a photo recognition's min–max. */
+  fieldBand?: (path: readonly string[]) => Readonly<{ min: number; max: number }> | undefined;
   /** Translate or replace a field description; an empty string hides it. */
   fieldDescription?: (path: readonly string[], description: string) => string;
   /** A host that does not mark required fields (SinopiaCAD: every measure is required, so the star is noise). */

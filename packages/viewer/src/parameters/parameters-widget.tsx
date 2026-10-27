@@ -251,6 +251,7 @@ export function ParametersWidget(
           min={min}
           max={max}
           step={step}
+          band={fieldPath === undefined ? undefined : formContext.presentationOptions?.fieldBand?.(fieldPath)}
           id={id}
           disabled={disabled}
           readOnly={readonly}

@@ -14,6 +14,8 @@ type ParametersNumberFieldProperties = {
   readonly details?: readonly string[];
   readonly rangeMin: number;
   readonly rangeMax: number;
+  /** A plausible band, in display units, drawn on the track. */
+  readonly band?: Readonly<{ from: number; to: number }>;
   /** False when `rangeMin` only starts a scrub window rather than being the value's minimum. */
   readonly hasMinimum?: boolean;
   /** False when `rangeMax` only ends a scrub window rather than being the value's maximum. */
@@ -104,6 +106,7 @@ export const ParametersNumberField = ({
   details = [],
   rangeMin,
   rangeMax,
+  band,
   hasMinimum,
   hasMaximum,
   step,
@@ -139,6 +142,7 @@ export const ParametersNumberField = ({
         editingValue={editingValue}
         min={rangeMin}
         max={rangeMax}
+        band={band}
         hasMinimum={hasMinimum}
         hasMaximum={hasMaximum}
         step={step}
