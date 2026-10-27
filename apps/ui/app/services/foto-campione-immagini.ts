@@ -1,28 +1,10 @@
-import { codificaPng, decodificaPng } from '@taucad/smlib/verifica';
+import { decodificaPng } from '@taucad/smlib/verifica';
 import type { ImmagineRaster } from '@taucad/smlib/verifica';
-import type { MappeFoto } from '#lib/foto-campione/mappe.js';
-import type { MappePng } from '#services/sinopia-foto.js';
 
 /**
- * Browser glue of the sample photo: the maps as PNG for the request, and a received photo (PNG, JPEG or WebP, as the
- * image model returned it) as pixels for the silhouette check.
+ * Browser glue of the sample photo: a received photo (PNG, JPEG or WebP, as the image model returned it) as pixels for
+ * the silhouette check.
  */
-
-/**
- * Encode the four maps (grey, grey, RGB, grey): the colour types the function checks.
- *
- * @param mappe - The rendered maps.
- * @returns The PNG bytes.
- */
-export async function mappeInPng(mappe: MappeFoto): Promise<MappePng> {
-  const [ombreggiata, profondita, normali, bordi] = await Promise.all([
-    codificaPng(mappe.ombreggiata),
-    codificaPng(mappe.profondita),
-    codificaPng(mappe.normali),
-    codificaPng(mappe.bordi),
-  ]);
-  return { ombreggiata, profondita, normali, bordi };
-}
 
 const isPng = (bytes: Uint8Array): boolean => bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e;
 

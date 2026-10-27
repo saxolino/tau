@@ -1,7 +1,6 @@
 import { findPieceMaterial } from '@taucad/viewer/cad/piece-materials';
-import type { ImmagineRaster } from '@taucad/smlib/verifica';
+import type { MappeFoto, RasterFoto } from '#lib/foto-campione/mappe-condivise.js';
 import type { LivelloFoto, MaterialeFoto } from '#lib/foto-campione/impronta.js';
-import type { MappeFoto } from '#lib/foto-campione/mappe.js';
 
 /**
  * The fake generator of the development trial (`?prova=foto`, development builds only): no Sinopia, no model call, no
@@ -9,7 +8,7 @@ import type { MappeFoto } from '#lib/foto-campione/mappe.js';
  * states and the IoU check run as they will with the real one. «Standard» drifts 4 % larger around the centre, the way
  * an image model may: its IoU falls under 0.95 and the warning shows; «Fedele» keeps the silhouette.
  */
-export function fotoDiProva(mappe: MappeFoto, materiale: MaterialeFoto, livello: LivelloFoto): ImmagineRaster {
+export function fotoDiProva(mappe: MappeFoto, materiale: MaterialeFoto, livello: LivelloFoto): RasterFoto {
   const { lato, ombreggiata, sagoma } = mappe;
   const voce = findPieceMaterial(materiale.id);
   const esadecimale = (voce?.color ?? '#b3a895').replace('#', '');

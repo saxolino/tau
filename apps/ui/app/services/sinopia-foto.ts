@@ -5,15 +5,16 @@ import { requireClientEnvironment } from '#environment.config.js';
 import { getSinopiaDataClient, requireSinopiaUser } from '#lib/sinopia-data-client.js';
 import { livelliFoto } from '#lib/foto-campione/impronta.js';
 import type { LivelloFoto, MaterialeFoto } from '#lib/foto-campione/impronta.js';
-import { vistePhoto } from '#lib/foto-campione/mappe.js';
-import type { VistaFoto } from '#lib/foto-campione/mappe.js';
+import { vistePhoto } from '#lib/foto-campione/mappe-condivise.js';
+import type { VistaFoto } from '#lib/foto-campione/mappe-condivise.js';
 import type { FotoCampione } from '#lib/foto-campione/galleria.js';
 import type { SinopiaCadLink } from '#services/sinopia-cad.js';
 
 /**
  * Client of `POST /v1/photo` (SinopiaCAD D6) on Sinopia's `sinopiacad` function, and the reads the gallery needs from
  * Sinopia: the prices (`credit_costs`), the photos of this CAD model (`assets` `ai_render` with its `cad_model_id`), the
- * last delivered version and the photo bytes. Every read uses the admitted user's client and explicit ownership filters.
+ * last version sent with its GLB (Sinopia renders the photo's maps from it: the request carries no picture) and the
+ * private bytes. Every read uses the admitted user's client and explicit ownership filters.
  */
 
 /** Why a photo failed, by the function's error type. */
@@ -23,6 +24,8 @@ export type CodiceErroreFoto =
   | 'RATE_LIMITED'
   | 'INVALID_REQUEST'
   | 'CAD_MODEL_NOT_FOUND'
+  | 'CAD_VERSION_MISSING'
+  | 'CAD_MODEL_UNREADABLE'
   | 'CREDITS_NOT_CONFIGURED'
   | 'CREDIT_COST_CHANGED'
   | 'INSUFFICIENT_CREDITS'
@@ -39,6 +42,8 @@ const codici = new Set<CodiceErroreFoto>([
   'RATE_LIMITED',
   'INVALID_REQUEST',
   'CAD_MODEL_NOT_FOUND',
+  'CAD_VERSION_MISSING',
+  'CAD_MODEL_UNREADABLE',
   'CREDITS_NOT_CONFIGURED',
   'CREDIT_COST_CHANGED',
   'INSUFFICIENT_CREDITS',
@@ -79,6 +84,7 @@ const rispostaSchema = z
     materiale: materialeSchema,
     livello: z.enum(livelliFoto),
     impronta: improntaSchema,
+    versionNumber: z.number().int().positive(),
     costo: z.number().int().nonnegative(),
     modello: z.string(),
     replayed: z.boolean(),
@@ -94,45 +100,24 @@ export type EsitoFoto = Readonly<{
   vista: VistaFoto;
   materiale: MaterialeFoto;
   livello: LivelloFoto;
+  /** Sinopia's own fingerprint (from the GLB it rendered the maps from). */
   impronta: string;
+  versionNumber: number;
   costo: number;
   modello: string;
   replayed: boolean;
 }>;
 
-/** The PNG maps of the request, as `rendiMappe` gives them once encoded. */
-export type MappePng = Readonly<{
-  ombreggiata: Uint8Array;
-  profondita: Uint8Array;
-  normali: Uint8Array;
-  bordi: Uint8Array;
-}>;
-
-/** A photo request: one view, one material, one level, the fingerprint, the maps and the cost the person saw. */
+/** A photo request: the sent version, one view, one material, one level and the cost the person saw. No picture. */
 export type RichiestaFoto = Readonly<{
   requestId: string;
   maxCreditCost: number;
   cadModelId: string;
-  versionNumber: number | null;
+  versionNumber: number;
   vista: VistaFoto;
   materiale: MaterialeFoto;
   livello: LivelloFoto;
-  impronta: string;
-  mappe: MappePng;
 }>;
-
-const base64 = (bytes: Uint8Array): string => {
-  let testo = '';
-  for (let indice = 0; indice < bytes.length; indice += 0x80_00) {
-    testo += String.fromCodePoint(...bytes.subarray(indice, indice + 0x80_00));
-  }
-  return btoa(testo);
-};
-
-const png = (bytes: Uint8Array): { mediaType: 'image/png'; data: string } => ({
-  mediaType: 'image/png',
-  data: base64(bytes),
-});
 
 /**
  * Ask Sinopia for one sample photo.
@@ -160,13 +145,6 @@ export async function generaFotoCampione(
         vista: richiesta.vista,
         materiale: richiesta.materiale,
         livello: richiesta.livello,
-        impronta: richiesta.impronta,
-        mappe: {
-          ombreggiata: png(richiesta.mappe.ombreggiata),
-          profondita: png(richiesta.mappe.profondita),
-          normali: png(richiesta.mappe.normali),
-          bordi: png(richiesta.mappe.bordi),
-        },
       }),
       ...(opzioni.segnale ? { signal: opzioni.segnale } : {}),
     });
@@ -190,7 +168,20 @@ export async function generaFotoCampione(
   if (!letto.success) {
     throw new ErroreFoto('PROVIDER_UNAVAILABLE', risposta.status, 'La risposta della foto non è valida.');
   }
-  const { assetId, progettoId, url, aiAct, vista, materiale, livello, impronta, costo, modello, replayed } = letto.data;
+  const {
+    assetId,
+    progettoId,
+    url,
+    aiAct,
+    vista,
+    materiale,
+    livello,
+    impronta,
+    versionNumber,
+    costo,
+    modello,
+    replayed,
+  } = letto.data;
   return {
     assetId,
     progettoId,
@@ -200,6 +191,7 @@ export async function generaFotoCampione(
     materiale: materiale as MaterialeFoto,
     livello,
     impronta,
+    versionNumber,
     costo,
     modello,
     replayed,
@@ -230,7 +222,6 @@ const fotoSchema = z.object({
     })
     .loose(),
 });
-const versioneSchema = z.object({ version_number: z.number().int().positive().nullable() });
 /* eslint-enable @typescript-eslint/naming-convention -- Domain names stay camelCase. */
 
 type ClientFactory = typeof getSinopiaDataClient;
@@ -311,37 +302,66 @@ export async function elencaFotoCampione(
   return foto;
 }
 
+/** The last version of this model sent to Sinopia with a GLB: the one a sample photo shows. */
+export type VersioneInviata = Readonly<{
+  versionNumber: number;
+  assetId: string;
+  glb: Readonly<{ bucket: string; path: string }>;
+}>;
+
+/* eslint-disable @typescript-eslint/naming-convention -- These validation objects describe Supabase wire column names verbatim. */
+const consegnaSchema = z.object({
+  id: z.uuid(),
+  version_number: z.number().int().positive(),
+  storage_bucket: z.string().nullable(),
+  metadata: z
+    .object({ files: z.array(z.object({ format: z.string(), storage_path: z.string() }).loose()).optional() })
+    .loose(),
+});
+/* eslint-enable @typescript-eslint/naming-convention -- Domain names stay camelCase. */
+
 /**
- * The number of the last version of this model sent to Sinopia (`assets` `cad_model`), or `null` before the first.
+ * The newest version of this model sent to Sinopia that carries a GLB (a delivery of the STEP alone cannot be
+ * photographed), or `undefined` before the first.
  *
  * @param link - The model's Sinopia link.
  * @param getClient - The Sinopia data client.
- * @returns The version number, or `null`.
+ * @returns The version and where its GLB is.
  */
-export async function ultimaVersioneConsegnata(
+export async function versioneInviata(
   link: SinopiaCadLink,
   getClient: ClientFactory = getSinopiaDataClient,
-): Promise<number | null> {
+): Promise<VersioneInviata | undefined> {
   const { client } = await getClient();
   const { data, error } = await client
     .from('assets')
-    .select('version_number')
+    .select('id,version_number,storage_bucket,metadata')
     .eq('user_id', link.userId)
     .eq('project_id', link.projectId)
     .eq('type', 'cad_model')
     // eslint-disable-next-line @typescript-eslint/naming-convention -- The containment predicate uses the persisted JSON field.
     .contains('metadata', { cad_model_id: link.modelId })
     .order('version_number', { ascending: false, nullsFirst: false })
-    .limit(1)
-    .maybeSingle();
+    .limit(10);
   if (error) {
     throw new Error('Sinopia versions: unreadable');
   }
-  return data === null ? null : versioneSchema.parse(data).version_number;
+  for (const riga of Array.isArray(data) ? data : []) {
+    const letta = consegnaSchema.safeParse(riga);
+    const glb = letta.success ? letta.data.metadata.files?.find((file) => file.format === 'glb') : undefined;
+    if (letta.success && glb) {
+      return {
+        versionNumber: letta.data.version_number,
+        assetId: letta.data.id,
+        glb: { bucket: letta.data.storage_bucket ?? 'creator-private', path: glb.storage_path },
+      };
+    }
+  }
+  return undefined;
 }
 
 /**
- * The bytes of a photo kept in Sinopia's storage (the owner's own `creator-private` object).
+ * The bytes of a photo or a sent GLB kept in Sinopia's storage (the owner's own `creator-private` object).
  *
  * @param sorgente - Bucket and path of the asset.
  * @param getClient - The Sinopia data client.

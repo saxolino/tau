@@ -1,6 +1,12 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
-import { elencaFotoCampione, ErroreFoto, generaFotoCampione, leggiPrezziCad } from '#services/sinopia-foto.js';
+import {
+  elencaFotoCampione,
+  ErroreFoto,
+  generaFotoCampione,
+  leggiPrezziCad,
+  versioneInviata,
+} from '#services/sinopia-foto.js';
 import type { RichiestaFoto } from '#services/sinopia-foto.js';
 
 vi.mock('#environment.config.js', () => ({
@@ -22,17 +28,10 @@ const richiesta: RichiestaFoto = {
   requestId: '66666666-6666-4666-8666-666666666666',
   maxCreditCost: 2,
   cadModelId: MODELLO,
-  versionNumber: null,
+  versionNumber: 3,
   vista: 'tre-quarti',
   materiale: { id: 'brass', finitura: 'polished' },
   livello: 'standard',
-  impronta: IMPRONTA,
-  mappe: {
-    ombreggiata: new Uint8Array([1, 2, 3]),
-    profondita: new Uint8Array([4]),
-    normali: new Uint8Array([5]),
-    bordi: new Uint8Array([6]),
-  },
 };
 
 const risposta = {
@@ -40,11 +39,12 @@ const risposta = {
   assetId: ASSET,
   progettoId: PROGETTO,
   url: 'https://cdn/x.png',
-  aiAct: 'ai-modified',
+  aiAct: 'ai-generated',
   vista: 'tre-quarti',
   materiale: { id: 'brass', finitura: 'polished' },
   livello: 'standard',
   impronta: IMPRONTA,
+  versionNumber: 3,
   costo: 2,
   modello: 'gemini-nano-banana-2.1',
   millisecondi: 4200,
@@ -52,14 +52,14 @@ const risposta = {
 };
 
 describe('client of /v1/photo', () => {
-  it('should post the request with the session token, the maps as PNG base64 and the cost the person saw', async () => {
+  it('should post the choice and the sent version with the session token and the cost the person saw — no picture', async () => {
     const chiamate: Array<{ url: string; init: RequestInit }> = [];
     const fetch = vi.fn(async (url: string, init?: RequestInit) => {
       chiamate.push({ url, init: init ?? {} });
       return Response.json(risposta);
     }) as unknown as typeof globalThis.fetch;
     const esito = await generaFotoCampione(richiesta, { fetch });
-    expect(esito).toMatchObject({ assetId: ASSET, costo: 2, aiAct: 'ai-modified', replayed: false });
+    expect(esito).toMatchObject({ assetId: ASSET, costo: 2, aiAct: 'ai-generated', versionNumber: 3, replayed: false });
     expect(chiamate[0]!.url).toBe('https://sinopia.test/functions/v1/sinopiacad/v1/photo');
     expect((chiamate[0]!.init.headers as Record<string, string>)['authorization']).toBe('Bearer jwt-of-the-user');
     const corpo = JSON.parse(chiamate[0]!.init.body as string) as Record<string, unknown>;
@@ -67,17 +67,10 @@ describe('client of /v1/photo', () => {
       requestId: richiesta.requestId,
       maxCreditCost: 2,
       cadModelId: MODELLO,
-      versionNumber: null,
+      versionNumber: 3,
       vista: 'tre-quarti',
       materiale: { id: 'brass', finitura: 'polished' },
       livello: 'standard',
-      impronta: IMPRONTA,
-      mappe: {
-        ombreggiata: { mediaType: 'image/png', data: 'AQID' },
-        profondita: { mediaType: 'image/png', data: 'BA==' },
-        normali: { mediaType: 'image/png', data: 'BQ==' },
-        bordi: { mediaType: 'image/png', data: 'Bg==' },
-      },
     });
   });
 
@@ -95,6 +88,11 @@ describe('client of /v1/photo', () => {
         fetch: risponde(Response.json({ error: { type: 'INSUFFICIENT_CREDITS', message: 'pochi' } }, { status: 402 })),
       }),
     ).rejects.toMatchObject({ codice: 'INSUFFICIENT_CREDITS' });
+    await expect(
+      generaFotoCampione(richiesta, {
+        fetch: risponde(Response.json({ error: { type: 'CAD_VERSION_MISSING', message: 'invia' } }, { status: 409 })),
+      }),
+    ).rejects.toMatchObject({ codice: 'CAD_VERSION_MISSING', stato: 409 });
     await expect(
       generaFotoCampione(richiesta, { fetch: risponde(Response.json({ ...risposta, impronta: 'x' })) }),
     ).rejects.toBeInstanceOf(ErroreFoto);
@@ -180,5 +178,31 @@ describe('Sinopia reads of the gallery', () => {
     expect(filtri).toContainEqual(['eq', 'project_id', PROGETTO]);
     expect(filtri).toContainEqual(['eq', 'type', 'ai_render']);
     expect(filtri).toContainEqual(['contains', 'metadata', { cad_model_id: MODELLO, source: 'sinopiacad' }]);
+  });
+
+  it('should find the newest version sent with a GLB, skipping a delivery of the STEP alone', async () => {
+    const { filtri, getClient } = client([
+      {
+        id: ASSET,
+        version_number: 5,
+        storage_bucket: 'creator-private',
+        metadata: { files: [{ format: 'step', storage_path: 'p/v5/model.step' }] },
+      },
+      {
+        id: '44444444-4444-4444-8444-444444444444',
+        version_number: 4,
+        storage_bucket: 'creator-private',
+        metadata: { files: [{ format: 'glb', storage_path: `projects/${PROGETTO}/cad/${MODELLO}/v4/x/model.glb` }] },
+      },
+    ]);
+    const link = { modelId: MODELLO, projectId: PROGETTO, userId: 'u', baseRevisionId: null };
+    expect(await versioneInviata(link, getClient as never)).toStrictEqual({
+      versionNumber: 4,
+      assetId: '44444444-4444-4444-8444-444444444444',
+      glb: { bucket: 'creator-private', path: `projects/${PROGETTO}/cad/${MODELLO}/v4/x/model.glb` },
+    });
+    expect(filtri).toContainEqual(['eq', 'type', 'cad_model']);
+    expect(filtri).toContainEqual(['contains', 'metadata', { cad_model_id: MODELLO }]);
+    expect(await versioneInviata(link, client([]).getClient as never)).toBeUndefined();
   });
 });
