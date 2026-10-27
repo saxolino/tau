@@ -147,7 +147,8 @@ function sformoESottosquadri(misure: MisurePezzo, contesto: Contesto): Controllo
         continue;
       }
       minimo = Math.min(minimo, utile);
-      if (utile + 1e-6 < soglia) {
+      // Tolleranza di 0,001°: una faccia a forma libera sformata di 1° si misura 0,999998° (rumore della misura).
+      if (utile + 1e-3 < soglia) {
         scarse.push(faccia);
         if (utile < 1e-3) {
           verticali++;

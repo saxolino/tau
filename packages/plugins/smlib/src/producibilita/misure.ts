@@ -29,6 +29,14 @@ const quasiVerticale = 0.02;
 const coperturaForo = 200;
 /** Oltre questo spessore nessuna soglia di parete guarda (la più alta è il legno, 6 mm): non serve la prova dello spigolo. */
 const spessoreRilevante = 10;
+/**
+ * Altezza (mm, lungo la direzione di sformo) sotto la quale una faccia quasi verticale è uno scalino, non una parete:
+ * il bordo in rilievo di una placca (0,3 mm), le lettere e il logo. Dei suoi fianchi non si misura lo spessore (un
+ * filo largo 0,8 mm e alto 0,3 mm sopra una lastra di 1,5 mm non è una parete di 0,8 mm: lo guardano le verifiche del
+ * tratto, `TRATTO_MIN`, `TRATTO_MIN_LOGO`) e non si cerca il sottosquadro (a quell'altezza cade nella tolleranza
+ * della forma: lo sformo mancante lo dice `SFORMO`). Una faccia orizzontale non è mai uno scalino.
+ */
+const altezzaScalino = 0.5;
 /** Raggio massimo di una griffa (mm): oltre è un gambo o una colonna. */
 const raggioMassimoGriffa = 1;
 
@@ -295,6 +303,24 @@ function colpoVero(colpo: Smlib.Hit<Smlib.Face>, { punto, da }: Readonly<{ punto
   }
 }
 
+/** Una faccia quasi verticale (rispetto a `d`) più bassa di `altezzaScalino`. */
+function èScalino(faccia: Smlib.Face, d: Punto): boolean {
+  try {
+    const { min, max } = faccia.bbox();
+    const angoli = [min.x, max.x].flatMap((x) =>
+      [min.y, max.y].flatMap((y) => [min.z, max.z].map((z) => scalare([x, y, z], d))),
+    );
+    const altezza = Math.max(...angoli) - Math.min(...angoli);
+    if (altezza > altezzaScalino) {
+      return false;
+    }
+    const punto = faccia.interiorPoint();
+    return Math.abs(scalare(faccia.normalAt(punto).toArray(), d)) < 0.3;
+  } catch {
+    return false;
+  }
+}
+
 /** Spessori per faccia e facce intrappolate con un solo `raycastMany` (l'albero dei raggi si costruisce una volta). */
 function raggi(
   forma: Smlib.Part,
@@ -308,6 +334,9 @@ function raggi(
   const legami: Array<{ faccia: number; tipo: 'spessore' | 'uscita' | 'uscita_doppia'; punto: Punto; da: Smlib.Face }> =
     [];
   for (const [indice, faccia] of facce.entries()) {
+    if (èScalino(faccia.faccia, d)) {
+      continue;
+    }
     for (const { punto, normale } of campioniFaccia(faccia, campioniPerFaccia)) {
       origini.push(differenza(punto, per(normale, scostamento)));
       direzioni.push(per(normale, -1));

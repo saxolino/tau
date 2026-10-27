@@ -824,6 +824,18 @@ function verifiche(
       pezzo: 'Placca',
     }),
   );
+  if (bordo.rilievo > 0) {
+    // Il bordo è un filo in rilievo: lo guarda il tratto minimo del processo, non la parete (la misura sulla geometria
+    // non conta i fianchi più bassi di 0,5 mm: vedi `altezzaScalino`).
+    esiti.push(
+      esitoMinimo('TRATTO_MIN_BORDO', {
+        valore: bordo.larghezza,
+        soglia: sogliaTratto(processo),
+        cosa: 'Larghezza del bordo in rilievo',
+        pezzo: 'Placca',
+      }),
+    );
+  }
   if (bordo.rilievo > 0.6 * piastra.spessore) {
     esiti.push(
       esito('avviso', 'BORDO_RILIEVO', {
