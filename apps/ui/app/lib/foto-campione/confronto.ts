@@ -5,7 +5,8 @@ import type { MeshFoto, SagomaFoto, VistaFoto } from '#lib/foto-campione/mappe-c
  * Whether the model on screen is still the version sent to Sinopia (SinopiaCAD D6). The photo is made by Sinopia from
  * the sent version's GLB; the screen renders its own preview, tessellated differently, so their bytes never match. The
  * shapes are compared instead: the bounding box in millimetres (the maps frame the model, so a uniform scale would not
- * show in them) and, in two views at 256², the silhouette (beyond one pixel) and the depth.
+ * show in them) and, in three views at 256² (front, three-quarter, back from below), the silhouette (beyond one pixel)
+ * and the depth.
  */
 
 /** Size tolerance: 0.1 mm or 0.5 %, the larger — a chordal tessellation difference, not a design change. */
@@ -24,7 +25,14 @@ export const sogliaScartoStessaForma = 0.003;
 export const sogliaProfonditaStessaForma = 0.003;
 const salto = 16;
 const latoConfronto = 256;
-const visteConfronto: readonly VistaFoto[] = ['tre-quarti', 'fronte'];
+/**
+ * Le viste del confronto: le due della foto più una da dietro e dal basso (azimuth 215°, elevation −30°), che vede il
+ * retro e il sotto di un pezzo — dove un cambio non si vede né di fronte né di tre quarti. Una vista in più a 256² costa
+ * un paio di millisecondi.
+ */
+const visteConfronto: ReadonlyArray<
+  Readonly<{ vista: VistaFoto; camera?: Readonly<{ azimuth: number; elevation: number }> }>
+> = [{ vista: 'tre-quarti' }, { vista: 'fronte' }, { vista: 'tre-quarti', camera: { azimuth: 215, elevation: -30 } }];
 
 /** Pixels of `a` with no pixel of `b` in their 3 × 3 neighbourhood. */
 const fuoriDa = (a: SagomaFoto, b: SagomaFoto): number => {
@@ -76,8 +84,8 @@ export function stessaForma(
       Math.abs(valore - eb[asse]!) <= Math.max(tolleranzaMm, tolleranzaRelativa * Math.max(valore, eb[asse]!)),
   );
   let [iouMinima, scartoMassimo, profonditaMassima] = [1, 0, 0];
-  for (const vista of visteConfronto) {
-    const [ma, mb] = [rendiMappe(a, vista, latoConfronto), rendiMappe(b, vista, latoConfronto)];
+  for (const { vista, camera } of visteConfronto) {
+    const [ma, mb] = [rendiMappe(a, vista, latoConfronto, camera), rendiMappe(b, vista, latoConfronto, camera)];
     iouMinima = Math.min(iouMinima, iouSagome(ma.sagoma, mb.sagoma));
     let unione = 0;
     for (let p = 0; p < ma.sagoma.dati.length; p++) {

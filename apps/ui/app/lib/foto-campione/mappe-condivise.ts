@@ -506,18 +506,25 @@ function isPiatto(triangoli: Float32Array): boolean {
  * Rende le mappe di una vista.
  *
  * @param mesh - Triangoli e spigoli del modello (`meshDaGlb`).
- * @param vista - La vista.
+ * @param vista - La vista (margine e zoom; e la camera, se non è data).
  * @param lato - Il lato delle immagini quadrate.
+ * @param camera - Una camera esplicita al posto di quella della vista (il confronto del CAD guarda anche da dietro e
+ *   dal basso); con una camera esplicita il «fronte» non si gira dall'alto per i pezzi piatti.
  * @returns Le mappe e la sagoma.
  */
-export function rendiMappe(mesh: MeshFoto, vista: VistaFoto, lato: number = latoMappe): MappeFoto {
-  const definizione = definizioniViste[vista];
+export function rendiMappe(
+  mesh: MeshFoto,
+  vista: VistaFoto,
+  lato: number = latoMappe,
+  camera?: Readonly<{ azimuth: number; elevation: number }>,
+): MappeFoto {
+  const definizione = camera ? { ...definizioniViste[vista], ...camera } : definizioniViste[vista];
   const { triangoli, normali: normaliMesh, segmenti } = mesh;
   const vertici = triangoli.length / 3;
   if (vertici < 3) {
     throw new Error('Sample photo: the model has no surface to photograph.');
   }
-  const elevation = vista === 'fronte' && isPiatto(triangoli) ? 90 : definizione.elevation;
+  const elevation = !camera && vista === 'fronte' && isPiatto(triangoli) ? 90 : definizione.elevation;
   const { destra, su, direzione } = assiFoto(definizione.azimuth, elevation);
 
   // Coordinate sul piano dell'immagine (mm lungo destra e su) e profondità (mm lungo la direzione) di ogni vertice.

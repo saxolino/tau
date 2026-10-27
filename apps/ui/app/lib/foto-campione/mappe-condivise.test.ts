@@ -10,7 +10,7 @@ import { codificaPngFoto, rendiMappe, sha256Foto } from '#lib/foto-campione/mapp
  * `supabase/functions/sinopiacad/photo.test.ts`. If you change the file, copy it to
  * `supabase/functions/sinopiacad/foto/mappe-condivise.ts` and update the fingerprint in BOTH tests.
  */
-const improntaGemella = 'd237c22f09d2a7ee62595fa80665474e477017978f4272b0d249fc44071215a2';
+const improntaGemella = 'e3a30114d953beabb366293a0a4125af900461f7d9216888af0e5932eec5eff2';
 
 describe('twin maps module (CAD ↔ Sinopia)', () => {
   it('should be the byte-for-byte copy Sinopia renders the photo maps with', async () => {
@@ -59,5 +59,17 @@ describe('screen model against the sent version', () => {
       scatole({ min: [-10, -10, -20], max: [10, 10, 20] }, { min: [-2, -14, 1], max: [2, -10, 5] }),
     );
     expect([unMillimetro.stessa, unMillimetro.scarto]).toStrictEqual([false, 0]);
+    // A block under the piece, hidden by a front and a right skirt: neither the front nor the three-quarter view sees
+    // it move by 2 mm (the sizes do not change); the view from behind and below does.
+    const sotto = (x0: number) =>
+      scatole(
+        { min: [-10, -10, -20], max: [10, 10, 20] },
+        { min: [-10, -10, -25], max: [10, -8, -20] },
+        { min: [8, -10, -25], max: [10, 10, -20] },
+        { min: [x0, -2, -24], max: [x0 + 4, 2, -21] },
+      );
+    expect(stessaForma(sotto(-6), sotto(-6)).stessa).toBe(true);
+    const spostato = stessaForma(sotto(-6), sotto(-4));
+    expect([spostato.stessa, spostato.misure, spostato.scarto]).toStrictEqual([false, true, 0]);
   });
 });
