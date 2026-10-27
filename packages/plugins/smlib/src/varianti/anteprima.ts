@@ -20,7 +20,7 @@ export type OpzioniAnteprima = Readonly<{
   vista?: Smlib.RenderView;
   /** Riquadro di una resa precedente, perché le varianti si confrontino alla stessa scala. */
   inquadratura?: Inquadratura;
-  /** Margine attorno al pezzo quando il riquadro non è dato (frazione della resa, predefinito 0,82). */
+  /** Margine attorno al pezzo quando il riquadro non è dato (frazione della resa, predefinito 0,92). */
   zoom?: number;
 }>;
 
@@ -91,7 +91,7 @@ export function anteprimaPezzi(
     colors: 'native',
     ...(opzioni.inquadratura
       ? { frame: { ...opzioni.inquadratura, scale: opzioni.inquadratura.scale * 2 } }
-      : { zoom: opzioni.zoom ?? 0.82 }),
+      : { zoom: opzioni.zoom ?? 0.92 }),
   });
   const sorgente = resa.pixels;
   const larghezzaFine = larghezza * 2;

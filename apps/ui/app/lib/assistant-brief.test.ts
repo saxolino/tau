@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { RJSFSchema } from '@rjsf/utils';
 import { anello, emettiMainFamiglia, fibbia } from '@taucad/smlib/famiglie';
 import type { Esito } from '@taucad/smlib/famiglie';
+import { schedaRiconoscimentoDiProva } from '@taucad/smlib/riconoscimento';
 import type { GeometryComponentNode } from '@taucad/types';
 import {
   chiaviFoglia,
@@ -9,6 +10,7 @@ import {
   famigliaDalMain,
   ingombroModello,
   ipotesiAperte,
+  ipotesiDelRiconoscimento,
   misureChiaveFamiglia,
   parametriEffettivi,
   rigaEsito,
@@ -97,6 +99,28 @@ describe('ipotesiAperte', () => {
     expect(ipotesiAperte(schema, {})).toBe(2);
     expect(ipotesiAperte(schema, { telaio: { raggioAngoli: 2 } })).toBe(1);
     expect(ipotesiAperte(undefined, {})).toBe(0);
+  });
+});
+
+describe('ipotesiDelRiconoscimento', () => {
+  it('should count a recognition’s open assumptions as its card does, one less for each answer', () => {
+    const scheda = schedaRiconoscimentoDiProva;
+    const aperte = ipotesiDelRiconoscimento({ scheda, famiglia: 'fibbia', risposte: {} });
+    expect(aperte).toBeGreaterThan(0);
+    expect(aperte).toBeLessThanOrEqual(scheda.parametri.length);
+    const risposta = scheda.parametri.find(
+      (parametro) =>
+        ipotesiDelRiconoscimento({
+          scheda: { ...scheda, parametri: [parametro] },
+          famiglia: 'fibbia',
+          risposte: {},
+        }) === 1,
+    );
+    expect(ipotesiDelRiconoscimento({ scheda, famiglia: 'fibbia', risposte: { [risposta!.chiave]: 19 } })).toBe(
+      aperte - 1,
+    );
+    // A family chosen over the recognised one has none of its parameters recognised.
+    expect(ipotesiDelRiconoscimento({ scheda, famiglia: 'placca', risposte: {} })).toBe(0);
   });
 });
 

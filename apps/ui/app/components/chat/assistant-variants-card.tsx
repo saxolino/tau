@@ -213,9 +213,9 @@ export function AssistantVariantsCard({
               {variante.motivo ? <p className='text-muted-foreground'>{variante.motivo}</p> : null}
               <dl className='mt-1.5 space-y-0.5'>
                 {variante.righe.slice(0, righeMassime).map((riga) => (
-                  <div key={riga.id} className='flex items-baseline justify-between gap-3'>
-                    <dt className='min-w-0 truncate text-muted-foreground'>{riga.etichetta}</dt>
-                    <dd className='shrink-0 font-mono whitespace-nowrap tabular-nums'>{`${riga.prima} → ${riga.dopo}`}</dd>
+                  <div key={riga.id} className='flex flex-wrap items-baseline justify-between gap-x-3'>
+                    <dt className='min-w-0 text-muted-foreground'>{riga.etichetta}</dt>
+                    <dd className='ml-auto font-mono whitespace-nowrap tabular-nums'>{`${riga.prima} → ${riga.dopo}`}</dd>
                   </div>
                 ))}
                 {variante.peso ? (

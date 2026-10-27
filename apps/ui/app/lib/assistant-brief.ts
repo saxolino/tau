@@ -10,6 +10,8 @@ import type {
   ValoreParametro,
 } from '@taucad/smlib/famiglie';
 import { manualBoundsSchema } from '@taucad/smlib/manual-operations';
+import { catalogoFamiglie, statoValore } from '@taucad/smlib/riconoscimento';
+import type { SchedaRiconoscimento } from '@taucad/smlib/riconoscimento';
 import { materialeFamiglia, provaMateriale } from '@taucad/smlib/varianti';
 import type { Correzione, Differenza, Modifica } from '@taucad/smlib/varianti';
 import type { GeometryComponentNode } from '@taucad/types';
@@ -124,6 +126,33 @@ export function ipotesiAperte(schema: RJSFSchema | undefined, valori: unknown): 
     );
   };
   return conta(schema, []);
+}
+
+/**
+ * The assumptions a recognition still has open, counted as its card «Riconosciuto» counts them (the parameters it
+ * recognised, not answered yet and not measured), so the assistant and the card never say two numbers.
+ *
+ * @param riconoscimento - The recognition's sheet, the family built and the designer's answers.
+ * @returns The count.
+ */
+export function ipotesiDelRiconoscimento(
+  riconoscimento: Readonly<{
+    scheda: SchedaRiconoscimento;
+    famiglia: string;
+    risposte: Readonly<Record<string, unknown>>;
+  }>,
+): number {
+  const { scheda, famiglia, risposte } = riconoscimento;
+  const catalogo = catalogoFamiglie().find((voce) => voce.id === famiglia);
+  const definizioni = new Map((catalogo?.parametri ?? []).map((definizione) => [definizione.chiave, definizione]));
+  const scalaStimata = scheda.scala.fonte === 'stima';
+  const parametri = catalogo === undefined || catalogo.id === scheda.famiglia.id ? scheda.parametri : [];
+  return parametri.filter(
+    (parametro) =>
+      (catalogo === undefined || definizioni.has(parametro.chiave)) &&
+      risposte[parametro.chiave] === undefined &&
+      statoValore(parametro, { scalaStimata, unita: definizioni.get(parametro.chiave)?.unita ?? 'mm' }) !== 'misurata',
+  ).length;
 }
 
 /**

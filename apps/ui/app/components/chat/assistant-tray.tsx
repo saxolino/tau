@@ -56,7 +56,8 @@ type SessioneVarianti =
       scartate: ReadonlySet<string>;
     }>;
 
-type AssistantTrayValue = Readonly<{
+/** What the tray offers its surfaces. */
+export type AssistantTrayValue = Readonly<{
   modello: ModelloAssistente;
   sessione?: SessioneVarianti;
   modifica?: UltimaModifica;
@@ -78,7 +79,10 @@ type AssistantTrayValue = Readonly<{
   selezionaPezzo: (nome: string) => void;
 }>;
 
-const AssistantTrayContext = createContext<AssistantTrayValue | undefined>(undefined);
+/**
+ * The tray's context: provided by {@link AssistantTrayProvider}; exported for the tests of its consumers.
+ */
+export const AssistantTrayContext = createContext<AssistantTrayValue | undefined>(undefined);
 
 /**
  * The tray of the open project, or undefined outside a provider (the phone's lane has none).
@@ -414,8 +418,9 @@ export function AssistantTrayProvider({ children }: Readonly<{ children: React.R
   return <AssistantTrayContext.Provider value={value}>{children}</AssistantTrayContext.Provider>;
 }
 
+/** Grams with two decimals, as the Measures weigh the model. */
 const numero = (valore: number, language: Language): string =>
-  formatNumber(valore, language, { maximumFractionDigits: 1 });
+  formatNumber(valore, language, { maximumFractionDigits: 2 });
 
 /**
  * The variants of a worker's answer as the card shows them: name, reason, preview, the first differences in words

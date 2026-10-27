@@ -10,7 +10,13 @@ import type { FileParameterEntry, GeometryComponentNode } from '@taucad/types';
 import type { PieceMaterialChoice } from '@taucad/viewer/cad/piece-materials';
 import { useFileManager } from '#hooks/use-file-manager.js';
 import { useProject } from '#hooks/use-project.js';
-import { chiaviFoglia, famigliaDalMain, ipotesiAperte, parametriEffettivi } from '#lib/assistant-brief.js';
+import {
+  chiaviFoglia,
+  famigliaDalMain,
+  ipotesiAperte,
+  ipotesiDelRiconoscimento,
+  parametriEffettivi,
+} from '#lib/assistant-brief.js';
 import type { FamigliaProgetto } from '#lib/assistant-brief.js';
 import { modelPieces } from '#lib/piece-measures.js';
 import { useProjectParametersSource } from '#routes/w.$workspace.$project/chat-parameters.js';
@@ -37,7 +43,7 @@ export type ModelloAssistente = Readonly<{
   /** Dotted paths of the fixed values. */
   bloccati: readonly string[];
   ipotesi: number;
-  riconoscimento?: Readonly<{ iou?: number }>;
+  riconoscimento?: Readonly<{ iou?: number; ipotesi: number }>;
   controllo: ControlloModello;
 }>;
 
@@ -75,11 +81,14 @@ export function useAssistantModel(valutatore: ValutatoreVarianti | undefined): M
   const root = `/projects/${projectId}`;
   const revisione = manifest?.revision;
   const [dichiarata, setDichiarata] = useState<FamigliaProgetto>();
-  const [riconoscimento, setRiconoscimento] = useState<{ iou?: number }>();
+  const [riconoscimento, setRiconoscimento] = useState<{ iou?: number; ipotesi: number }>();
 
   // The family and the recognition are files of the project: read again whenever the model was rebuilt.
   useEffect(() => {
     const corsa = { viva: true };
+    if (mainEntryPath === '') {
+      return undefined;
+    }
     // async-iife: bootstrap -- an absent or unreadable file says nothing; the card falls back to a free model.
     void (async (): Promise<void> => {
       try {
@@ -96,9 +105,14 @@ export function useAssistantModel(valutatore: ValutatoreVarianti | undefined): M
           setDichiarata(famigliaDalMain(main));
           setRiconoscimento(
             lettura.stato === 'ok'
-              ? lettura.record.verifica.stato === 'fatta'
-                ? { iou: lettura.record.verifica.iou }
-                : {}
+              ? {
+                  ...(lettura.record.verifica.stato === 'fatta' ? { iou: lettura.record.verifica.iou } : {}),
+                  ipotesi: ipotesiDelRiconoscimento({
+                    scheda: lettura.record.scheda,
+                    famiglia: lettura.record.famiglia.id,
+                    risposte: lettura.record.risposte,
+                  }),
+                }
               : undefined,
           );
         }
@@ -125,7 +139,9 @@ export function useAssistantModel(valutatore: ValutatoreVarianti | undefined): M
     [definizione, dichiarata, manifest, valori],
   );
   const schema = manifest?.legacyProjection.status === 'usable' ? manifest.legacyProjection.schema : undefined;
-  const ipotesi = useMemo(() => ipotesiAperte(schema, valori), [schema, valori]);
+  // A recognition counts its own open assumptions, as its card shows them; any other model counts the markers.
+  const ipotesiSchema = useMemo(() => ipotesiAperte(schema, valori), [schema, valori]);
+  const ipotesi = riconoscimento?.ipotesi ?? ipotesiSchema;
   const bloccati = useMemo(() => chiaviFoglia(valori), [valori]);
 
   const [controllo, setControllo] = useState<ControlloModello>({ stato: 'nessuno' });

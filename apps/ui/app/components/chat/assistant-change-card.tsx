@@ -85,7 +85,7 @@ export function AssistantChangeCard({
       ) : (
         <ul className='space-y-1 px-3 pt-1.5 pb-2'>
           {visibili.map((riga) => (
-            <li key={riga.id} className='flex items-baseline justify-between gap-3'>
+            <li key={riga.id} className='flex flex-wrap items-baseline justify-between gap-x-3'>
               <span className='min-w-0 leading-snug'>
                 {riga.pezzo ? (
                   riga.selezionabile && onSelezionaPezzo ? (
@@ -111,7 +111,8 @@ export function AssistantChangeCard({
                   </span>
                 ) : null}
               </span>
-              <span className='shrink-0 font-mono whitespace-nowrap tabular-nums'>{`${riga.prima} → ${riga.dopo}`}</span>
+              {/* A long value («pressofusione → fusione a cera persa») goes to its own line, right-aligned. */}
+              <span className='ml-auto font-mono whitespace-nowrap tabular-nums'>{`${riga.prima} → ${riga.dopo}`}</span>
             </li>
           ))}
         </ul>
