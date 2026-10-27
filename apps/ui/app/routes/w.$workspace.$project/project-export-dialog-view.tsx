@@ -17,6 +17,7 @@ import { downloadExportArtifactSet } from '#utils/export-artifact-set.utils.js';
 import { projectExportFormats } from '#services/project-export.types.js';
 import type { PreparedExport, ProjectExportFormat, ProjectExportSketches } from '#services/project-export.types.js';
 import type { ProjectExportRows } from '#services/project-export.js';
+import { occtNotice } from '#components/nav/about-sinopiacad.js';
 
 const isAborted = (signal: AbortSignal): boolean => signal.aborted;
 
@@ -144,8 +145,14 @@ export function ExportDialogView({
         if (isAborted(controller.signal)) {
           return;
         }
-        // oxlint-disable-next-line no-await-in-loop -- Kernel exports share the document and must run serially.
-        const result = await prepare(format, selection === 'all' ? undefined : [selection.slice(6)], controller.signal);
+        let result: PreparedExport;
+        try {
+          // oxlint-disable-next-line no-await-in-loop -- Kernel exports share the document and must run serially.
+          result = await prepare(format, selection === 'all' ? undefined : [selection.slice(6)], controller.signal);
+        } catch {
+          // A preparation that throws is a row to fix, never a row checking forever.
+          result = { status: 'needsFix', problem: 'prepare' };
+        }
         if (!isAborted(controller.signal)) {
           setPrepared((previous) => ({
             prepare,
@@ -177,11 +184,17 @@ export function ExportDialogView({
       key: requestKey,
       formats: [...(previous?.key === requestKey ? previous.formats : []), format],
     }));
-    await automaticRun.current;
+    // The automatic checks may fail on their own: their rows say so; this one runs anyway.
+    await automaticRun.current.catch(() => undefined);
     if (isAborted(controller.signal)) {
       return;
     }
-    const result = await prepare(format, selection === 'all' ? undefined : [selection.slice(6)], controller.signal);
+    let result: PreparedExport;
+    try {
+      result = await prepare(format, selection === 'all' ? undefined : [selection.slice(6)], controller.signal);
+    } catch {
+      result = { status: 'needsFix', problem: 'prepare' };
+    }
     if (!isAborted(controller.signal)) {
       setPrepared((previous) => ({
         prepare,
@@ -317,6 +330,20 @@ export function ExportDialogView({
                     </Button>
                   )}
                 </div>
+                {format === 'iges' ? (
+                  <p className='text-micro col-span-2 text-muted-foreground'>
+                    {t('export.occtNotice.before')}
+                    <a
+                      href={occtNotice.source}
+                      target='_blank'
+                      rel='noopener noreferrer'
+                      className='underline underline-offset-2'
+                    >
+                      {t('export.occtNotice.link')}
+                    </a>
+                    {t('export.occtNotice.after')}
+                  </p>
+                ) : null}
                 {result?.status === 'needsFix' ? (
                   <div className='col-span-2 flex flex-wrap items-center gap-x-2 gap-y-1'>
                     <p role='alert' aria-label={t('export.needsFix')} className='min-w-0 text-xs text-pretty'>

@@ -7,6 +7,7 @@ import { bindTranslate } from '#i18n/translate.js';
 import type { Language } from '#i18n/language.js';
 import type { PreparedExport, ProjectExportFormat } from '#services/project-export.types.js';
 import { ExportDialogView } from '#routes/w.$workspace.$project/project-export-dialog-view.js';
+import { occtNotice } from '#components/nav/about-sinopiacad.js';
 
 const download = vi.hoisted(() => vi.fn());
 vi.mock('#utils/export-artifact-set.utils.js', () => ({ downloadExportArtifactSet: download }));
@@ -259,6 +260,54 @@ describe('delivery rows (E3a)', () => {
       expect(prepare).toHaveBeenCalledWith('iges', ['Rametto'], expect.any(AbortSignal));
     });
     expect(prepare.mock.calls.filter(([format]) => format === 'iges')).toHaveLength(1);
+  });
+  it('should name Open CASCADE (LGPL) on the IGES row, with the link to its source', async () => {
+    setLanguage('it');
+    const t = bindTranslate('it');
+    render(
+      <ExportDialogView
+        name='Collana'
+        pieces={pieces}
+        prepare={async (format) => results[format]}
+        capture={capture}
+        onAskAgent={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
+    );
+    const iges = within(screen.getByRole('region', { name: 'IGES' }));
+    expect(iges.getByText(/dettagli in Informazioni/u)).toBeInTheDocument();
+    expect(iges.getByRole('link', { name: t('export.occtNotice.link') })).toHaveAttribute('href', occtNotice.source);
+    expect(within(screen.getByRole('region', { name: 'STEP' })).queryByRole('link')).not.toBeInTheDocument();
+  });
+  it('should show IGES as to fix, not checking forever, when its preparation or the automatic checks fail', async () => {
+    setLanguage('en');
+    const user = userEvent.setup();
+    const prepare = vi.fn(async (format: ProjectExportFormat): Promise<PreparedExport> => {
+      if (format === 'step') {
+        throw new Error('kernel gone');
+      }
+      if (format === 'iges') {
+        throw new Error('worker gone');
+      }
+      return results[format];
+    });
+    render(
+      <ExportDialogView
+        name='Collana'
+        pieces={pieces}
+        prepare={prepare}
+        capture={capture}
+        onAskAgent={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
+    );
+    const iges = within(screen.getByRole('region', { name: 'IGES' }));
+    await user.click(iges.getByRole('button', { name: 'Prepare IGES' }));
+    expect(await iges.findByText('Needs fixing')).toBeInTheDocument();
+    expect(iges.getByRole('alert')).toHaveTextContent(/couldn’t prepare the file/u);
+    expect(iges.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
+    // The STEP row that threw is to fix too.
+    expect(await within(screen.getByRole('region', { name: 'STEP' })).findByText('Needs fixing')).toBeInTheDocument();
   });
   it('should offer only the rows it is given for models the delivery cannot write', async () => {
     setLanguage('en');
