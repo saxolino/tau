@@ -60,6 +60,7 @@ const messaggioParte: Record<ErroreParte['codice'], PlainMessageKey> = {
   parteAssente: 'riconoscimento.errors.partMissing',
   mascheraAssente: 'riconoscimento.errors.maskMissing',
   pezzoAssente: 'riconoscimento.errors.pieceMissing',
+  immagineTroppoGrande: 'riconoscimento.errors.imageTooLarge',
 };
 
 const messaggioRiconoscimento = (errore: ErroreRiconoscimento): PlainMessageKey =>

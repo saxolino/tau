@@ -332,7 +332,10 @@ export type StrumentiParti = Readonly<{
   /** Sinopia's `segment-part` (SAM-3), when neither a saved mask nor an outline exist. */
   segmenta?: (immagine: Blob, query: string) => Promise<Blob | undefined>;
   /** The picture's pixels (RGBA), for the plain background cut-out of a catalogue photo. */
-  pixel?: (immagine: Blob) => Promise<Readonly<{ larghezza: number; altezza: number; rgba: Uint8ClampedArray }>>;
+  pixel?: (
+    immagine: Blob,
+    latoMassimo: number,
+  ) => Promise<Readonly<{ larghezza: number; altezza: number; rgba: Uint8ClampedArray }>>;
 }>;
 
 /** A part ready for the recognition. */
@@ -353,7 +356,8 @@ export class ErroreParte extends Error {
     | 'partiAssenti'
     | 'parteAssente'
     | 'mascheraAssente'
-    | 'pezzoAssente';
+    | 'pezzoAssente'
+    | 'immagineTroppoGrande';
 
   public constructor(codice: ErroreParte['codice']) {
     super(codice);

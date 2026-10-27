@@ -47,6 +47,10 @@ const quotaBordoUniforme = 0.85;
 const quotaMinima = 0.01;
 const quotaMassima = 0.92;
 const maxByte = 20 * 1024 * 1024;
+/** A picture declaring more pixels than this is refused (a small file can declare a decompression bomb). */
+export const maxPixel = 40_000_000;
+/** Long side at which the background is read and grown: a silhouette needs no more, and memory stays small. */
+const latoAnalisi = 1024;
 
 /**
  * The part's mask cut out from a plain or transparent background: the background is the colour of the border,
@@ -281,16 +285,21 @@ export async function caricaSchedaPezzo(parametri: ParametriPezzo, strumenti: St
   const immagine = await scaricaImmagine(client, scheda.immagineUrl);
   const sha256 = await improntaDeiByte(await immagine.arrayBuffer());
   const { larghezza, altezza } = await strumenti.dimensioni(immagine);
+  if (larghezza * altezza > maxPixel) {
+    throw new ErroreParte('immagineTroppoGrande');
+  }
   const prefisso = `${parametri.origine === 'libreria' ? 'libreria' : 'fornitore'}/${parametri.id}`;
 
   let maschera: MascheraBinaria | undefined;
   let png: Blob | undefined;
   let daSfondo = false;
   if (strumenti.pixel) {
-    const pixel = await strumenti.pixel(immagine);
-    maschera = mascheraDaSfondo(pixel.rgba, pixel.larghezza, pixel.altezza);
-    if (maschera) {
-      png = await strumenti.codificaMaschera(maschera);
+    // Read at reduced size, then the mask PNG is drawn back at the picture's size (as every other mask is).
+    const pixel = await strumenti.pixel(immagine, latoAnalisi);
+    const piccola = mascheraDaSfondo(pixel.rgba, pixel.larghezza, pixel.altezza);
+    if (piccola) {
+      png = await strumenti.codificaMaschera(piccola);
+      maschera = await strumenti.decodificaMaschera(png, larghezza, altezza);
       daSfondo = true;
     }
   }

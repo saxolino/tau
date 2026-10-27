@@ -1,6 +1,7 @@
 // @vitest-environment node
 /* eslint-disable @typescript-eslint/naming-convention -- Fake PostgREST responses keep Supabase column names. */
 import { createClient } from '@supabase/supabase-js';
+import type { MascheraBinaria } from '@taucad/smlib/riconoscimento';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { caricaSchedaPezzo, mascheraDaSfondo, riquadroDellaMaschera } from '#services/sinopia-pezzo.js';
 import type { StrumentiParti } from '#services/sinopia-parts.js';
@@ -71,19 +72,39 @@ describe('catalogue photo cut-out', () => {
   });
 });
 
-const strumenti = (conPixel: boolean, sam?: Blob): StrumentiParti & { sam: number } => {
-  const stato = { sam: 0 };
+const strumenti = (
+  conPixel: boolean,
+  sam?: Blob,
+  dimensioniDichiarate = { larghezza: 10, altezza: 10 },
+): StrumentiParti & { sam: number } => {
+  const stato = { sam: 0, ultima: undefined as MascheraBinaria | undefined };
   return {
     get sam() {
       return stato.sam;
     },
-    dimensioni: async () => ({ larghezza: 10, altezza: 10 }),
-    decodificaMaschera: async (_png, larghezza, altezza) => ({
-      larghezza,
-      altezza,
-      dati: new Uint8Array(larghezza * altezza).fill(1, 20, 80),
-    }),
-    codificaMaschera: async () => new Blob([new Uint8Array([137, 80, 78, 71])], { type: 'image/png' }),
+    dimensioni: async () => dimensioniDichiarate,
+    // The mask drawn back at the picture's size: the last one encoded, scaled by nearest neighbour.
+    decodificaMaschera: async (_png, larghezza, altezza) => {
+      const ultima = stato.ultima;
+      if (!ultima) {
+        return { larghezza, altezza, dati: new Uint8Array(larghezza * altezza).fill(1, 20, 80) };
+      }
+      const dati = new Uint8Array(larghezza * altezza);
+      for (let y = 0; y < altezza; y++) {
+        for (let x = 0; x < larghezza; x++) {
+          dati[y * larghezza + x] =
+            ultima.dati[
+              Math.floor((y * ultima.altezza) / altezza) * ultima.larghezza +
+                Math.floor((x * ultima.larghezza) / larghezza)
+            ]!;
+        }
+      }
+      return { larghezza, altezza, dati };
+    },
+    codificaMaschera: async (maschera) => {
+      stato.ultima = maschera;
+      return new Blob([new Uint8Array([137, 80, 78, 71])], { type: 'image/png' });
+    },
     segmenta: async () => {
       stato.sam++;
       return sam;
@@ -157,6 +178,15 @@ describe('part sheet of a Library or supplier piece', () => {
     await expect(caricaSchedaPezzo({ origine: 'libreria', id: LIBRERIA }, strumenti(false))).rejects.toMatchObject({
       codice: 'mascheraAssente',
     });
+  });
+
+  it('should refuse a photo that declares more pixels than the budget, before decoding any pixel', async () => {
+    const enorme = strumenti(true, undefined, { larghezza: 9000, altezza: 9000 });
+    const leggi = vi.spyOn(enorme, 'pixel' as never);
+    await expect(caricaSchedaPezzo({ origine: 'libreria', id: LIBRERIA }, enorme)).rejects.toMatchObject({
+      codice: 'immagineTroppoGrande',
+    });
+    expect(leggi).not.toHaveBeenCalled();
   });
 
   it('should say clearly when the card does not exist or has no photo', async () => {
