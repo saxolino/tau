@@ -11,7 +11,7 @@ export {
 } from '#producibilita/esiti.js';
 export { misuraModello, misuraPezzo, misuraPietra } from '#producibilita/misure.js';
 export type { OpzioniMisura, PietraMisurata } from '#producibilita/misure.js';
-export { analizzaProducibilita, funzioniProducibilita } from '#producibilita/funzioni.js';
+export { analizzaProducibilita, decodificaNomeStep, funzioniProducibilita } from '#producibilita/funzioni.js';
 export { creaAnalizzatore } from '#producibilita/client.js';
 export type { Analizzatore } from '#producibilita/client.js';
 export type { MemoriaAnalisi } from '#producibilita/funzioni.js';

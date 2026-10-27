@@ -16,6 +16,27 @@ import type { MisureModello, RichiestaProducibilita, RispostaProducibilita } fro
 
 type Lib = typeof Smlib;
 
+/**
+ * Il nome di un corpo come lo STEP lo scrive: il kernel scrive solo ASCII e il suo esportatore porta gli altri
+ * caratteri in direttive ISO 10303-21 (`\X2\00E0\X0\` per «à», `\X4\…\X0\` fuori dal piano base, `\\` per la barra);
+ * `fromStep` le restituisce così come sono.
+ * @param nome - Il nome letto.
+ * @returns Il nome originale.
+ * @public
+ */
+export function decodificaNomeStep(nome: string): string {
+  return nome
+    .replaceAll(/\\X([24])\\([\dA-F]+)\\X0\\/giu, (_tutto, ampiezza: string, esadecimale: string) => {
+      const cifre = ampiezza === '2' ? 4 : 8;
+      let testo = '';
+      for (let inizio = 0; inizio + cifre <= esadecimale.length; inizio += cifre) {
+        testo += String.fromCodePoint(Number.parseInt(esadecimale.slice(inizio, inizio + cifre), 16));
+      }
+      return testo;
+    })
+    .replaceAll(String.raw`\\`, '\\');
+}
+
 const corpiDelloStep = (lib: Lib, step: Uint8Array<ArrayBuffer>): Array<Smlib.Part | Smlib.Shell> => {
   const letti = lib.fromStep(step);
   return (letti instanceof lib.Shape ? [letti] : [...letti]) as Array<Smlib.Part | Smlib.Shell>;
@@ -76,7 +97,7 @@ export function analizzaProducibilita(
       corpi = [];
     }
     letto = performance.now();
-    const perNome = new Map(corpi.map((corpo) => [corpo.name ?? '', corpo]));
+    const perNome = new Map(corpi.map((corpo) => [decodificaNomeStep(corpo.name ?? ''), corpo]));
     const stessoNumero = corpi.length === richiesta.pezzi.length;
     const pezzi = richiesta.pezzi.flatMap((pezzo, indice) => {
       const forma = perNome.get(pezzo.nome) ?? (stessoNumero ? corpi[indice] : undefined);

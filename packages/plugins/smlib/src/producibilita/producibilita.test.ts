@@ -6,7 +6,7 @@ import type { Esito } from '#famiglie/famiglia.js';
 import { famiglie } from '#famiglie/registro.js';
 import { valutaFamiglia } from '#famiglie/valuta-famiglia.js';
 import { controlliPezzo, esitiProducibilita, riepilogoProducibilita, unisciEsiti } from '#producibilita/esiti.js';
-import { funzioniProducibilita } from '#producibilita/funzioni.js';
+import { decodificaNomeStep, funzioniProducibilita } from '#producibilita/funzioni.js';
 import { misuraModello, misuraPezzo } from '#producibilita/misure.js';
 import type { ControlloProducibilita, MisurePezzo } from '#producibilita/tipi.js';
 
@@ -191,6 +191,15 @@ describe('misure e controlli di producibilità', () => {
 });
 
 describe('analisi completa sulle famiglie predefinite (STEP del kernel → worker)', () => {
+  it('should read back piece names the STEP writer encoded as ISO 10303-21 directives', () => {
+    const sbarra = '\\';
+    const diretta = (ampiezza: string, esadecimale: string): string =>
+      `${sbarra}X${ampiezza}${sbarra}${esadecimale}${sbarra}X0${sbarra}`;
+    expect(decodificaNomeStep(`Castone ${diretta('2', '00B7')} ${diretta('2', '00E0')}`)).toBe('Castone · à');
+    expect(decodificaNomeStep(`Fiore ${diretta('4', '0001F338')}`)).toBe('Fiore 🌸');
+    expect(decodificaNomeStep('Telaio')).toBe('Telaio');
+  });
+
   const prove = [
     { id: 'fibbia', processo: 'pressofusione_zama' },
     { id: 'tacco', processo: 'stampaggio_iniezione' },
