@@ -76,6 +76,12 @@ export type RenderRequest<Content extends RuntimeContentKey = RuntimeContentKey>
     mimeType: MediaType;
     instance?: string;
     options: Record<string, unknown>;
+    /**
+     * `'continuous'` when the render projects one sample of a continuous interaction, such as a slider drag
+     * (`DocumentUpdate.interactive`): the kernel may mesh it coarser, since the next sample replaces it and the render
+     * at rest is requested again. Never set on an export.
+     */
+    interaction?: 'continuous';
   } & ContentHookInputFor<Content>
 >;
 /** Request for one export and its selected extension and media type. @public */

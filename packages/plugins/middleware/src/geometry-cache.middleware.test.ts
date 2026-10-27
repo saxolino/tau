@@ -359,6 +359,20 @@ describe('geometryCache', () => {
     expect(runtime.tracer.startSpan).toHaveBeenCalledWith('cache.geometry.mesh.evaluate');
   });
 
+  it('never stores the mesh of an interactive drag sample', async () => {
+    const runtime = createMockRuntime();
+    const handler = vi.fn(async () =>
+      successfulRender({ mimeType: 'model/gltf-binary', content: new Uint8Array([7, 8, 9]) }),
+    );
+    const input = { view: 'model', mimeType: 'model/gltf-binary', options: {}, interaction: 'continuous' } as const;
+
+    await middleware.wrapRender!(input, handler, runtime);
+    await middleware.wrapRender!(input, handler, runtime);
+
+    expect(handler).toHaveBeenCalledTimes(2);
+    expect(runtime.tracer.startSpan).not.toHaveBeenCalledWith('cache.geometry.mesh.evaluate');
+  });
+
   it('keeps nonbinary string display content inline and exactly reusable', async () => {
     const runtime = createMockRuntime();
     const artifact = {

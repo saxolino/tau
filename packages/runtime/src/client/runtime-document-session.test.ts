@@ -682,6 +682,11 @@ describe('document channel session', () => {
         typeof document.update
       >[0]),
     ).rejects.toThrow('cannot stage files');
+    await expect(
+      document.update({ interactive: true, parameters: { count: 2 } } as unknown as Parameters<
+        typeof document.update
+      >[0]),
+    ).rejects.toThrow('Only a transient document update can be interactive');
 
     const updated = document.update({ transient: true, parameters: { count: 2 } });
     server.notify('evaluating', { documentId: document.id, intent: 1, evaluationId: 'e2', transient: true });
