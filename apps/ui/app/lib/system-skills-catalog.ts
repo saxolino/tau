@@ -33,6 +33,11 @@ import {
   sinopiaImmagineCadSkillWhenToUse,
 } from '#lib/sinopia-immagine-cad-skill.js';
 import {
+  sinopiaProducibilitaSkillDescription,
+  sinopiaProducibilitaSkillMarkdown,
+  sinopiaProducibilitaSkillWhenToUse,
+} from '#lib/sinopia-producibilita-skill.js';
+import {
   sinopiaVariantiSkillDescription,
   sinopiaVariantiSkillMarkdown,
   sinopiaVariantiSkillWhenToUse,
@@ -247,6 +252,16 @@ If updating an existing artifact, inspect the current file first and preserve us
     priority: 60,
     whenToUse: sinopiaVariantiSkillWhenToUse,
     skillMarkdown: sinopiaVariantiSkillMarkdown,
+  },
+  {
+    slug: 'sinopia-producibilita',
+    name: 'Sinopia Producibilità',
+    description: sinopiaProducibilitaSkillDescription,
+    version: '1.0.0',
+    source: 'system',
+    priority: 60,
+    whenToUse: sinopiaProducibilitaSkillWhenToUse,
+    skillMarkdown: sinopiaProducibilitaSkillMarkdown,
   },
   ...packageSkills,
 ];

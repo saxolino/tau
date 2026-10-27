@@ -17,6 +17,7 @@ import { sogliaParete, soglieProcessi } from '#famiglie/processi.js';
 import { diametroInterno, intervalliTaglia } from '#famiglie/taglie-anello.js';
 import type { SistemaTaglia } from '#famiglie/taglie-anello.js';
 import { esitiPezzi, esito, esitoMinimo, mm, normalizzaForma } from '#famiglie/verifiche-comuni.js';
+import { misuraPezzo } from '#famiglie/sonda-tempi.js';
 
 /**
  * Famiglia `anello` (specifica §1.7): gambo + castone semplice, fusione a cera persa.
@@ -392,8 +393,8 @@ function costruisciConEsiti(lib: Lib, p: ParametriAnello): RisultatoCostruzione 
   const esiti: Esito[] = [];
   const pezzi: PezzoFamiglia[] = [];
   try {
-    let anello = costruisciGambo(lib, p);
-    const testa = costruisciTesta(lib, p);
+    let anello = misuraPezzo('Gambo', () => costruisciGambo(lib, p));
+    const testa = misuraPezzo('Testa', () => costruisciTesta(lib, p));
     if (testa) {
       anello = anello.fuse(testa.translate(0, 0, quotaTesta(p)));
     }
@@ -405,7 +406,11 @@ function costruisciConEsiti(lib: Lib, p: ParametriAnello): RisultatoCostruzione 
     }
     pezzi.push({ name: 'Anello', shape: anello, ruolo: 'metallo', materiale: p.lega, ...aspettoMateriale(p.lega) });
     if (testa) {
-      const pietra = costruisciPietra(lib, p).translate(0, 0, quotaTesta(p) + cinturaTesta(p));
+      const pietra = misuraPezzo('Pietra', () => costruisciPietra(lib, p)).translate(
+        0,
+        0,
+        quotaTesta(p) + cinturaTesta(p),
+      );
       // La pietra non entra nel peso del metallo: senza densità.
       pezzi.push({
         name: 'Pietra',

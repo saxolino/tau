@@ -35,6 +35,7 @@ import {
   sformo,
   trasportaMarcatori,
 } from '#famiglie/verifiche-comuni.js';
+import { misuraPezzo } from '#famiglie/sonda-tempi.js';
 
 /**
  * Famiglia `tacco` (specifica §1.1): varianti stiletto, blocco, rocchetto, cono e kitten.
@@ -963,7 +964,9 @@ function costruisciConEsiti(lib: Lib, p: ParametriTacco, opzioni?: OpzioniFamigl
   const esiti: Esito[] = [];
   const destri: PezzoFamiglia[] = [];
   try {
-    const { corpo, cavita, anima, foroAnima } = costruisciCorpo(lib, p, { variante, esiti });
+    const { corpo, cavita, anima, foroAnima } = misuraPezzo('Tacco', () =>
+      costruisciCorpo(lib, p, { variante, esiti }),
+    );
     if (cavita.length > 0) {
       marcaFacce(corpo, 'cavita', cavita);
     }
@@ -976,7 +979,7 @@ function costruisciConEsiti(lib: Lib, p: ParametriTacco, opzioni?: OpzioniFamigl
     });
     destri.push({
       name: 'Tappo DX',
-      shape: costruisciTappo(lib, p, foroAnima),
+      shape: misuraPezzo('Tappo', () => costruisciTappo(lib, p, foroAnima)),
       ruolo: 'tappo',
       materiale: p.tappo.materiale,
       ...aspettoMateriale(p.tappo.materiale),

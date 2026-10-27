@@ -119,6 +119,8 @@ const sendQuote = async (): Promise<string> => {
   const user = userEvent.setup();
   await user.click(screen.getByRole('button', { name: t('consegna.quote.ask') }));
   await user.click(await screen.findByRole('radio'));
+  await user.type(screen.getByRole('textbox', { name: t('consegna.quote.quantity') }), '500');
+  await user.click(screen.getByRole('button', { name: t('consegna.quote.review') }));
   await user.click(screen.getByRole('button', { name: t('consegna.quote.send', { supplier: 'Minuterie Brenta' }) }));
   await waitFor(() => {
     expect(toast.success).toHaveBeenCalledOnce();
@@ -160,6 +162,8 @@ describe('the STEP promise follows what really travels (revisione 11)', () => {
     expect(await screen.findByText(t('consegna.quote.attachments'))).toBeInTheDocument();
     expect(screen.queryByText(t('consegna.quote.attachmentsWithStep'))).not.toBeInTheDocument();
     await user.click(await screen.findByRole('radio'));
+    await user.type(screen.getByRole('textbox', { name: t('consegna.quote.quantity') }), '500');
+    await user.click(screen.getByRole('button', { name: t('consegna.quote.review') }));
     await user.click(screen.getByRole('button', { name: t('consegna.quote.send', { supplier: 'Minuterie Brenta' }) }));
     await waitFor(() => {
       expect(toast.success).toHaveBeenCalledOnce();
@@ -211,9 +215,21 @@ describe('Consegna inside Esporta (E3a)', () => {
     const supplier = await screen.findByRole('radio');
     expect(state.suppliers).toHaveBeenCalledWith('buckle');
     expect(screen.getByText('Minuterie Brenta')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: t('consegna.quote.send', { supplier: '…' }) })).toBeDisabled();
+    expect(screen.getByRole('button', { name: t('consegna.quote.review') })).toBeDisabled();
     await user.click(supplier);
+    // No quantity, no request: the panel asks for it.
+    expect(screen.getByText(t('consegna.quote.needsQuantity'))).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: t('consegna.quote.review') })).toBeDisabled();
     await user.type(screen.getByRole('textbox', { name: t('consegna.quote.quantity') }), '500');
+    await user.type(screen.getByRole('textbox', { name: t('consegna.quote.finish') }), 'galvanica oro');
+    await user.type(screen.getByRole('textbox', { name: t('consegna.quote.tolerances') }), '±0,1 mm sul perno');
+    // The summary is shown first and nothing leaves until it is confirmed.
+    await user.click(screen.getByRole('button', { name: t('consegna.quote.review') }));
+    const riepilogo = within(screen.getByRole('region', { name: t('consegna.quote.summary') }));
+    expect(riepilogo.getByText(/Finitura: galvanica oro\. Tolleranze: ±0,1 mm sul perno\./u)).toBeInTheDocument();
+    expect(riepilogo.getByText(/Producibilità/u)).toBeInTheDocument();
+    expect(riepilogo.getByText(/Non verificata/u)).toBeInTheDocument();
+    expect(state.quote).not.toHaveBeenCalled();
     await user.click(screen.getByRole('button', { name: t('consegna.quote.send', { supplier: 'Minuterie Brenta' }) }));
     await waitFor(() => {
       expect(state.quote).toHaveBeenCalledOnce();
@@ -229,6 +245,8 @@ describe('Consegna inside Esporta (E3a)', () => {
     expect(senza).toContain('Richiesta di preventivo · Fibbia · progetto «Fibbia Riviera»');
     expect(senza).toContain('Quantità: 500 pz');
     expect(senza).toContain('· Telaio — Ottone — Tranciatura lamiera — 44 × 32 × 3 mm — 10,2 g');
+    expect(senza).toContain('Insieme: 44 × 32 × 3 mm — 10,2 g');
+    expect(senza).toContain('Finitura: galvanica oro. Tolleranze: ±0,1 mm sul perno.');
     expect(senza).toContain('STEP e GLB nella versione 3');
     const con = request.testo(true);
     expect(con).toContain('Allegati: Fibbia.pdf, preview.png, Fibbia Riviera.step.');
