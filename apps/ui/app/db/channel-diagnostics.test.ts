@@ -28,7 +28,9 @@ it('should retain only bounded metadata across independent connections and concu
   const rows = await readChannelDiagnostics();
   expect(rows).toHaveLength(200);
   expect(new Set(rows.map((row) => row.generation)).size).toBe(200);
-});
+  // 210 concurrent transactions on an in-memory IndexedDB: under 1 s alone, but slower than the 5 s default when the
+  // whole suite runs in parallel.
+}, 30_000);
 
 it('should expire old records on a subsequent write and report unavailable persistence without throwing', async () => {
   const now = vi.spyOn(Date, 'now').mockReturnValue(0);

@@ -17,20 +17,20 @@
     "watchFailed"
   ],
   "sources": {
-    "apps/ui/app/chat-clients/_internal/use-turn-admission.ts": "84cb4aeac1fa109f2189264787454acd887fb80cc4fbc646a8495d47c27ffe21",
-    "apps/ui/app/chat-clients/chat-turn-host.tsx": "71115cd738aa95c0ac83204cc9d73e98c5121cb69f49cb13dfcdd45f2495fe1d",
+    "apps/ui/app/chat-clients/_internal/use-turn-admission.ts": "34991f3b3dee61e26d6a26fb0a809322458aeae624debba4e1a683f65140fcfd",
+    "apps/ui/app/chat-clients/chat-turn-host.tsx": "565a2a485782cb957e83292501e0f74b88091855c5354fe3bb32b8d5433429e4",
     "apps/ui/app/chat-clients/use-cad-chat-client.ts": "4d984b47c72c18d5ec693ac050f9d1e431c3966904933dae1436cc51c306ee0f",
-    "apps/ui/app/components/chat/chat-message-queue-view.tsx": "b8f44fc22b6aaf6ebe4d3dd6e367fa5c5cc846dc452c45d1c0621fb86e403b36",
+    "apps/ui/app/components/chat/chat-message-queue-view.tsx": "e3d2132daa2f5b9399c5e1c2da0a2a8e0027445c52facbad1f0fc081a6fbdbec",
     "apps/ui/app/components/chat/chat-message-queue.tsx": "8c2e364f91a13539bde640b8f9aaab4c833f36050db0548a38497de8e2fef747",
-    "apps/ui/app/components/chat/chat-textarea.tsx": "14a118862e59e1ee00b3c5f4e4523efd476794c2bc7b2184a0b83c6a0e12faf1",
+    "apps/ui/app/components/chat/chat-textarea.tsx": "33d9ef42c75b0bd06d76d19624c3365ce3b5157d369584147bdbbe64ce85ce40",
     "apps/ui/app/db/chat-message-queue-store.ts": "8f679f892f769c4e1118ef9ff13bcec3c276cb1ef45658d1ce10e3b547ee79c7",
     "apps/ui/app/hooks/use-chat.tsx": "6de4bf1438424a5c885cd0df851ed1656ab66d877f2903d2ef0da0fb22768fff",
     "apps/ui/app/machines/chat-message-queue.machine.ts": "1f1dd988a54ff2f94974c5b0b68cd993f74c4b5a04c470489a8d1910003e0b62",
     "apps/ui/app/machines/chat-session.machine.ts": "9d3180fe7082223fddcc7ff798bad3cd522c0d1b70cf77d91cd34ba7cffa221d",
-    "apps/ui/app/services/chat-session-store.ts": "c25a0b9fba7748340f124243462d11cff79ddcb566e7017d3e853d200851e926"
+    "apps/ui/app/services/chat-session-store.ts": "93f962220ef71324a55fc665a809b16a15399f80a3422e688b2324d3835c3ef1"
   },
   "specs": {
-    "MessageQueue.tla": "2266ffa1cb041cd6dba44b2999f5f622a4348ee8ba6de295a175481b77815b6a"
+    "MessageQueue.tla": "364898606a037938fac60e9b28cceaa03a1ab430fa7eacc5b91c8b4bf2ecf8e5"
   },
   "tables": {
     "MessageQueue.duplicate.cfg": "9d566ac1a0f357cd7744cdf8594fbaa4554d7c262a0fadf921c45b66b9ffb9da",
