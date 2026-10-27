@@ -101,7 +101,7 @@ describe('cantiereSteps', () => {
 
   it('should name an image read, a native tool behind the MCP bridge and an unknown tool', () => {
     const bridged: MyMessagePart = {
-      ...done('mcp__tau__screenshot'),
+      ...(done('mcp__tau__screenshot') as Extract<MyMessagePart, { type: 'dynamic-tool' }>),
       toolMetadata: { tau: { presentation: 'tau-mcp', nativeName: 'screenshot' } },
     };
     const steps = cantiereSteps({
