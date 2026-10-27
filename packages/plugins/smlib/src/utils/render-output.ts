@@ -804,9 +804,18 @@ export function renderDrawing(entries: readonly DrawingEntry[]): GeometrySvg {
  * @returns One geometry per meshable shape.
  */
 export function render(shapes: readonly NamedInputShape[], options: RenderOptions): GeometrySmlib[] {
-  return shapes
-    .filter((config) => isMeshableShape(options.library, config.shape))
-    .map((config) => options.library.scope(() => renderMesh(config, options)));
+  const geometries: GeometrySmlib[] = [];
+  for (const config of shapes) {
+    if (!isMeshableShape(options.library, config.shape)) {
+      continue;
+    }
+    // The geometry holds no kernel object: it leaves the scope through the closure, so the scope does not walk its
+    // vertex and index arrays looking for handles to keep.
+    options.library.scope(() => {
+      geometries.push(renderMesh(config, options));
+    });
+  }
+  return geometries;
 }
 
 /** A tessellation request: a preset or explicit tolerances, and the field values an explicit request omits. */
