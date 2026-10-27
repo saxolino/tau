@@ -21,6 +21,8 @@ const readId = (value: string | null): string | undefined =>
 export function useSinopiaEntryLink(): Readonly<{
   projectId: string | undefined;
   modelId: string | undefined;
+  /** With `model`: the section to open it on (`foto` from Sinopia's «Fai lo shooting» with no photo yet). */
+  section: 'foto' | undefined;
   consume: (name: 'project' | 'model') => void;
 }> {
   const [parameters, setParameters] = useSearchParams();
@@ -30,6 +32,9 @@ export function useSinopiaEntryLink(): Readonly<{
         (previous) => {
           const next = new URLSearchParams(previous);
           next.delete(searchParameterName[name === 'project' ? 'sinopiaProject' : 'sinopiaModel']);
+          if (name === 'model') {
+            next.delete(searchParameterName.sinopiaSection);
+          }
           return next;
         },
         { replace: true },
@@ -40,6 +45,7 @@ export function useSinopiaEntryLink(): Readonly<{
   return {
     projectId: readId(parameters.get(searchParameterName.sinopiaProject)),
     modelId: readId(parameters.get(searchParameterName.sinopiaModel)),
+    section: parameters.get(searchParameterName.sinopiaSection) === 'foto' ? 'foto' : undefined,
     consume,
   };
 }

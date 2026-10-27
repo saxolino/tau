@@ -327,6 +327,10 @@ export function createSinopiaSender(getClient = getSinopiaDataClient): SinopiaSe
                 sameProjectThumbnail(fallbackThumbnailPath, projectId, link.modelId) ??
                 null,
               ...(pieces && pieces.length > 0 ? { pezzi: deliveryPieces(pieces) } : {}),
+              // The image (and part) of the project the model was built from: Sinopia shows it beside the version.
+              ...(link.sourceAssetId !== undefined && projectId === link.projectId
+                ? { source_asset_id: link.sourceAssetId, source_part_id: link.sourcePartId ?? null }
+                : {}),
             },
           });
           /* eslint-enable @typescript-eslint/naming-convention -- The remaining delivery lifecycle uses domain camelCase names. */

@@ -11,12 +11,15 @@ import { KeyedMutex } from '#db/keyed-mutex.js';
 import { getSinopiaDataClient, requireSinopiaUser } from '#lib/sinopia-data-client.js';
 import type { RootedContentClient } from '@taucad/fs-client/rooted-content-client';
 import { randomUuid } from '@taucad/utils/id';
+import { isPlaceholderProjectName, projectNameOrDefault } from '#constants/project-names.js';
 export type SinopiaCadRecordFiles = Pick<RootedContentClient, 'writeFile' | 'exists' | 'readdir'> & {
   readFile: (path: string) => Promise<Uint8Array<ArrayBuffer>>;
 };
 
 export const sinopiaCadLinkPath = '.tau/sinopia.json';
 const revisionSchema = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u);
+/** The id `riconosci-parti` gives a part (snake_case), as `/cad/nuovo?part=` carries it. */
+const partIdSchema = z.string().regex(/^[\d_a-z]{1,200}$/u);
 export const sinopiaCadLinkSchema = z.object({
   modelId: z.uuid(),
   projectId: z.uuid(),
@@ -24,6 +27,10 @@ export const sinopiaCadLinkSchema = z.object({
   baseRevisionId: revisionSchema.nullable(),
   localRevisionId: revisionSchema.optional(),
   previewPending: z.boolean().optional(),
+  /** The project's image (`assets.id`) the model was built from: Sinopia shows it as the model's origin. */
+  sourceAssetId: z.uuid().optional(),
+  /** The part of that image (`riconosci-parti` id), so «Apri nel CAD» on the same part reopens this model. */
+  sourcePartId: partIdSchema.optional(),
 });
 /** The local baseline is a record, excluded from authored archives and revision creation. */
 export type SinopiaCadLink = z.infer<typeof sinopiaCadLinkSchema>;
@@ -48,6 +55,13 @@ const columns =
   'id,project_id,user_id,name,engine,head_revision_id,snapshot_path,thumbnail_path,snapshot_bytes,updated_at';
 /** Postgres `unique_violation`, as PostgREST reports a second insert of the same primary key. */
 const uniqueViolation = '23505';
+/**
+ * The origin columns (`source_asset_id`, `source_part_id`) arrive with a migration Marko applies by hand. Until then a
+ * select naming them answers 42703 (undefined column) and a write PGRST204 (not in the schema cache): both mean «not
+ * yet», and the CAD carries on without the origin instead of failing.
+ */
+const isMissingOriginColumn = (error: { code?: string; message?: string }): boolean =>
+  (error.code === '42703' || error.code === 'PGRST204') && /source_(?:asset|part)_id/u.test(error.message ?? '');
 const linkLocks = new KeyedMutex<string>();
 
 /** One link creation per local project across this origin's tabs; an in-document queue without the Locks API. */
@@ -118,7 +132,16 @@ async function currentSinopiaVertical(client: SupabaseClient, userId: string): P
   return 'accessories';
 }
 
-/** Mint a recoverable local identity first; the chosen engine registers its model on the first authored save. */
+/** Where in a Sinopia project a model starts: one image of the project and, when known, one part of it. */
+export type SinopiaCadSource = Readonly<{ assetId: string; partId?: string }>;
+
+/**
+ * Mint a recoverable local identity first; the chosen engine registers its model on the first authored save.
+ *
+ * With `originProjectId` the model belongs to that (owned) Sinopia project: no second project is ever created for a
+ * piece that starts from a Sinopia part, image or generation. Without it a new project is created, named after the
+ * piece and never with an English placeholder.
+ */
 export async function createSinopiaCadLink(
   name: string,
   originProjectId?: string,
@@ -134,7 +157,7 @@ export async function createSinopiaCadLink(
     const { error } = await client
       .from('projects')
       // eslint-disable-next-line @typescript-eslint/naming-convention -- Supabase project wire columns.
-      .insert({ id: projectId, user_id: userId, name, vertical });
+      .insert({ id: projectId, user_id: userId, name: projectNameOrDefault(name), vertical });
     if (error !== null) {
       // A named identity that already exists is an earlier attempt's project: verify it as an owned origin.
       if (error.code !== uniqueViolation) {
@@ -159,6 +182,26 @@ export async function createSinopiaCadLink(
   }
   await requireSinopiaUser(userId);
   return { modelId, projectId, userId, baseRevisionId: null };
+}
+
+/**
+ * The link with the image (and part) of its project the model starts from; a malformed origin is left out.
+ *
+ * @param link - A link to an existing Sinopia project (the origin only means something inside it).
+ * @param source - The image and part, from `/cad/nuovo`.
+ * @returns The link carrying the origin.
+ */
+export function withSinopiaCadSource(link: SinopiaCadLink, source: SinopiaCadSource | undefined): SinopiaCadLink {
+  if (source === undefined || !z.uuid().safeParse(source.assetId).success) {
+    return link;
+  }
+  return {
+    ...link,
+    sourceAssetId: source.assetId.toLowerCase(),
+    ...(source.partId !== undefined && partIdSchema.safeParse(source.partId).success
+      ? { sourcePartId: source.partId }
+      : {}),
+  };
 }
 
 /**
@@ -246,11 +289,24 @@ export async function ensureSinopiaCadModel(
   }
   const { client } = await getSinopiaDataClient();
   await requireSinopiaUser(link.userId);
-  const { error } = await client.from('cad_models').upsert(
-    // eslint-disable-next-line @typescript-eslint/naming-convention -- Supabase model wire columns.
-    { id: link.modelId, project_id: link.projectId, user_id: link.userId, name, engine },
-    { onConflict: 'id', ignoreDuplicates: true },
-  );
+  /* eslint-disable @typescript-eslint/naming-convention -- Supabase model wire columns. */
+  const row = {
+    id: link.modelId,
+    project_id: link.projectId,
+    user_id: link.userId,
+    name: projectNameOrDefault(name, 'Modello CAD'),
+    engine,
+  };
+  const origin = {
+    ...(link.sourceAssetId === undefined ? {} : { source_asset_id: link.sourceAssetId }),
+    ...(link.sourcePartId === undefined ? {} : { source_part_id: link.sourcePartId }),
+  };
+  /* eslint-enable @typescript-eslint/naming-convention -- Back to the domain's camelCase names. */
+  const options = { onConflict: 'id', ignoreDuplicates: true } as const;
+  let { error } = await client.from('cad_models').upsert({ ...row, ...origin }, options);
+  if (error !== null && Object.keys(origin).length > 0 && isMissingOriginColumn(error)) {
+    ({ error } = await client.from('cad_models').upsert(row, options));
+  }
   if (error !== null) {
     throw error;
   }
@@ -477,7 +533,7 @@ export async function saveSinopiaCadRevision(input: {
     .from('cad_models')
     .update({
       engine: input.engine,
-      name: input.name,
+      name: projectNameOrDefault(input.name, 'Modello CAD'),
       // eslint-disable-next-line @typescript-eslint/naming-convention -- Supabase model wire column.
       head_revision_id: input.revisionId,
       // eslint-disable-next-line @typescript-eslint/naming-convention -- Supabase model wire column.
@@ -518,6 +574,7 @@ export async function saveSinopiaCadRevision(input: {
   if (thumbnailPath !== null) {
     await adoptCadPreviewAsCover(client, input.link, thumbnailPath);
   }
+  await adoptModelNameForProject(client, input.link, input.name);
   return {
     kind: 'saved',
     link: { ...input.link, baseRevisionId: input.revisionId },
@@ -583,6 +640,31 @@ async function adoptCadPreviewAsCover(
       .or('thumbnail_url.is.null,thumbnail_url.like.*/cad/*');
   } catch {
     // The cover is cosmetic; the preview stays on the CAD model either way.
+  }
+}
+
+/**
+ * A project the CAD named «Nuovo progetto» (nobody had a name yet) takes the model's name once it has one: the name the
+ * assistant or the person gave the piece. A name the person chose on Sinopia is never replaced. Cosmetic, like the cover.
+ */
+async function adoptModelNameForProject(
+  client: Awaited<ReturnType<typeof getSinopiaDataClient>>['client'],
+  link: SinopiaCadLink,
+  name: string,
+): Promise<void> {
+  if (isPlaceholderProjectName(name)) {
+    return;
+  }
+  try {
+    await client
+      .from('projects')
+      .update({ name: projectNameOrDefault(name) })
+      .eq('id', link.projectId)
+      .eq('user_id', link.userId)
+      .is('deleted_at', null)
+      .in('name', ['Nuovo progetto', 'New Project', 'Untitled Project', 'Untitled project', 'Untitled']);
+  } catch {
+    // The project keeps its default name; the model is saved either way.
   }
 }
 
@@ -653,4 +735,325 @@ export async function patchSinopiaCadThumbnail(input: {
   }
   await adoptCadPreviewAsCover(client, input.link, path);
   return { kind: 'saved', link: input.link, at: Date.now(), previewPending: false };
+}
+
+// ---------------------------------------------------------------------------
+// One project per piece: finding the model a Sinopia part already has, and moving a model to another project
+// ---------------------------------------------------------------------------
+
+/** A Sinopia image part of one account: the key of the device's memory. */
+export type SinopiaCadSourceKey = Readonly<{ userId: string; projectId: string; assetId: string; partId: string }>;
+
+/** Where the device remembers which model a Sinopia part became (ids only, per account). */
+const sourceHintKey = ({ userId, projectId, assetId, partId }: SinopiaCadSourceKey): string =>
+  `sinopia:cad-source:${userId}:${projectId}:${assetId}:${partId}`;
+
+/**
+ * The device's memory of «this part became that model»: it works before the origin columns exist on Sinopia and before
+ * the model's first save. The database answer, when there is one, comes first.
+ */
+export const sinopiaCadSourceHint = {
+  get(key: SinopiaCadSourceKey): string | undefined {
+    try {
+      const value = localStorage.getItem(sourceHintKey(key)) ?? undefined;
+      return value !== undefined && z.uuid().safeParse(value).success ? value : undefined;
+    } catch {
+      return undefined;
+    }
+  },
+  set(key: SinopiaCadSourceKey, modelId: string): void {
+    try {
+      localStorage.setItem(sourceHintKey(key), modelId);
+    } catch {
+      /* Without storage the database origin still finds the model. */
+    }
+  },
+};
+
+/** The model a part of a project's image already became, as the page asking «open it or redo it?» needs it. */
+export type SinopiaCadModelForPart = Readonly<{ id: string; name: string; projectId: string }>;
+
+/**
+ * The newest active model of this account built from this image part of this project, from the origin columns.
+ * Before the migration the columns are missing and the answer is «none» (the device's hint takes over).
+ */
+export async function findSinopiaCadModelForPart(input: {
+  projectId: string;
+  assetId: string;
+  partId: string;
+}): Promise<SinopiaCadModelForPart | undefined> {
+  if (
+    !z.uuid().safeParse(input.projectId).success ||
+    !z.uuid().safeParse(input.assetId).success ||
+    !partIdSchema.safeParse(input.partId).success
+  ) {
+    return undefined;
+  }
+  const { client, userId } = await getSinopiaDataClient();
+  const { data, error } = await client
+    .from('cad_models')
+    .select('id,name,project_id,user_id')
+    .eq('user_id', userId)
+    .eq('project_id', input.projectId.toLowerCase())
+    .eq('source_asset_id', input.assetId.toLowerCase())
+    .eq('source_part_id', input.partId)
+    .is('deleted_at', null)
+    .order('updated_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error !== null) {
+    if (isMissingOriginColumn(error)) {
+      return undefined;
+    }
+    throw error;
+  }
+  await requireSinopiaUser(userId);
+  if (data === null) {
+    return undefined;
+  }
+  // eslint-disable-next-line @typescript-eslint/naming-convention -- Supabase model wire columns.
+  const row = z.object({ id: z.uuid(), name: z.string(), project_id: z.uuid(), user_id: z.uuid() }).parse(data);
+  return row.user_id === userId ? { id: row.id, name: row.name, projectId: row.project_id } : undefined;
+}
+
+/** A project of this account the person may link a model to. */
+export type SinopiaCadProjectChoice = Readonly<{ id: string; name: string }>;
+
+const storagePrefix = (projectId: string, modelId: string): string => `projects/${projectId}/cad/${modelId}/`;
+
+/** Every object under one model's folder, walking the storage «folders» (entries without an id). */
+async function listModelObjects(
+  bucket: ReturnType<Awaited<ReturnType<typeof getSinopiaDataClient>>['client']['storage']['from']>,
+  prefix: string,
+): Promise<string[]> {
+  const found: string[] = [];
+  const pending = [prefix.replace(/\/$/u, '')];
+  while (pending.length > 0 && found.length < 2000) {
+    const folder = pending.shift()!;
+    // oxlint-disable-next-line no-await-in-loop -- Folders are walked one at a time: the listing is small and bounded.
+    const { data, error } = await bucket.list(folder, { limit: 1000 });
+    if (error !== null) {
+      throw error;
+    }
+    for (const entry of data) {
+      const path = `${folder}/${entry.name}`;
+      if (entry.id === null) {
+        pending.push(path);
+      } else {
+        found.push(path);
+      }
+    }
+  }
+  return found;
+}
+
+const moveRowSchema = z.object({
+  id: z.uuid(),
+  // eslint-disable-next-line @typescript-eslint/naming-convention -- Supabase asset wire columns.
+  storage_path: z.string().nullable(),
+  metadata: z.record(z.string(), z.unknown()).nullable(),
+});
+
+/** Swap the old model folder for the new one in a stored path; any other value stays as it is. */
+function movedPath(value: unknown, from: string, to: string): unknown {
+  return typeof value === 'string' && value.startsWith(from) ? `${to}${value.slice(from.length)}` : value;
+}
+
+/**
+ * «Progetto Sinopia: cambia»: the model (its `cad_models` row, its saved files and the versions sent with «Invia a
+ * Sinopia») moves to another project of the same account, and the local link follows.
+ *
+ * Nothing is deleted. The files are COPIED to the new project's folder (the table's CHECK ties every path to its
+ * project), the row moves in one compare-and-swap update guarded by the RESTRICTIVE policy «a CAD model stays in its
+ * owner's projects» (a project of someone else is refused by the database, not only here), then each sent version
+ * follows. The old copies stay where they were until Sinopia's project clean-up; a version number the target already
+ * has stays in the old project rather than being renumbered.
+ *
+ * A model never saved yet (no row) only changes its link: its first save registers it in the new project.
+ */
+export async function moveSinopiaCadModel(input: {
+  link: SinopiaCadLink;
+  targetProjectId: string;
+  files: Pick<SinopiaCadRecordFiles, 'writeFile'>;
+  localProjectId: string;
+  /** The origin inside the target project, when the caller knows it (the recognition record of a piece). */
+  source?: SinopiaCadSource;
+}): Promise<SinopiaCadLink> {
+  const target = z.uuid().parse(input.targetProjectId).toLowerCase();
+  const { link } = input;
+  if (target === link.projectId) {
+    return link;
+  }
+  const { client } = await getSinopiaDataClient();
+  await requireSinopiaUser(link.userId);
+  const owned = await client
+    .from('projects')
+    .select('id')
+    .eq('id', target)
+    .eq('user_id', link.userId)
+    .is('deleted_at', null)
+    .maybeSingle();
+  if (owned.error !== null || owned.data === null) {
+    throw new Error('SINOPIA_PROJECT_UNAVAILABLE');
+  }
+  const origin =
+    input.source !== undefined && z.uuid().safeParse(input.source.assetId).success
+      ? {
+          sourceAssetId: input.source.assetId.toLowerCase(),
+          ...(input.source.partId !== undefined && partIdSchema.safeParse(input.source.partId).success
+            ? { sourcePartId: input.source.partId }
+            : {}),
+        }
+      : {};
+  const { sourceAssetId: _asset, sourcePartId: _part, ...rest } = link;
+  const moved: SinopiaCadLink = { ...rest, projectId: target, ...origin };
+  const remote = await getSinopiaCadModel(link);
+  if (remote !== undefined) {
+    const from = storagePrefix(link.projectId, link.modelId);
+    const to = storagePrefix(target, link.modelId);
+    const bucket = client.storage.from('creator-private');
+    for (const path of await listModelObjects(bucket, from)) {
+      // oxlint-disable-next-line no-await-in-loop -- Recheck the account before every write.
+      await requireSinopiaUser(link.userId);
+      // oxlint-disable-next-line no-await-in-loop -- One copy at a time: a retry finds the earlier copies already there.
+      const copied = await bucket.copy(path, `${to}${path.slice(from.length)}`);
+      if (copied.error !== null && !/exist/iu.test(copied.error.message)) {
+        throw copied.error;
+      }
+    }
+    await requireSinopiaUser(link.userId);
+    /* eslint-disable @typescript-eslint/naming-convention -- Supabase model wire columns. */
+    const row = {
+      project_id: target,
+      snapshot_path: movedPath(remote.snapshot_path, from, to) as string | null,
+      thumbnail_path: movedPath(remote.thumbnail_path, from, to) as string | null,
+    };
+    const originColumns = {
+      source_asset_id: moved.sourceAssetId ?? null,
+      source_part_id: moved.sourcePartId ?? null,
+    };
+    /* eslint-enable @typescript-eslint/naming-convention -- Back to camelCase. */
+    const update = async (values: Record<string, unknown>) =>
+      client
+        .from('cad_models')
+        .update(values)
+        .eq('id', link.modelId)
+        .eq('user_id', link.userId)
+        .eq('project_id', link.projectId)
+        .is('deleted_at', null)
+        .select('id');
+    let result = await update({ ...row, ...originColumns });
+    if (result.error !== null && isMissingOriginColumn(result.error)) {
+      result = await update(row);
+    }
+    if (result.error !== null) {
+      throw result.error;
+    }
+    if (!Array.isArray(result.data) || result.data.length !== 1) {
+      throw new Error('SINOPIA_MODEL_UNAVAILABLE');
+    }
+    // The versions sent with «Invia a Sinopia» follow the model, with their paths.
+    const versions = await client
+      .from('assets')
+      .select('id,storage_path,metadata')
+      .eq('user_id', link.userId)
+      .eq('project_id', link.projectId)
+      .eq('type', 'cad_model')
+      // eslint-disable-next-line @typescript-eslint/naming-convention -- Persisted Supabase JSON field.
+      .contains('metadata', { cad_model_id: link.modelId });
+    if (versions.error === null) {
+      for (const version of z.array(moveRowSchema).parse(versions.data)) {
+        const metadata = version.metadata ?? {};
+        const listed: unknown = metadata['files'];
+        const files = Array.isArray(listed)
+          ? listed.map((file: unknown) =>
+              file !== null && typeof file === 'object'
+                ? {
+                    ...(file as Record<string, unknown>),
+                    // eslint-disable-next-line @typescript-eslint/naming-convention -- Persisted metadata key.
+                    storage_path: movedPath((file as Record<string, unknown>)['storage_path'], from, to),
+                  }
+                : file,
+            )
+          : listed;
+        // oxlint-disable-next-line no-await-in-loop -- Each version moves on its own; a clash leaves only that one behind.
+        await requireSinopiaUser(link.userId);
+        // oxlint-disable-next-line no-await-in-loop -- Same reason as above.
+        const versionMoved = await client
+          .from('assets')
+          .update({
+            // eslint-disable-next-line @typescript-eslint/naming-convention -- Supabase asset wire columns.
+            project_id: target,
+            // eslint-disable-next-line @typescript-eslint/naming-convention -- Supabase asset wire columns.
+            storage_path: movedPath(version.storage_path, from, to),
+            metadata: {
+              ...metadata,
+              files,
+              // eslint-disable-next-line @typescript-eslint/naming-convention -- Persisted metadata key.
+              thumbnail_path: movedPath(metadata['thumbnail_path'], from, to),
+              ...(moved.sourceAssetId === undefined
+                ? // eslint-disable-next-line @typescript-eslint/naming-convention -- Persisted metadata keys.
+                  { source_asset_id: null, source_part_id: null }
+                : // eslint-disable-next-line @typescript-eslint/naming-convention -- Persisted metadata keys.
+                  { source_asset_id: moved.sourceAssetId, source_part_id: moved.sourcePartId ?? null }),
+            },
+          })
+          .eq('id', version.id)
+          .eq('user_id', link.userId)
+          .eq('project_id', link.projectId);
+        if (versionMoved.error !== null) {
+          console.warn('[sinopia] a sent version stays in the old project', versionMoved.error.code);
+        }
+      }
+    }
+  }
+  await requireSinopiaUser(link.userId);
+  await writeSinopiaCadLink(input.files, `/projects/${input.localProjectId}`, moved);
+  if (moved.sourceAssetId !== undefined && moved.sourcePartId !== undefined) {
+    sinopiaCadSourceHint.set(
+      { userId: link.userId, projectId: target, assetId: moved.sourceAssetId, partId: moved.sourcePartId },
+      link.modelId,
+    );
+  }
+  return moved;
+}
+
+/**
+ * The origin of a piece built from a Sinopia part, read back from its recognition record, when the record's project is
+ * the target: the part id, and the image's `assets.id` found by its storage path. Used when an older model, made before
+ * the link kept its origin, is moved back to the project it came from.
+ */
+export async function sourceFromRecognition(input: {
+  record: Readonly<{
+    schedaParte: Readonly<{ progetto: { id: string }; immagine: { path: string }; parte: { id: string } }>;
+  }>;
+  targetProjectId: string;
+  userId: string;
+}): Promise<SinopiaCadSource | undefined> {
+  const { schedaParte } = input.record;
+  if (schedaParte.progetto.id.toLowerCase() !== input.targetProjectId.toLowerCase()) {
+    return undefined;
+  }
+  try {
+    const { client } = await getSinopiaDataClient();
+    await requireSinopiaUser(input.userId);
+    const { data, error } = await client
+      .from('assets')
+      .select('id')
+      .eq('user_id', input.userId)
+      .eq('project_id', input.targetProjectId)
+      .eq('storage_path', schedaParte.immagine.path)
+      .is('deleted_at', null)
+      .limit(1)
+      .maybeSingle();
+    const found = error === null ? z.object({ id: z.uuid() }).safeParse(data) : undefined;
+    if (found?.success !== true) {
+      return undefined;
+    }
+    return partIdSchema.safeParse(schedaParte.parte.id).success
+      ? { assetId: found.data.id, partId: schedaParte.parte.id }
+      : { assetId: found.data.id };
+  } catch {
+    return undefined;
+  }
 }

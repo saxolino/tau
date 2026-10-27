@@ -17,6 +17,11 @@ import {
   saveSinopiaCadRevision,
   sinopiaModelLocalProjectId,
   importSinopiaCadModel,
+  ensureSinopiaCadModel,
+  findSinopiaCadModelForPart,
+  moveSinopiaCadModel,
+  sinopiaCadSourceHint,
+  withSinopiaCadSource,
 } from '#services/sinopia-cad.js';
 import type { SinopiaCadLink, SinopiaCadModel } from '#services/sinopia-cad.js';
 
@@ -481,5 +486,228 @@ describe('Sinopia CAD persistence', () => {
         snapshot_path: `projects/${link.projectId}/cad/${link.modelId}/saves/one/model.zip`,
       }),
     ).rejects.toThrow('SINOPIA_INVALID_ARCHIVE');
+  });
+});
+
+describe('One Sinopia project per piece', () => {
+  const asset = '00000000-0000-4000-8000-0000000000a1';
+  const target = '00000000-0000-4000-8000-0000000000b2';
+  /** Answer by address, like the server would: each test names only the calls it cares about. */
+  const route = (handlers: Array<[RegExp, (method: string) => Response]>): void => {
+    transport.fetch.mockImplementation(async (url, init) => {
+      const href = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+      const method = init?.method ?? 'GET';
+      const handler = handlers.find(([pattern]) => pattern.test(`${method} ${decodeURIComponent(href)}`));
+      return handler ? handler[1](method) : json({ message: 'unexpected' }, 500);
+    });
+  };
+
+  it('links a piece started from a Sinopia part to THAT project, with its image and part, creating no project', async () => {
+    transport.fetch.mockResolvedValueOnce(json({ id: link.projectId }));
+    const created = withSinopiaCadSource(await createSinopiaCadLink('Cornice fibbia', link.projectId), {
+      assetId: asset,
+      partId: 'buckle_frame',
+    });
+    expect(created).toMatchObject({ projectId: link.projectId, sourceAssetId: asset, sourcePartId: 'buckle_frame' });
+    expect(requests().some((request) => request.method === 'POST' && request.url.includes('/rest/v1/projects'))).toBe(
+      false,
+    );
+  });
+
+  it.each(['New Project', 'Untitled Project', '  '])(
+    'never names a CAD-born Sinopia project %j: it becomes «Nuovo progetto»',
+    async (name) => {
+      transport.fetch
+        .mockResolvedValueOnce(json({ current_vertical: 'accessories' }))
+        .mockResolvedValueOnce(json(null, 201));
+      await createSinopiaCadLink(name);
+      expect(requests()[1]?.body).toMatchObject({ name: 'Nuovo progetto' });
+    },
+  );
+
+  it('registers the model with its origin, and without it while the origin columns are not migrated yet', async () => {
+    const linked = { ...link, sourceAssetId: asset, sourcePartId: 'buckle_frame' };
+    let upserts = 0;
+    let registered = false;
+    route([
+      [
+        /cad_models/u,
+        (method) => {
+          if (method === 'POST') {
+            upserts += 1;
+            if (upserts === 1) {
+              return json(
+                { code: 'PGRST204', message: "Could not find the 'source_asset_id' column of 'cad_models'" },
+                400,
+              );
+            }
+            registered = true;
+            return json(null, 201);
+          }
+          return json(registered ? model : null);
+        },
+      ],
+    ]);
+    await ensureSinopiaCadModel(linked, 'New Project', 'smlib');
+    const posts = requests().filter((request) => request.method === 'POST');
+    expect(posts[0]?.body).toMatchObject({
+      source_asset_id: asset,
+      source_part_id: 'buckle_frame',
+      name: 'Modello CAD',
+    });
+    expect(posts[1]?.body).not.toHaveProperty('source_asset_id');
+    expect(posts[1]?.body).toMatchObject({ project_id: link.projectId, name: 'Modello CAD' });
+  });
+
+  it('finds the model a part already became, owner-filtered, and answers «none» before the migration', async () => {
+    transport.fetch.mockResolvedValueOnce(
+      json({ id: model.id, name: 'Cornice fibbia', project_id: link.projectId, user_id: userId }),
+    );
+    const found = await findSinopiaCadModelForPart({
+      projectId: link.projectId,
+      assetId: asset,
+      partId: 'buckle_frame',
+    });
+    expect(found).toEqual({ id: model.id, name: 'Cornice fibbia', projectId: link.projectId });
+    const query = decodeURIComponent(requests()[0]?.url ?? '');
+    expect(query).toContain(`user_id=eq.${userId}`);
+    expect(query).toContain(`source_asset_id=eq.${asset}`);
+    expect(query).toContain('source_part_id=eq.buckle_frame');
+    expect(query).toContain('deleted_at=is.null');
+    transport.fetch.mockResolvedValueOnce(
+      json({ code: '42703', message: 'column cad_models.source_asset_id does not exist' }, 400),
+    );
+    expect(
+      await findSinopiaCadModelForPart({ projectId: link.projectId, assetId: asset, partId: 'buckle_frame' }),
+    ).toBeUndefined();
+  });
+
+  it('moves a never-saved model by rewriting only its link, after checking the target is the person’s', async () => {
+    const memory = new Map<string, string>();
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => memory.get(key) ?? null,
+      setItem: (key: string, value: string) => memory.set(key, value),
+    });
+    const files = { writeFile: vi.fn(async () => undefined) };
+    route([
+      [/GET .*\/rest\/v1\/projects/u, () => json({ id: target })],
+      [/GET .*\/rest\/v1\/cad_models/u, () => json(null)],
+    ]);
+    const moved = await moveSinopiaCadModel({
+      link,
+      targetProjectId: target,
+      files,
+      localProjectId: 'proj_local',
+      source: { assetId: asset, partId: 'buckle_frame' },
+    });
+    expect(moved).toMatchObject({ projectId: target, modelId: link.modelId, sourceAssetId: asset });
+    const ownership = decodeURIComponent(requests()[0]?.url ?? '');
+    expect(ownership).toContain(`id=eq.${target}`);
+    expect(ownership).toContain(`user_id=eq.${userId}`);
+    expect(requests().some((request) => request.method !== 'GET')).toBe(false);
+    expect(files.writeFile).toHaveBeenCalledWith('/projects/proj_local/.tau/sinopia.json', expect.any(String));
+    expect(sinopiaCadSourceHint.get({ userId, projectId: target, assetId: asset, partId: 'buckle_frame' })).toBe(
+      link.modelId,
+    );
+    vi.unstubAllGlobals();
+  });
+
+  it('refuses a project that is not the person’s and touches nothing', async () => {
+    const files = { writeFile: vi.fn(async () => undefined) };
+    route([[/GET .*\/rest\/v1\/projects/u, () => json(null)]]);
+    await expect(moveSinopiaCadModel({ link, targetProjectId: target, files, localProjectId: 'p' })).rejects.toThrow(
+      'SINOPIA_PROJECT_UNAVAILABLE',
+    );
+    expect(requests().every((request) => request.method === 'GET')).toBe(true);
+    expect(files.writeFile).not.toHaveBeenCalled();
+  });
+
+  it('moves a saved model: copies its files, moves the row in one guarded update, then its sent versions', async () => {
+    const from = `projects/${link.projectId}/cad/${link.modelId}`;
+    const to = `projects/${target}/cad/${link.modelId}`;
+    const saved = {
+      ...model,
+      head_revision_id: first,
+      snapshot_path: `${from}/saves/s1/model.zip`,
+      thumbnail_path: `${from}/saves/s1/thumbnail.webp`,
+    };
+    const files = { writeFile: vi.fn(async () => undefined) };
+    route([
+      [/GET .*\/rest\/v1\/projects/u, () => json({ id: target })],
+      [/GET .*\/rest\/v1\/cad_models/u, () => json(saved)],
+      [/POST .*\/storage\/v1\/object\/list/u, () => json([])],
+      [/POST .*\/storage\/v1\/object\/copy/u, () => json({ Key: 'copied' })],
+      [/PATCH .*\/rest\/v1\/cad_models/u, () => json([{ id: link.modelId }])],
+      [
+        /GET .*\/rest\/v1\/assets/u,
+        () =>
+          json([
+            {
+              id: '00000000-0000-4000-8000-0000000000c3',
+              storage_path: `${from}/v1/x/model.glb`,
+              metadata: {
+                cad_model_id: link.modelId,
+                thumbnail_path: `${from}/v1/x/preview.png`,
+                files: [{ format: 'glb', storage_path: `${from}/v1/x/model.glb` }],
+              },
+            },
+          ]),
+      ],
+      [/PATCH .*\/rest\/v1\/assets/u, () => json(null, 204)],
+    ]);
+    // The folder walk: the model folder holds «saves/s1» and «v1/x»; each leaf holds files.
+    const listing: Record<string, unknown[]> = {
+      [from]: [
+        { name: 'saves', id: null },
+        { name: 'v1', id: null },
+      ],
+      [`${from}/saves`]: [{ name: 's1', id: null }],
+      [`${from}/saves/s1`]: [
+        { name: 'model.zip', id: 'f1' },
+        { name: 'thumbnail.webp', id: 'f2' },
+      ],
+      [`${from}/v1`]: [{ name: 'x', id: null }],
+      [`${from}/v1/x`]: [
+        { name: 'model.glb', id: 'f3' },
+        { name: 'preview.png', id: 'f4' },
+      ],
+    };
+    const base = transport.fetch.getMockImplementation()!;
+    transport.fetch.mockImplementation(async (url, init) => {
+      const href = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+      if (href.includes('/storage/v1/object/list/')) {
+        const { prefix } = JSON.parse(typeof init?.body === 'string' ? init.body : '{}') as { prefix: string };
+        return json(listing[prefix] ?? []);
+      }
+      return base(url, init);
+    });
+    const moved = await moveSinopiaCadModel({ link, targetProjectId: target, files, localProjectId: 'p' });
+    expect(moved.projectId).toBe(target);
+    const copies = requests()
+      .filter((request) => request.url.includes('/object/copy'))
+      .map((request) => request.body as { sourceKey: string; destinationKey: string });
+    expect(copies.map((copy) => copy.destinationKey).toSorted()).toEqual(
+      [
+        `${to}/saves/s1/model.zip`,
+        `${to}/saves/s1/thumbnail.webp`,
+        `${to}/v1/x/model.glb`,
+        `${to}/v1/x/preview.png`,
+      ].toSorted(),
+    );
+    const row = requests().find((request) => request.method === 'PATCH' && request.url.includes('/cad_models'));
+    expect(row?.body).toMatchObject({
+      project_id: target,
+      snapshot_path: `${to}/saves/s1/model.zip`,
+      thumbnail_path: `${to}/saves/s1/thumbnail.webp`,
+    });
+    // Compare-and-swap on the old project: a second tab's move cannot be overwritten.
+    expect(decodeURIComponent(row?.url ?? '')).toContain(`project_id=eq.${link.projectId}`);
+    const version = requests().find((request) => request.method === 'PATCH' && request.url.includes('/assets'));
+    expect(version?.body).toMatchObject({
+      project_id: target,
+      storage_path: `${to}/v1/x/model.glb`,
+      metadata: { thumbnail_path: `${to}/v1/x/preview.png`, files: [{ storage_path: `${to}/v1/x/model.glb` }] },
+    });
+    expect(requests().some((request) => request.method === 'DELETE')).toBe(false);
   });
 });

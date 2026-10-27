@@ -20,7 +20,9 @@ const hooks = vi.hoisted(() => ({
   unlink: vi.fn(),
   currentUser: '10000000-0000-4000-8000-000000000001',
   pieces: [] as unknown[],
+  move: vi.fn(),
 }));
+vi.mock('#hooks/use-sinopia-cad-sync.js', () => ({ useMoveSinopiaCadModel: () => hooks.move }));
 vi.mock('#hooks/use-project.js', () => ({ useProject: () => ({ projectId: 'local' }) }));
 vi.mock('#hooks/use-file-manager.js', () => ({
   useFileManager: () => ({
@@ -152,7 +154,7 @@ describe.each<Language>(['it', 'en'])('Sinopia send dialog in %s', (language) =>
     expect(await screen.findByRole('checkbox', { name: t('sinopiaSend.step') })).toBeChecked();
   });
 
-  it('should offer checked formats, own destination changes and a note, then record the actual delivered version', async () => {
+  it('should offer checked formats and a note, then record the actual delivered version in the linked project', async () => {
     setLanguage(language);
     const t = bindTranslate(language);
     const user = userEvent.setup();
@@ -160,15 +162,15 @@ describe.each<Language>(['it', 'en'])('Sinopia send dialog in %s', (language) =>
     expect(await screen.findByRole('checkbox', { name: t('sinopiaSend.step') })).toBeChecked();
     expect(screen.getByRole('checkbox', { name: t('sinopiaSend.glb') })).toBeChecked();
     expect(screen.getByRole('checkbox', { name: t('sinopiaSend.photo') })).toBeChecked();
-    await user.click(await screen.findByRole('button', { name: t('sinopiaSend.change') }));
-    await user.selectOptions(screen.getByRole('combobox', { name: t('sinopiaSend.chooseProject') }), alternative);
+    expect(await screen.findByText(t('sinopiaSend.destination', { name: 'Collana' }))).toBeInTheDocument();
     await user.type(screen.getByRole('textbox', { name: t('sinopiaSend.note') }), 'Marquise 12 × 5');
     await user.click(await screen.findByRole('button', { name: t('sinopiaSend.send', { number: 3 }) }));
     await waitFor(() => {
       expect(view.onOpenChange).toHaveBeenCalledWith(false);
     });
     expect(sinopiaSender.send).toHaveBeenCalledWith(
-      expect.objectContaining({ projectId: alternative, selected: ['step', 'glb', 'photo'], note: 'Marquise 12 × 5' }),
+      // One project per model: the version goes to the project the model belongs to.
+      expect.objectContaining({ projectId, selected: ['step', 'glb', 'photo'], note: 'Marquise 12 × 5' }),
     );
     expect(toast.success).toHaveBeenCalledOnce();
     const [message, options] = vi.mocked(toast.success).mock.calls[0]!;
@@ -176,6 +178,39 @@ describe.each<Language>(['it', 'en'])('Sinopia send dialog in %s', (language) =>
     expect(options?.action).toMatchObject({ label: t('sinopiaSend.openProject') });
     expect([...stored.keys()].filter((path) => path.includes('/sinopia-sent/'))).toHaveLength(1);
     expect([...stored.keys()].filter((path) => path.includes('/sinopia-send-pending/'))).toEqual([]);
+  });
+
+  it('should move the model to another own project with «Progetto Sinopia: cambia», never sending elsewhere', async () => {
+    setLanguage(language);
+    const t = bindTranslate(language);
+    const user = userEvent.setup();
+    hooks.move.mockResolvedValue({ ...link, projectId: alternative });
+    mount();
+    await user.click(await screen.findByRole('button', { name: t('sinopiaSend.change') }));
+    const choice = screen.getByRole('combobox', { name: t('sinopiaSend.chooseProject') });
+    // The project it is already in is not a choice.
+    expect(screen.queryByRole('option', { name: 'Collana' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: t('sinopiaSend.move') })).toBeDisabled();
+    await user.selectOptions(choice, alternative);
+    await user.click(screen.getByRole('button', { name: t('sinopiaSend.move') }));
+    await waitFor(() => {
+      expect(hooks.move).toHaveBeenCalledWith(link, alternative);
+    });
+    expect(toast.success).toHaveBeenCalledWith(t('sinopiaSend.moved', { name: 'Primavera' }));
+    expect(sinopiaSender.send).not.toHaveBeenCalled();
+  });
+
+  it('should say when the model could not be moved and keep the dialog usable', async () => {
+    setLanguage(language);
+    const t = bindTranslate(language);
+    const user = userEvent.setup();
+    hooks.move.mockRejectedValue(new Error('SINOPIA_PROJECT_UNAVAILABLE'));
+    mount();
+    await user.click(await screen.findByRole('button', { name: t('sinopiaSend.change') }));
+    await user.selectOptions(screen.getByRole('combobox', { name: t('sinopiaSend.chooseProject') }), alternative);
+    await user.click(screen.getByRole('button', { name: t('sinopiaSend.move') }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(t('sinopiaSend.moveFailed'));
+    expect(screen.getByRole('button', { name: t('sinopiaSend.move') })).toBeEnabled();
   });
 
   it('should show the explicit missing migration error without announcing success', async () => {

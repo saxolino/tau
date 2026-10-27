@@ -9,6 +9,12 @@ export const riconoscimentoMessages = defineMessages({
   it: {
     pageTitle: 'Dalla parte al CAD',
     eyebrow: 'Da Sinopia',
+    existing: {
+      title: 'Questa parte ha già un modello CAD',
+      body: '«{name}» è nato da questa parte, nello stesso progetto. Aprilo per continuare da lì, oppure rifallo da capo: il riconoscimento riparte e si paga di nuovo.',
+      open: 'Apri il modello',
+      redo: 'Rifallo da capo',
+    },
     reading: 'Leggo la parte da Sinopia…',
     recognizing: 'Riconosco il pezzo…',
     building: 'Costruisco il pezzo…',
@@ -141,6 +147,12 @@ export const riconoscimentoMessages = defineMessages({
   en: {
     pageTitle: 'From the part to the CAD',
     eyebrow: 'From Sinopia',
+    existing: {
+      title: 'This part already has a CAD model',
+      body: '“{name}” was made from this part, in the same project. Open it to carry on, or redo it from scratch: the recognition runs again and is charged again.',
+      open: 'Open the model',
+      redo: 'Redo from scratch',
+    },
     reading: 'Reading the part from Sinopia…',
     recognizing: 'Recognising the piece…',
     building: 'Building the piece…',
