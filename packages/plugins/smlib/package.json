@@ -46,7 +46,9 @@
     "./model": "./src/model.ts",
     "./manual-operations": "./src/manual-operations.ts",
     "./famiglie": "./src/famiglie/index.ts",
-    "./riconoscimento": "./src/riconoscimento/index.ts"
+    "./riconoscimento": "./src/riconoscimento/index.ts",
+    "./verifica": "./src/verifica/index.ts",
+    "./verifica/worker": "./src/verifica/verifica.worker.ts"
   },
   "publishConfig": {
     "access": "public",
@@ -81,6 +83,16 @@
         "types": "./dist/riconoscimento/index.d.mts",
         "import": "./dist/riconoscimento/index.mjs",
         "default": "./dist/riconoscimento/index.mjs"
+      },
+      "./verifica": {
+        "types": "./dist/verifica/index.d.mts",
+        "import": "./dist/verifica/index.mjs",
+        "default": "./dist/verifica/index.mjs"
+      },
+      "./verifica/worker": {
+        "types": "./dist/verifica/verifica.worker.d.mts",
+        "import": "./dist/verifica/verifica.worker.mjs",
+        "default": "./dist/verifica/verifica.worker.mjs"
       }
     },
     "imports": {}

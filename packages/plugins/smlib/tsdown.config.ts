@@ -8,6 +8,8 @@ const baseConfig: UserConfig = {
     'src/manual-operations.ts',
     'src/famiglie/index.ts',
     'src/riconoscimento/index.ts',
+    'src/verifica/index.ts',
+    'src/verifica/verifica.worker.ts',
   ],
   sourcemap: false,
   clean: true,
