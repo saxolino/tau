@@ -2,7 +2,7 @@ import { resetLanguageForTests, setLanguage } from '#i18n/language.js';
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AppSidebar } from '#components/layout/app-sidebar.js';
+import { AppSidebar, sinopiaDashboardUrl } from '#components/layout/app-sidebar.js';
 import { SidebarProvider } from '#components/ui/sidebar.js';
 import { TooltipProvider } from '@taucad/ui/components/tooltip';
 import { KeyboardProvider } from '@taucad/ui/components/keyboard';
@@ -83,6 +83,16 @@ describe('AppSidebar', () => {
     expect(screen.getByRole('button', { name: 'Account' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'More' })).not.toBeInTheDocument();
     expect(screen.queryByText('New project')).not.toBeInTheDocument();
+  });
+
+  it('should lead back to Sinopia with a path when served under /cad of sinopialab.com', () => {
+    vi.stubEnv('BASE_URL', '/cad/');
+    try {
+      expect(sinopiaDashboardUrl()).toBe('/dashboard');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(sinopiaDashboardUrl()).toBe('https://sinopialab.com/dashboard');
   });
 
   it('should lead back to Sinopia’s dashboard with a full navigation, and end with the account card', () => {
