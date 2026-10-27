@@ -1,17 +1,15 @@
 /* oxlint-disable new-cap -- SMLib exposes capitalized shape factory functions. */
 // @vitest-environment node
-import { cpus, loadavg } from 'node:os';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type * as Smlib from '@classcad/smlibwasm';
 import { tacco } from '#famiglie/tacco.js';
 import type { VarianteTacco } from '#famiglie/tacco.js';
 import { valoriDerivati } from '#famiglie/parametri.js';
 import { facceAiPunti, pareteMinima, puntiMarcati, rileggiStep, sformo } from '#famiglie/verifiche-comuni.js';
+import { budgetTarato } from '#famiglie/budget-tempo.js';
 import { valutaFamiglia } from '#famiglie/valuta-famiglia.js';
 import type { Valutazione } from '#famiglie/valuta-famiglia.js';
 
-// Budget di 300 ms per ricostruzione (T-D1-12): doppio in CI e con la macchina carica (altri processi in corso).
-const budget = (): number => 300 * (process.env['CI'] ? 2 : 1) * (loadavg()[0]! / cpus().length > 0.8 ? 2 : 1);
 /** Il migliore di tre tempi (ms) dopo il giro a vuoto, e l'ultimo risultato. */
 const cronometra = <T>(costruisci: () => T): { tempo: number; valore: T } => {
   let valore = costruisci();
@@ -187,7 +185,7 @@ describe('famiglia tacco', () => {
   it('should rebuild the pair within the rebuild budget and export it to STEP', () => {
     const p = tacco.predefiniti();
     const { tempo, valore: pezzi } = cronometra(() => tacco.costruisci(lib, p));
-    expect(tempo).toBeLessThan(budget());
+    expect(tempo).toBeLessThan(budgetTarato(lib));
     const { esito, corpi } = rileggiStep(lib, pezzi, 'tacco');
     expect(esito.livello).toBe('ok');
     expect(corpi).toHaveLength(6);

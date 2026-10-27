@@ -1,17 +1,15 @@
 /* oxlint-disable new-cap -- SMLib exposes capitalized shape factory functions. */
 // @vitest-environment node
-import { cpus, loadavg } from 'node:os';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type * as Smlib from '@classcad/smlibwasm';
 import { anello } from '#famiglie/anello.js';
 import { diametroInterno, tagliaDaDiametro } from '#famiglie/taglie-anello.js';
 import { valoriDerivati } from '#famiglie/parametri.js';
 import { rileggiStep } from '#famiglie/verifiche-comuni.js';
+import { budgetTarato } from '#famiglie/budget-tempo.js';
 import { valutaFamiglia } from '#famiglie/valuta-famiglia.js';
 import type { Valutazione } from '#famiglie/valuta-famiglia.js';
 
-// Budget di 300 ms per ricostruzione (T-D1-12): doppio in CI e con la macchina carica (altri processi in corso).
-const budget = (): number => 300 * (process.env['CI'] ? 2 : 1) * (loadavg()[0]! / cpus().length > 0.8 ? 2 : 1);
 /** Il migliore di tre tempi (ms) dopo il giro a vuoto, e l'ultimo risultato. */
 const cronometra = <T>(costruisci: () => T): { tempo: number; valore: T } => {
   let valore = costruisci();
@@ -113,7 +111,7 @@ describe('famiglia anello', () => {
   it('should rebuild within the rebuild budget and export to STEP', () => {
     const p = anello.predefiniti();
     const { tempo, valore: pezzi } = cronometra(() => anello.costruisci(lib, p));
-    expect(tempo).toBeLessThan(budget());
+    expect(tempo).toBeLessThan(budgetTarato(lib));
     expect(rileggiStep(lib, pezzi, 'anello').esito.livello).toBe('ok');
   });
 });

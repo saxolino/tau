@@ -1,26 +1,25 @@
 // @vitest-environment node
-import { cpus, loadavg } from 'node:os';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type * as Smlib from '@classcad/smlibwasm';
 import { famiglie } from '#famiglie/registro.js';
+import { budgetTarato } from '#famiglie/budget-tempo.js';
 import type { FamigliaQualsiasi } from '#famiglie/famiglia.js';
 
 /**
  * T-D1-12: ogni famiglia con i predefiniti, e ogni variante ovale, si ricostruisce entro 300 ms (il budget che rende
- * possibile l'ottimizzatore di D3); doppio in CI e con la macchina carica; le altre varianti entro 450 ms. Si misura il migliore di tre costruzioni
+ * possibile l'ottimizzatore di D3), tarati su una prova fissa (`budget-tempo.ts`): doppi in CI e cresciuti col rallentamento
+ * della macchina; le altre varianti entro una volta e mezza. Si misura il migliore di tre costruzioni
  * dopo un giro a vuoto e si stampa la tabella. Le varianti ovali stanno nel budget con l'ovale a quattro centri e lo
  * sformo per `draft` dei fianchi (`profili.ts`): con l'ellisse e il `taper` erano 325–870 ms.
  */
 // Costruzioni B-rep ripetute: sulla macchina carica una prova supera i 5 s predefiniti.
 vi.setConfig({ testTimeout: 60_000 });
 let lib: typeof Smlib;
+let soglia = 300;
 beforeAll(async () => {
   lib = await import('@classcad/smlibwasm');
+  soglia = budgetTarato(lib);
 });
-
-const carico = loadavg()[0]! / cpus().length;
-// Doppia in CI e con la macchina carica (altri processi in corso): i tempi del kernel crescono col carico.
-const soglia = 300 * (process.env['CI'] ? 2 : 1) * (carico > 0.8 ? 2 : 1);
 
 const casi = Object.values(famiglie).flatMap((famiglia: FamigliaQualsiasi) =>
   famiglia.varianti.map((variante, indice) => [famiglia.id, variante, famiglia, indice === 0] as const),
@@ -53,7 +52,7 @@ describe('tempo di ricostruzione delle famiglie', () => {
   it('should print the timing table', () => {
     // oxlint-disable-next-line no-console -- the benchmark table is the deliverable of T-D1-12.
     console.log(
-      `Tempi di ricostruzione (migliore di 3, dopo un giro a vuoto; carico ${carico.toFixed(2)} per core, soglia ${soglia} ms):\n${tempi.join('\n')}`,
+      `Tempi di ricostruzione (migliore di 3, dopo un giro a vuoto; soglia tarata ${soglia.toFixed(0)} ms):\n${tempi.join('\n')}`,
     );
     expect(tempi.length).toBe(casi.length);
   });
