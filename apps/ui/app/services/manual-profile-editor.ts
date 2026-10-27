@@ -1,4 +1,5 @@
 import { isManualProfileClosed, manualProfileSegments } from '@taucad/smlib/manual-operations';
+import { sketchEntitySamples } from '@taucad/viewer/cad/sketch-geometry';
 import type {
   ManualDocument,
   ManualPointProfile,
@@ -23,6 +24,24 @@ export function manualProfilePath(profile: ManualProfile): string {
     const end = polar(profile.center, profile.radius, profile.startAngle + profile.sweepAngle);
     return `M ${svgPoint(start)} A ${profile.radius},${profile.radius} 0 ${Math.abs(profile.sweepAngle) > 180 ? 1 : 0} ${profile.sweepAngle > 0 ? 0 : 1} ${svgPoint(end)}`;
   }
+  if (profile.kind === 'path') {
+    // A sketched outline: lines as they are, arcs and splines through their samples.
+    let from = profile.start;
+    const segments = profile.segments.map((segment) => {
+      const start = from;
+      from = segment.to;
+      const samples =
+        segment.kind === 'line'
+          ? [segment.to]
+          : sketchEntitySamples(
+              segment.kind === 'arc'
+                ? { kind: 'arc', id: '', start, through: segment.through, end: segment.to }
+                : { kind: 'spline', id: '', points: [start, ...segment.through, segment.to] },
+            ).slice(1);
+      return samples.map((point) => `L ${svgPoint(point)}`).join(' ');
+    });
+    return `M ${svgPoint(profile.start)} ${segments.join(' ')}${profile.closed ? ' Z' : ''}`;
+  }
   const first = profile.points[0];
   if (!first) {
     return '';
@@ -44,12 +63,20 @@ export function manualProfileBounds(profile: ManualProfile): { x: number; y: num
           { x: profile.center.x - profile.radius, y: profile.center.y - profile.radius },
           { x: profile.center.x + profile.radius, y: profile.center.y + profile.radius },
         ]
-      : [
-          ...profile.points,
-          ...(profile.kind === 'spline'
-            ? manualProfileSegments(profile).flatMap(({ control1, control2 }) => [control1, control2])
-            : []),
-        ];
+      : profile.kind === 'path'
+        ? [
+            profile.start,
+            ...profile.segments.flatMap((segment) => [
+              ...(segment.kind === 'line' ? [] : segment.kind === 'arc' ? [segment.through] : segment.through),
+              segment.to,
+            ]),
+          ]
+        : [
+            ...profile.points,
+            ...(profile.kind === 'spline'
+              ? manualProfileSegments(profile).flatMap(({ control1, control2 }) => [control1, control2])
+              : []),
+          ];
   const xs = points.map((point) => point.x);
   const ys = points.map((point) => -point.y);
   const span = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys), 20) * 1.4;
@@ -132,7 +159,10 @@ export function nextManualProfileName(options: {
     ...options.targets,
     ...(options.document?.operations.flatMap((operation) =>
       operation.id !== options.excludeId &&
-      (operation.type === 'sketch' || operation.type === 'extrude') &&
+      (operation.type === 'sketch' ||
+        operation.type === 'extrude' ||
+        operation.type === 'revolve' ||
+        operation.type === 'sweep') &&
       operation.name
         ? [operation.name]
         : [],

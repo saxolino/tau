@@ -54,6 +54,8 @@ import {
 } from '#routes/w.$workspace.$project/manual-edit-fields.js';
 import { nextManualProfileName } from '#services/manual-profile-editor.js';
 import { ManualProfileEditor } from '#routes/w.$workspace.$project/manual-edit-profile.js';
+import { ManualSketchSection } from '#routes/w.$workspace.$project/manual-sketch-panel.js';
+import type { ManualSketchControls } from '#hooks/use-manual-sketch-tool.js';
 
 const toolTypes = ['extrude', 'translate', 'rotate', 'scale', 'mirror', 'hole', 'fillet', 'chamfer'] as const;
 type Tool = (typeof toolTypes)[number] | 'sketch';
@@ -89,6 +91,8 @@ export type ManualFaceControls = Readonly<{
     name: string;
     faceIndex: number;
     componentId?: string;
+    /** The picked face occurrence on the presented model, for a sketch on it. */
+    faceId?: number;
     normal?: readonly [number, number, number];
   }>;
   /** The held preview distance, in millimetres (0: nothing held). */
@@ -373,6 +377,10 @@ function OperationFields({
           </>
         );
       }
+      case 'revolve':
+      case 'sweep': {
+        return <p className='text-xs text-muted-foreground'>{t('sketch.reopenHint')}</p>;
+      }
       case 'sketch':
       case 'extrude': {
         const closed = isManualProfileClosed(operation.profile);
@@ -505,7 +513,10 @@ function operationTargets(
       : (document?.operations.length ?? 0);
   const earlierOperations = (draft?.base ?? document)?.operations.slice(0, draftIndex) ?? [];
   const named = earlierOperations.flatMap((operation) =>
-    operation.enabled !== false && operation.type === 'extrude' && operation.mode === 'new' && operation.name
+    operation.enabled !== false &&
+    (operation.type === 'extrude' || operation.type === 'revolve' || operation.type === 'sweep') &&
+    operation.mode === 'new' &&
+    operation.name
       ? [operation.name]
       : [],
   );
@@ -606,6 +617,7 @@ export function ManualEditPanel({
   onShowModel,
   onDraftLayoutChange,
   historySlot,
+  sketchControls,
 }: Readonly<{
   document: ManualDocument | undefined;
   targets: readonly string[];
@@ -625,6 +637,8 @@ export function ManualEditPanel({
   onDraftLayoutChange?: (layout: 'profile' | 'operation' | undefined) => void;
   /** Where the history goes, when the inspector keeps it at its foot; inline otherwise. */
   historySlot?: HTMLElement;
+  /** The sketch on the model (E4): while it is open the inspector holds its operation instead of the tools. */
+  sketchControls?: ManualSketchControls;
 }>): React.JSX.Element {
   const { t, language } = useTranslation();
   const [draft, setDraft] = useState<Draft>();
@@ -723,6 +737,42 @@ export function ManualEditPanel({
     setLocalError(undefined);
     resumeTools();
   };
+  /** Open a sketch: on the selected face when there is one, else ask for a plane. The other tools step aside. */
+  const startSketch = (): void => {
+    const face = faceControls?.selected;
+    const onFace =
+      face?.componentId !== undefined && face.faceId !== undefined
+        ? { componentId: face.componentId, faceId: face.faceId }
+        : undefined;
+    setDraft(undefined);
+    setLocalError(undefined);
+    faceControls?.onEnableChange(false);
+    directControls?.onModeChange(undefined);
+    sketchControls?.onStart(onFace);
+  };
+  /** An extrusion, revolution or sweep reopens as its sketch; anything else as its numeric draft. */
+  const reopen = (operation: ManualOperation): void => {
+    const isProfileOperation =
+      operation.type === 'revolve' ||
+      operation.type === 'sweep' ||
+      (operation.type === 'extrude' && (operation.profile.frame !== undefined || operation.profile.kind === 'path'));
+    if (isProfileOperation && sketchControls) {
+      setDraft(undefined);
+      faceControls?.onEnableChange(false);
+      directControls?.onModeChange(undefined);
+      if (sketchControls.onReopen(operation)) {
+        return;
+      }
+    }
+    if (operation.type !== 'revolve' && operation.type !== 'sweep') {
+      startDraft(operation, false);
+    }
+  };
+  const isReopenable = (operation: ManualOperation): boolean =>
+    sketchControls !== undefined &&
+    (operation.type === 'revolve' ||
+      operation.type === 'sweep' ||
+      (operation.type === 'extrude' && operation.profile.kind !== 'spline'));
   const mutateHistory = (operations: ManualOperation[]): void => {
     if (document && !busy && !draft) {
       void saveDocument({ version: 1, operations });
@@ -840,9 +890,11 @@ export function ManualEditPanel({
         : selection === 'body' && hasPieces
           ? 'translate'
           : undefined;
-  const secondary: ReadonlyArray<Tool | 'holeHere'> =
+  const secondary: ReadonlyArray<Tool | 'holeHere' | 'sketchHere'> =
     selection === 'face'
-      ? ['holeHere']
+      ? sketchControls
+        ? ['holeHere', 'sketchHere']
+        : ['holeHere']
       : selection === 'edge'
         ? ['chamfer']
         : selection === 'body' && hasPieces
@@ -851,8 +903,18 @@ export function ManualEditPanel({
   const moreTools: readonly Tool[] = (
     ['sketch', 'extrude', 'mirror', 'hole', 'translate', 'rotate', 'scale', 'fillet', 'chamfer'] as const
   )
-    // Without a selection tool the main button is «Disegna profilo» (extrude), so the menu does not repeat it.
-    .filter((type) => type !== (primary ?? 'extrude') && !secondary.includes(type));
+    // Without a selection tool the main button is the sketch on the model («Disegna profilo» without one), so the menu
+    // does not repeat it.
+    .filter((type) => type !== (primary ?? (sketchControls ? undefined : 'extrude')) && !secondary.includes(type));
+  const sketchActive = sketchControls?.active === true;
+  // A sketch over (applied or left), the piece tools come back as after a draft.
+  const wasSketching = useRef(sketchActive);
+  useEffect(() => {
+    if (wasSketching.current && !sketchActive && !draft) {
+      resumeTools();
+    }
+    wasSketching.current = sketchActive;
+  });
   const directBusy = busy || !document;
   const help = ((): string | undefined => {
     if (draft) {
@@ -892,7 +954,16 @@ export function ManualEditPanel({
         ) : null}
         <ol className='divide-y divide-border'>
           {document?.operations.map((operation, index) => (
-            <li key={operation.id} className='flex items-center gap-2 px-2 py-2'>
+            <li
+              key={operation.id}
+              className='flex items-center gap-2 px-2 py-2'
+              title={isReopenable(operation) ? t('sketch.reopenHint') : undefined}
+              onDoubleClick={() => {
+                if (!busy && !draft && !sketchControls?.active && isReopenable(operation)) {
+                  reopen(operation);
+                }
+              }}
+            >
               <input
                 type='checkbox'
                 className='size-4 shrink-0 accent-(--titanium-foreground)'
@@ -918,10 +989,10 @@ export function ManualEditPanel({
               <Button
                 size='xs'
                 variant='ghost'
-                disabled={busy}
+                disabled={busy || sketchControls?.active}
                 aria-label={t('manualEdit.edit', { number: index + 1 })}
                 onClick={() => {
-                  startDraft(operation, false);
+                  reopen(operation);
                 }}
               >
                 {t('manualEdit.editShort')}
@@ -1006,7 +1077,7 @@ export function ManualEditPanel({
                   size='icon-xs'
                   variant='ghost'
                   aria-label={label}
-                  disabled={disabled || busy || Boolean(draft)}
+                  disabled={disabled || busy || Boolean(draft) || sketchActive}
                   onClick={() => {
                     void action();
                   }}
@@ -1029,7 +1100,8 @@ export function ManualEditPanel({
           ) : null}
         </div>
       </div>
-      {directControls && faceControls ? (
+      {sketchControls?.active ? <ManualSketchSection controls={sketchControls} /> : null}
+      {!sketchActive && directControls && faceControls ? (
         <div className='px-4 pt-1.5'>
           <ToggleGroup
             type='single'
@@ -1061,7 +1133,7 @@ export function ManualEditPanel({
           </ToggleGroup>
         </div>
       ) : null}
-      <div className='px-4 pt-4'>
+      <div hidden={sketchActive} className='px-4 pt-4'>
         <Eyebrow>{t('manualEdit.toolsFor')}</Eyebrow>
         <div role='toolbar' aria-label={t('manualEdit.tools')} className='mt-1.5 flex items-center gap-1'>
           {primary === 'faceExtrude' ? (
@@ -1087,6 +1159,14 @@ export function ManualEditPanel({
                 activateTool(primary);
               }}
             />
+          ) : sketchControls ? (
+            <ToolButton
+              isPrimary
+              icon={PenTool}
+              label={t('sketch.start')}
+              disabled={directBusy || !sketchControls.available}
+              onClick={startSketch}
+            />
           ) : (
             <ToolButton
               isPrimary
@@ -1100,7 +1180,15 @@ export function ManualEditPanel({
             />
           )}
           {secondary.map((type) =>
-            type === 'holeHere' ? (
+            type === 'sketchHere' ? (
+              <ToolButton
+                key={type}
+                icon={PenTool}
+                label={t('sketch.startOnFace')}
+                disabled={busy || !faceControls?.selected || !sketchControls?.available}
+                onClick={startSketch}
+              />
+            ) : type === 'holeHere' ? (
               <ToolButton
                 key={type}
                 icon={CircleDot}
@@ -1137,6 +1225,12 @@ export function ManualEditPanel({
               <TooltipContent>{t('manualEdit.allTools')}</TooltipContent>
             </Tooltip>
             <DropdownMenuContent align='end'>
+              {sketchControls && primary !== undefined ? (
+                <DropdownMenuItem disabled={!sketchControls.available} onSelect={startSketch}>
+                  <PenTool aria-hidden />
+                  {t('sketch.start')}
+                </DropdownMenuItem>
+              ) : null}
               {moreTools.map((type) => {
                 const Icon = toolIcons[type];
                 return (
@@ -1190,7 +1284,7 @@ export function ManualEditPanel({
           </DropdownMenu>
         </div>
       </div>
-      <div className='min-w-0 space-y-3 px-4 py-3'>
+      <div hidden={sketchActive} className='min-w-0 space-y-3 px-4 py-3'>
         {help ? <p className='text-xs leading-relaxed text-muted-foreground'>{help}</p> : null}
         {isLoading ? (
           <p role='status' className='text-sm text-muted-foreground'>
@@ -1299,7 +1393,7 @@ export function ManualEditPanel({
           </section>
         ) : null}
       </div>
-      {pending ? (
+      {pending && !sketchActive ? (
         <div className='sticky bottom-0 z-10 flex items-center justify-end gap-1.5 border-t border-border bg-sidebar px-4 py-2'>
           {pending === 'face' && faceControls?.action !== 'hole' ? (
             <span className='mr-auto min-w-0 truncate font-mono text-xs text-titanium-foreground tabular-nums'>

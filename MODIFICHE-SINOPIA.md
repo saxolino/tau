@@ -898,3 +898,23 @@ Blocchi C1, C2, C5 e D4 del piano di Claude (`PIANO-CLAUDE-2026-10-26.md`), dall
   `apps/ui/app/routes/w.$workspace.$project/{inspector-recognition,inspector-lane}.tsx`); testi in
   `apps/ui/app/i18n/messages/{riconoscimento,measures}.ts` e `catalog.ts`; la skill dell'agente conosce
   `@sinopia/famiglie` e il marcatore esteso (`apps/ui/app/lib/sinopia-immagine-cad-skill.ts`).
+
+## 27 ottobre 2026 — schizzo sul modello (E4)
+
+- **Profili su un piano qualsiasi, rivoluzione e sweep.** `packages/plugins/smlib/src/manual-operations.ts`: profilo
+  con `frame` (X e normale della faccia scelta) e profilo `path` di linee, archi per tre punti e spline per punti;
+  sformo facoltativo dell'estrusione; operazioni `revolve` (asse nel piano dello schizzo) e `sweep` (percorso
+  disegnato in un secondo schizzo o spigolo esatto di un pezzo). `manual-evaluator.ts` le costruisce con SMLib;
+  test con i volumi attesi in `manual-sketch.test.ts`.
+- **Visore.** Geometria pura dello schizzo (snap, spigoli del modello proiettati, chiusura del profilo, rettangolo
+  raccordato, arco tangente) in `packages/viewer/src/graphics/three/react/sketch-geometry.ts` con test; contratto
+  `sketch-tool.ts`; piano, griglia in mm, entità, regioni chiuse, fantasma e aggancio in `sketch-controls.tsx` e
+  `sketch-ghost-geometry.ts`; `gltf-mesh.tsx` e `cad/cad-viewer.tsx` ricevono `sketchTool` (aggiunta); esportati in
+  `package.json` e `tsdown.config.ts`.
+- **Interfaccia.** Sessione dello schizzo `apps/ui/app/hooks/use-manual-sketch-tool.ts` e logica pura
+  `apps/ui/app/services/manual-sketch.ts` (test, e prova sulla fibbia `manual-sketch-buckle.test.ts`); riga dello
+  schizzo nella barra del visore `manual-sketch-bar.tsx`, sezione dell'ispettore `manual-sketch-panel.tsx`, quota
+  digitabile nel campo della quota al gesto `gesture-quota.tsx`; collegamenti in `chat-viewer.tsx`,
+  `manual-edit-panel.tsx` (pulsanti, doppio clic sulla cronologia), `use-manual-face-tool.ts` (faccia scelta),
+  `apps/ui/app/lib/inspector-selection.ts` (cronologia), `apps/ui/app/services/manual-profile-editor.ts`; testi in
+  `apps/ui/app/i18n/messages/{sketch,manual-edit}.ts` e `catalog.ts`.

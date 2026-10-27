@@ -207,6 +207,7 @@ export function useManualFaceTool({
             name: selected.name,
             faceIndex: selected.faceIndex,
             componentId: selected.selection.componentId,
+            faceId: selected.selection.faceId,
             normal: selected.selection.normal,
           }
         : undefined,

@@ -236,15 +236,42 @@ export function describeManualOperation(operation: ManualOperation, t: Translate
         });
       }
       case 'extrude': {
+        const extrusion =
+          operation.mode === 'new'
+            ? t('manualEdit.describe.extrudeNew', {
+                name: pieceOf(operation.name),
+                distance: n(operation.distance),
+              })
+            : t(operation.mode === 'add' ? 'manualEdit.describe.extrudeAdd' : 'manualEdit.describe.extrudeCut', {
+                piece: pieceOf(operation.target?.name),
+                // A cut goes into the piece: its depth reads as a positive length.
+                distance: n(operation.mode === 'cut' ? Math.abs(operation.distance) : operation.distance),
+              });
+        return operation.taper === undefined
+          ? extrusion
+          : t('manualEdit.describe.extrudeTaper', { operation: extrusion, taper: n(operation.taper, 1) });
+      }
+      case 'revolve': {
+        const angle = n(operation.angle, 1);
         if (operation.mode === 'new') {
-          return t('manualEdit.describe.extrudeNew', {
-            name: pieceOf(operation.name),
-            distance: n(operation.distance),
-          });
+          return t('manualEdit.describe.revolveNew', { name: pieceOf(operation.name), angle });
         }
-        return t(operation.mode === 'add' ? 'manualEdit.describe.extrudeAdd' : 'manualEdit.describe.extrudeCut', {
+        return t(operation.mode === 'add' ? 'manualEdit.describe.revolveAdd' : 'manualEdit.describe.revolveCut', {
           piece: pieceOf(operation.target?.name),
-          distance: n(operation.distance),
+          angle,
+        });
+      }
+      case 'sweep': {
+        const path =
+          operation.path.kind === 'edge'
+            ? t('manualEdit.describe.pathEdge', { piece: pieceOf(operation.path.piece.name) })
+            : t('manualEdit.describe.pathSketch');
+        if (operation.mode === 'new') {
+          return t('manualEdit.describe.sweepNew', { name: pieceOf(operation.name), path });
+        }
+        return t(operation.mode === 'add' ? 'manualEdit.describe.sweepAdd' : 'manualEdit.describe.sweepCut', {
+          piece: pieceOf(operation.target?.name),
+          path,
         });
       }
       case 'sketch': {
