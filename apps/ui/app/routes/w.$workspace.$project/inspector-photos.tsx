@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSelector } from '@xstate/react';
 import { useLocation } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Camera, LoaderCircle, RotateCcw, TriangleAlert } from 'lucide-react';
+import { ArrowUpRight, Camera, LoaderCircle, RotateCcw, Sparkles, TriangleAlert } from 'lucide-react';
 import type { SnapshotFrom } from 'xstate';
 import { asKnownArtifact } from '@taucad/runtime';
 import { Button } from '@taucad/ui/components/button';
@@ -18,6 +18,8 @@ import { useInspectorSelection } from '#hooks/use-inspector-selection.js';
 import { useProject } from '#hooks/use-project.js';
 import { useSinopiaCadLink } from '#hooks/use-sinopia-cad-sync.js';
 import { useSinopiaSession } from '#hooks/use-sinopia-session.js';
+import { sinopiaCreatorUrl, sinopiaShootingUrl } from '#lib/sinopia-app-links.js';
+import { takeSampleSectionRequest } from '#lib/sinopia-section-request.js';
 import { formatNumber, useTranslation } from '#i18n/translate.js';
 import type { PlainMessageKey } from '#i18n/translate.js';
 import type { cadMachine } from '#machines/cad.machine.js';
@@ -186,6 +188,13 @@ export function InspectorPhotos(): React.JSX.Element {
     () => ultimePerChiave(isTrial ? locali : (remote.data ?? [])),
     [isTrial, locali, remote.data],
   );
+  // Sinopia's «Fai lo shooting» with no photo yet lands here: the section comes into view, once.
+  const sezioneRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (link !== undefined && takeSampleSectionRequest(link.modelId.toLowerCase())) {
+      sezioneRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    }
+  }, [link]);
 
   const [transitorie, setTransitorie] = useState<ReadonlyMap<string, Transitoria>>(new Map());
   const [stati, setStati] = useState<ReadonlyMap<string, StatoFoto>>(new Map());
@@ -527,6 +536,7 @@ export function InspectorPhotos(): React.JSX.Element {
 
   return (
     <section
+      ref={sezioneRef}
       aria-label={t('fotoCampione.title')}
       className='border-t border-border px-4 pt-3 pb-4'
       data-slot='inspector-photos'
@@ -807,7 +817,63 @@ export function InspectorPhotos(): React.JSX.Element {
       ) : collegato && inviata !== undefined ? (
         <p className='mt-3 text-[11px] leading-4 text-muted-foreground'>{t('fotoCampione.empty')}</p>
       ) : null}
+      {!isTrial && link ? (
+        <ContinuaSuSinopia
+          projectId={link.projectId}
+          modelId={link.modelId}
+          ultimaFoto={galleria.find((foto) => foto.sorgente.tipo === 'storage')?.id}
+        />
+      ) : null}
     </section>
+  );
+}
+
+/**
+ * The two gestures that continue on Sinopia (one-way: Sinopia never changes the model): «Porta nel Creator» puts the
+ * newest sample photo (or the model's render) on the project's canvas; «Fai lo shooting» opens the Shooting Studio with
+ * that photo already chosen, or, with no photo yet, says to make one here first.
+ */
+function ContinuaSuSinopia({
+  projectId,
+  modelId,
+  ultimaFoto,
+}: Readonly<{ projectId: string; modelId: string; ultimaFoto: string | undefined }>): React.JSX.Element {
+  const { t } = useTranslation();
+  const creator = sinopiaCreatorUrl(projectId, modelId);
+  const shooting = ultimaFoto === undefined ? undefined : sinopiaShootingUrl(projectId, ultimaFoto, modelId);
+  return (
+    <div className='mt-4 space-y-2 border-t border-border pt-3' data-slot='continue-on-sinopia'>
+      <Eyebrow as='p'>{t('fotoCampione.continua.title')}</Eyebrow>
+      <div className='flex flex-wrap gap-2'>
+        {creator ? (
+          <Button asChild variant='outline' size='sm' title={t('fotoCampione.continua.creatorHint')}>
+            <a href={creator}>
+              <Sparkles aria-hidden />
+              {t('fotoCampione.continua.creator')}
+            </a>
+          </Button>
+        ) : null}
+        {shooting ? (
+          <Button asChild variant='outline' size='sm' title={t('fotoCampione.continua.shootingHint')}>
+            <a href={shooting}>
+              <Camera aria-hidden />
+              {t('fotoCampione.continua.shooting')}
+              <ArrowUpRight aria-hidden />
+            </a>
+          </Button>
+        ) : (
+          <Button variant='outline' size='sm' disabled aria-describedby='shooting-serve-foto'>
+            <Camera aria-hidden />
+            {t('fotoCampione.continua.shooting')}
+          </Button>
+        )}
+      </div>
+      {shooting ? null : (
+        <p id='shooting-serve-foto' className='text-[11px] leading-4 text-muted-foreground'>
+          {t('fotoCampione.continua.shootingFirst')}
+        </p>
+      )}
+    </div>
   );
 }
 
