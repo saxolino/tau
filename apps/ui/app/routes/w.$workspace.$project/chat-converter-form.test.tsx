@@ -38,7 +38,7 @@ const published = (schema: z.ZodType, defaults: Record<string, unknown>): Resolv
 
 const fieldUnit = (label: string): string | undefined =>
   screen
-    .getByRole('spinbutton', { name: `Input for ${label}` })
+    .getByLabelText(`Input for ${label}`)
     .closest<HTMLElement>('[data-slot="slider-input"], [data-slot="input-group"]')
     ?.querySelector<HTMLElement>('[data-slot="slider-input-adornment"], [data-slot="input-group-addon"]')
     ?.textContent.trim();
@@ -281,11 +281,12 @@ describe('ExportSchemaForm', async () => {
     await user.click(screen.getByRole('combobox', { name: 'Select for Tessellation' }));
     await user.click(screen.getByRole('option', { name: 'Explicit' }));
     await user.click(screen.getByRole('button', { name: 'Group: Explicit' }));
-    const input = screen.getByRole('spinbutton', { name: 'Input for Linear Tolerance' });
+    const input = screen.getByRole('textbox', { name: 'Input for Linear Tolerance' });
 
-    expect(input).toHaveValue(null);
+    expect(input).toHaveValue('');
     expect(fieldUnit('Linear Tolerance')).toBe('cm');
     fireEvent.change(input, { target: { value: '0.2' } });
+    fireEvent.blur(input);
     await waitFor(() => {
       expect(onChange.mock.lastCall?.[0]).toEqual({ tessellation: { linearTolerance: 2 } });
     });

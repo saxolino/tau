@@ -1,7 +1,8 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { RJSFSchema, WidgetProps } from '@rjsf/utils';
 import { getSchemaType } from '@rjsf/utils';
 import { projectParameterField, resolveParameterBinding } from '@taucad/parameters';
+import { parseInput } from '@taucad/units/input';
 import { admitUnit } from '@taucad/units/unit';
 import { ParametersBoolean } from '#parameters/parameters-boolean.jsx';
 import { ParametersNumber, toDisplayValue, toNativeValue } from '#parameters/parameters-number.jsx';
@@ -192,10 +193,9 @@ export function ParametersWidget(
         // An unset field still shows its unit and takes what is typed in that unit.
         return (
           <InputGroup className='h-8'>
-            <InputGroupInput
+            <UnsetNumberInput
               id={id}
-              type='number'
-              value=''
+              locale={formContext.presentationOptions?.locale}
               disabled={disabled}
               readOnly={readonly}
               autoFocus={autofocus}
@@ -207,12 +207,7 @@ export function ParametersWidget(
               aria-label={`Input for ${prettyLabel}`}
               onFocus={handleFocus}
               onBlur={handleBlur}
-              onChange={(event) => {
-                const next = event.target.valueAsNumber;
-                if (!Number.isFinite(next)) {
-                  handleChange(undefined);
-                  return;
-                }
+              onCommit={(next) => {
                 // An integer field is checked as typed, so a fraction is refused rather than rounded.
                 const native =
                   fieldProjection.representation === 'safe-integer' ? next : toNativeValue(fieldProjection, next);
@@ -290,4 +285,80 @@ export function ParametersWidget(
       throw new Error(`Unsupported type: ${String(schema.type)}`);
     }
   }
+}
+
+type UnsetNumberInputProps = {
+  readonly id: string;
+  readonly locale?: string;
+  // oxlint-disable-next-line react-js/boolean-prop-naming -- Mirrors the native input prop.
+  readonly disabled?: boolean;
+  // oxlint-disable-next-line react-js/boolean-prop-naming -- Mirrors the native input prop.
+  readonly readOnly?: boolean;
+  // oxlint-disable-next-line react-js/boolean-prop-naming -- Mirrors the native input prop.
+  readonly autoFocus?: boolean;
+  readonly placeholder?: string;
+  readonly 'aria-label': string;
+  readonly onFocus: () => void;
+  readonly onBlur: () => void;
+  /** The typed number, in the display unit, once the entry is done (Enter or leaving the field). */
+  readonly onCommit: (value: number) => void;
+};
+
+/**
+ * The input of a field with no value yet. What is typed stays a draft until Enter or leaving the field: committing
+ * each keystroke turned the field into the number editor after the first digit, so «3.5» became 3. The draft is read
+ * with the field's locale, so «3,5» and «3.5» are the same number.
+ */
+function UnsetNumberInput({
+  id,
+  locale,
+  disabled,
+  readOnly,
+  autoFocus,
+  placeholder,
+  'aria-label': ariaLabel,
+  onFocus,
+  onBlur,
+  onCommit,
+}: UnsetNumberInputProps): React.JSX.Element {
+  const [draft, setDraft] = useState('');
+  const commit = (): void => {
+    const text = draft.trim();
+    if (text === '') {
+      return;
+    }
+    const parsed = parseInput({ text, locale: locale ?? globalThis.navigator.language, inputUnit: '1' });
+    if (parsed.status === 'success' && typeof parsed.value.quantity.value === 'number') {
+      onCommit(parsed.value.quantity.value);
+    }
+  };
+  return (
+    <InputGroupInput
+      id={id}
+      type='text'
+      inputMode='decimal'
+      value={draft}
+      disabled={disabled}
+      readOnly={readOnly}
+      autoFocus={autoFocus}
+      placeholder={placeholder}
+      aria-label={ariaLabel}
+      onFocus={onFocus}
+      onBlur={() => {
+        commit();
+        onBlur();
+      }}
+      onChange={(event) => {
+        setDraft(event.target.value);
+      }}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          commit();
+        } else if (event.key === 'Escape') {
+          setDraft('');
+        }
+      }}
+    />
+  );
 }

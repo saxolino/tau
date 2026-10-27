@@ -68,9 +68,12 @@ describe('ParametersWidget number hardening', () => {
       }),
     );
 
-    expect(screen.getByRole('spinbutton', { name: 'Input for Width' })).toHaveValue(null);
+    const input = screen.getByRole('textbox', { name: 'Input for Width' });
+    expect(input).toHaveValue('');
     expect(onChange).not.toHaveBeenCalled();
-    fireEvent.change(screen.getByRole('spinbutton', { name: 'Input for Width' }), { target: { value: '3' } });
+    fireEvent.change(input, { target: { value: '3' } });
+    expect(onChange).not.toHaveBeenCalled();
+    fireEvent.keyDown(input, { key: 'Enter' });
     expect(onChange).toHaveBeenCalledWith(3);
   });
 
@@ -94,15 +97,15 @@ describe('ParametersWidget number hardening', () => {
   it('should render an empty field with the schema default as its placeholder for undefined values', () => {
     renderWidget(widgetProps({ value: undefined }));
 
-    const input = screen.getByRole('spinbutton', { name: 'Input for Width' });
-    expect(input).toHaveValue(null);
+    const input = screen.getByRole('textbox', { name: 'Input for Width' });
+    expect(input).toHaveValue('');
     expect(input).toHaveAttribute('placeholder', '12');
   });
 
   it('should render an empty field instead of stringifying non-finite values', () => {
     renderWidget(widgetProps({ value: Number.NaN }));
 
-    expect(screen.getByRole('spinbutton', { name: 'Input for Width' })).toHaveValue(null);
+    expect(screen.getByRole('textbox', { name: 'Input for Width' })).toHaveValue('');
     expect(screen.queryByDisplayValue('NaN')).toBeNull();
   });
 
@@ -220,8 +223,8 @@ describe('ParametersWidget nullable default', () => {
       }),
     );
 
-    const input = screen.getByRole('spinbutton', { name: 'Input for Amount' });
-    expect(input).toHaveValue(null);
+    const input = screen.getByRole('textbox', { name: 'Input for Amount' });
+    expect(input).toHaveValue('');
     expect(input).not.toHaveAttribute('placeholder');
   });
 });
@@ -351,12 +354,42 @@ describe('ParametersWidget authoritative commits', () => {
   it('admits the empty numeric fallback through the numeric constraints', () => {
     const onChange = vi.fn();
     renderWidget(widgetProps({ value: undefined, schema: { type: 'number', minimum: 0, maximum: 10 }, onChange }));
-    const input = screen.getByRole('spinbutton', { name: 'Input for Width' });
+    const input = screen.getByRole('textbox', { name: 'Input for Width' });
 
     fireEvent.change(input, { target: { value: '-3' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
     expect(onChange).not.toHaveBeenCalled();
     fireEvent.change(input, { target: { value: '4' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
     expect(onChange).toHaveBeenCalledWith(4);
+  });
+
+  it('keeps a decimal typed into an unset field whole, committed once on Enter or blur', () => {
+    const onChange = vi.fn();
+    renderWidget(widgetProps({ value: undefined, schema: { type: 'number' }, onChange }));
+    const input = screen.getByRole('textbox', { name: 'Input for Width' });
+
+    for (const typed of ['3', '3.', '3.5']) {
+      fireEvent.change(input, { target: { value: typed } });
+    }
+    expect(onChange).not.toHaveBeenCalled();
+    fireEvent.blur(input);
+    expect(onChange).toHaveBeenCalledExactlyOnceWith(3.5);
+  });
+
+  it('reads a comma as the decimal separator of an Italian field', () => {
+    const onChange = vi.fn();
+    const props = widgetProps({ value: undefined, schema: { type: 'number' }, onChange });
+    props.registry.formContext = {
+      ...props.registry.formContext,
+      presentationOptions: { ...props.registry.formContext.presentationOptions, locale: 'it-IT' },
+    } as RJSFContext;
+    renderWidget(props);
+    const input = screen.getByRole('textbox', { name: 'Input for Width' });
+
+    fireEvent.change(input, { target: { value: '3,5' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onChange).toHaveBeenCalledExactlyOnceWith(3.5);
   });
 
   const withBinding = (
@@ -395,11 +428,12 @@ describe('ParametersWidget authoritative commits', () => {
         'cm',
       ),
     );
-    const input = screen.getByRole('spinbutton', { name: 'Input for Width' });
+    const input = screen.getByRole('textbox', { name: 'Input for Width' });
 
     expect(input).toHaveAttribute('placeholder', '2');
     expect(screen.getByText('cm')).toBeInTheDocument();
     fireEvent.change(input, { target: { value: '3' } });
+    fireEvent.blur(input);
     expect(onChange).toHaveBeenCalledWith(30);
   });
 
@@ -411,11 +445,13 @@ describe('ParametersWidget authoritative commits', () => {
         unit: '1',
       }),
     );
-    const input = screen.getByRole('spinbutton', { name: 'Input for Width' });
+    const input = screen.getByRole('textbox', { name: 'Input for Width' });
 
     fireEvent.change(input, { target: { value: '1.5' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
     expect(onChange).not.toHaveBeenCalled();
     fireEvent.change(input, { target: { value: '2' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
     expect(onChange).toHaveBeenCalledWith(2);
   });
 });
