@@ -292,6 +292,9 @@ vi.mock('#routes/w.$workspace.$project/revision-provider.js', () => ({
 vi.mock('#routes/w.$workspace.$project/revision-restore.js', () => ({ RevisionRestore: () => null }));
 vi.mock('#routes/w.$workspace.$project/workbench-checkout-root.js', () => ({ WorkbenchCheckoutRoot: () => null }));
 vi.mock('#routes/w.$workspace.$project/revision-outcomes.js', () => ({ RevisionOutcomes: () => null }));
+vi.mock('#routes/w.$workspace.$project/producibilita-context.js', () => ({
+  ProducibilitaProvider: ({ children }: { readonly children: React.ReactNode }) => children,
+}));
 vi.mock('#routes/w.$workspace.$project/project-command-items.js', () => ({
   ProjectCommandPaletteItems: () => null,
 }));

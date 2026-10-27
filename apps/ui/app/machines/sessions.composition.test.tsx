@@ -456,6 +456,9 @@ vi.mock('#routes/w.$workspace.$project/revision-restore.js', () => ({ RevisionRe
  * component does nothing, and S48(14) below renders it against one. */
 const { WorkbenchCheckoutRoot } = await import('#routes/w.$workspace.$project/workbench-checkout-root.js');
 vi.mock('#routes/w.$workspace.$project/revision-outcomes.js', () => ({ RevisionOutcomes: () => null }));
+vi.mock('#routes/w.$workspace.$project/producibilita-context.js', () => ({
+  ProducibilitaProvider: ({ children }: { readonly children: React.ReactNode }) => children,
+}));
 vi.mock('#providers/chat-workspace-authority-provider.js', () => ({
   ChatWorkspaceAuthorityProvider: ({ children }: React.PropsWithChildren) => <div>{children}</div>,
 }));
