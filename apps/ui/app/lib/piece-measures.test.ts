@@ -6,6 +6,7 @@ import {
   groupPieceMeasures,
   isStonePiece,
   modelMeasureSummary,
+  assumptionState,
   parameterAssumption,
   pieceKeyValue,
   pieceParameterSchema,
@@ -46,6 +47,26 @@ const manifest: GeometryComponentManifest = {
   capabilities,
 };
 describe('piece measures', () => {
+  it('should give a pair of pieces built from one group (Tacco DX / Tacco SX) that group on both sides', () => {
+    const destro = piece('Tacco DX');
+    const sinistro = piece('Tacco SX');
+    const tappo = piece('Tappo DX');
+    const coppia: GeometryComponentManifest = {
+      ...manifest,
+      nodeOrder: [destro.id, sinistro.id, tappo.id],
+      nodesById: { [destro.id]: destro, [sinistro.id]: sinistro, [tappo.id]: tappo },
+    };
+    expect(
+      groupPieceMeasures(coppia, { tacco: { altezza: 85 }, tappo: { altezza: 4 }, costruzione: { parete: 2 } }).map(
+        ({ id, keys }) => ({ id, keys }),
+      ),
+    ).toEqual([
+      { id: destro.id, keys: ['tacco'] },
+      { id: sinistro.id, keys: ['tacco'] },
+      { id: tappo.id, keys: ['tappo'] },
+      { id: 'general', keys: ['costruzione'] },
+    ]);
+  });
   it('should group exact names, retain pieces without parameters and put unmatched measures in General', () => {
     expect(
       groupPieceMeasures(manifest, {
@@ -119,8 +140,24 @@ describe('piece measures', () => {
     const projected = pieceParameterSchema(schema, ['stelo']);
     expect(Object.keys(projected?.properties ?? {})).toEqual(['stelo']);
     expect(projected?.required).toEqual(['stelo']);
-    expect(parameterAssumption(projected, ['stelo', 'spessore'])).toBe('Hidden in the image');
+    expect(parameterAssumption(projected, ['stelo', 'spessore'])).toStrictEqual({ reason: 'Hidden in the image' });
     expect(parameterAssumption(projected, ['stelo', 'other'])).toBeUndefined();
+  });
+  it('should read a recognition’s confidence, source and band from the extended marker, in three states', () => {
+    const schema: RJSFSchema = {
+      type: 'object',
+      properties: {
+        larghezza: { type: 'number', description: '[sinopia:assumed c=0.52 f=proporzione min=18 max=21] Coperto' },
+        apertura: { type: 'number', description: '[sinopia:assumed c=0.72 f=proporzione] Prospettiva' },
+        sezione: { type: 'number', description: '[sinopia:assumed c=0.9 f=catalogo] Dal catalogo' },
+      },
+    };
+    const larghezza = parameterAssumption(schema, ['larghezza']);
+    expect(larghezza).toStrictEqual({ confidence: 0.52, source: 'proporzione', min: 18, max: 21, reason: 'Coperto' });
+    expect(assumptionState(larghezza)).toBe('assumed');
+    expect(assumptionState(parameterAssumption(schema, ['apertura']))).toBe('estimated');
+    expect(assumptionState(parameterAssumption(schema, ['sezione']))).toBeUndefined();
+    expect(assumptionState({ reason: 'Senza attributi' })).toBe('assumed');
   });
 });
 

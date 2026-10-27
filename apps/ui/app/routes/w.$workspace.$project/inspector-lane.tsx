@@ -19,6 +19,7 @@ import { useProjectParametersSource } from '#routes/w.$workspace.$project/chat-p
 import { useLaneToggleFocus } from '#routes/w.$workspace.$project/lane-toggle-focus.js';
 import type { LaneTogglePlace } from '#routes/w.$workspace.$project/lane-toggle-focus.js';
 import { InspectorPieceMeasures } from '#routes/w.$workspace.$project/piece-measures-pane.js';
+import { InspectorRecognition } from '#routes/w.$workspace.$project/inspector-recognition.js';
 import { useProjectWorkspace, useWorkspaceLanes } from '#routes/w.$workspace.$project/project-workspace-context.js';
 
 /** ⌃J opens and closes the assistant's conversation under the inspector. */
@@ -349,6 +350,7 @@ export function InspectorLane({
         <div className='min-h-0 flex-1 [scrollbar-width:thin] overflow-y-auto overscroll-contain'>
           <InspectorHeader isInSheet={isInSheet} />
           <div className={cn(assistantExpanded && 'hidden')}>
+            <InspectorRecognition />
             <div ref={slot} data-slot='inspector-tools' />
             <InspectorPieceParameters />
             <div ref={historySlot} data-slot='inspector-history' />

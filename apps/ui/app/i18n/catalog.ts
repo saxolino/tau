@@ -20,6 +20,7 @@ import { sinopiaSyncMessages } from '#i18n/messages/sinopia-sync.js';
 import { libraryMessages } from '#i18n/messages/library.js';
 import { manualEditMessages } from '#i18n/messages/manual-edit.js';
 import { inspectorMessages } from '#i18n/messages/inspector.js';
+import { riconoscimentoMessages } from '#i18n/messages/riconoscimento.js';
 
 /**
  * Every area's messages under its own namespace: `t('project.topBar.versions')`. One area per file in
@@ -48,6 +49,7 @@ export const areas = {
   manualEdit: manualEditMessages,
   inspector: inspectorMessages,
   library: libraryMessages,
+  riconoscimento: riconoscimentoMessages,
 } as const;
 
 /** The Italian catalog, the source of every key. */

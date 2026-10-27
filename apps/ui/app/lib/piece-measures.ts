@@ -1,4 +1,6 @@
 import type { RJSFSchema } from '@rjsf/utils';
+import { parseAssumptionDescription } from '@taucad/smlib/riconoscimento';
+import type { AssumptionDetails } from '@taucad/smlib/riconoscimento';
 import type { GeometryComponentManifest, GeometryComponentNode } from '@taucad/types';
 import type { Language } from '#i18n/language.js';
 import { formatNumber } from '#i18n/translate.js';
@@ -13,6 +15,17 @@ export const pieceNameKey = (name: string): string =>
     .toLowerCase()
     .replaceAll(/(?:^|[_\s-])(sx|sinistr[oa]|left)(?=$|[_\s-])/gu, ' left ')
     .replaceAll(/(?:^|[_\s-])(dx|destr[oa]|right)(?=$|[_\s-])/gu, ' right ')
+    .replaceAll(/[^\p{L}\p{N}]/gu, '');
+
+/**
+ * The same name without its side, for a pair of pieces that share one group of measures: `Tacco DX` and `Tacco SX`
+ * (a family recipe builds the pair from one `tacco` group) are both `tacco`.
+ */
+const sidelessNameKey = (name: string): string =>
+  name
+    .replaceAll(/([a-z])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .replaceAll(/(?:^|[_\s-])(sx|sinistr[oa]|left|dx|destr[oa]|right)(?=$|[_\s-])/gu, ' ')
     .replaceAll(/[^\p{L}\p{N}]/gu, '');
 
 /** Keep authored project names; expand side abbreviations in the current interface language. */
@@ -93,6 +106,19 @@ export const groupPieceMeasures = (
     }
     return { id: node.id, node, keys: matching };
   });
+  // A group named after a pair (`tacco` for `Tacco DX` and `Tacco SX`) belongs to both sides.
+  const paired = [...remaining].filter((key) => !isFlatValue(defaults[key]));
+  for (const key of paired) {
+    const sides = groups.filter(
+      ({ node }) => sidelessNameKey(node.name) === pieceNameKey(key) && pieceNameKey(node.name) !== pieceNameKey(key),
+    );
+    for (const group of sides) {
+      group.keys.push(key);
+    }
+    if (sides.length > 0) {
+      remaining.delete(key);
+    }
+  }
   return [...groups, ...(remaining.size > 0 ? [{ id: 'general', keys: [...remaining] }] : [])];
 };
 
@@ -204,15 +230,33 @@ export const pieceParameterSchema = (schema: RJSFSchema | undefined, keys: reado
         required: schema.required?.filter((key) => keys.includes(key)),
       };
 
-/** Read the lightweight assumption annotation transported by the kernel through the ordinary schema description. */
-export const parameterAssumption = (schema: RJSFSchema | undefined, path: readonly string[]): string | undefined => {
+/**
+ * Read the assumption annotation transported by the kernel through the ordinary schema description: the reason and,
+ * from a photo recognition, its confidence, source and plausible band (`[sinopia:assumed c=0.62 f=proporzione min=78
+ * max=92] reason`). A plain `[sinopia:assumed] reason` gives the reason alone.
+ */
+export const parameterAssumption = (
+  schema: RJSFSchema | undefined,
+  path: readonly string[],
+): AssumptionDetails | undefined => {
   let current = schema;
   for (const key of path) {
     const next: RJSFSchema | boolean | undefined = current?.properties?.[key];
     current = typeof next === 'object' ? next : undefined;
   }
-  const description = current?.description;
-  return description?.startsWith('[sinopia:assumed]')
-    ? description.slice('[sinopia:assumed]'.length).trim()
-    : undefined;
+  return parseAssumptionDescription(current?.description);
+};
+
+/**
+ * The three states of a recognised value in the Measures (D2 §2.7): `estimated` (◐, confidence 0.6–0.8, its number
+ * shown), `assumed` (○, below 0.6 or without a confidence: the plain «Ipotesi: controlla»), or none above 0.8.
+ */
+export const assumptionState = (assumption: AssumptionDetails | undefined): 'estimated' | 'assumed' | undefined => {
+  if (assumption === undefined) {
+    return undefined;
+  }
+  if (assumption.confidence === undefined || assumption.confidence < 0.6 || assumption.source === 'non_visibile') {
+    return 'assumed';
+  }
+  return assumption.confidence < 0.8 ? 'estimated' : undefined;
 };

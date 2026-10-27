@@ -874,3 +874,27 @@ Blocchi C1, C2, C5 e D4 del piano di Claude (`PIANO-CLAUDE-2026-10-26.md`), dall
   aggiunte, tolte o modificate (`revision-history.ts`, `chat-revisions.tsx`).
 - **Tema.** Token `--titanium` e `--titanium-foreground` (`packages/ui/src/styles/tokens.css`, registrati in
   `docs/policy/color-policy.md`); occhielli in mono maiuscolo (`components/ui/eyebrow.tsx`).
+
+## 27 ottobre 2026 — riconoscimento da foto (D2): dalla parte isolata in Sinopia al pezzo di famiglia
+
+- **Contratto con Sinopia.** Modulo nuovo `packages/plugins/smlib/src/riconoscimento/` (esportato come
+  `@taucad/smlib/riconoscimento`, `package.json`, `tsdown.config.ts`): scheda della parte e scheda di riconoscimento
+  (zod → schema JSON per l'uscita strutturata e limiti a parte), soglie e domande, stima della scala, tabella
+  `part_type` → famiglia, prompt e convalida condivisi (`condiviso.ts`, copiato byte per byte nella funzione
+  `sinopiacad` di Sinopia con `riconoscimento.contratto.json`), piano di costruzione con il registro delle famiglie,
+  aggancio della verifica D3 (`verifica-silhouette.ts`).
+- **Marcatore delle ipotesi esteso.** `[sinopia:assumed c= f= min= max=]` con confidenza, fonte e banda plausibile,
+  retrocompatibile (`packages/plugins/smlib/src/parameter-assumptions.ts`); le Misure mostrano «stimata ◐» e
+  «ipotesi ○» e la banda sul cursore (`apps/ui/app/lib/piece-measures.ts`,
+  `apps/ui/app/routes/w.$workspace.$project/piece-measures-pane.tsx`, `packages/ui/src/components/slider-input.tsx`,
+  `packages/viewer/src/parameters/{rjsf-context,parameters-widget,parameters-number,parameters-number-field}.ts(x)`).
+  I gruppi di una coppia (`tacco` per `Tacco DX`/`Tacco SX`) si agganciano a entrambi i lati.
+- **«/cad/nuovo».** Rotta nuova `apps/ui/app/routes/nuovo/` (lettura dei parametri, immagine e maschera da
+  `creator-private`, riconoscimento, chip della famiglia, costruzione del progetto), servizi
+  `apps/ui/app/services/{sinopia-parts,sinopia-recognize,riconoscimento-immagini,riconoscimento-record,riconoscimento-progetto}.ts`,
+  nomi dei parametri in `apps/ui/app/constants/search-parameter.constants.ts`.
+- **Ispettore.** Card «Riconosciuto» con parametri, confidenze e domande una alla volta
+  (`apps/ui/app/components/riconoscimento/recognition-card.tsx`,
+  `apps/ui/app/routes/w.$workspace.$project/{inspector-recognition,inspector-lane}.tsx`); testi in
+  `apps/ui/app/i18n/messages/{riconoscimento,measures}.ts` e `catalog.ts`; la skill dell'agente conosce
+  `@sinopia/famiglie` e il marcatore esteso (`apps/ui/app/lib/sinopia-immagine-cad-skill.ts`).

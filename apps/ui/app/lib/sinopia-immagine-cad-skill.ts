@@ -76,7 +76,9 @@ Colori: oro giallo \`#d4ab62\`, oro rosa \`#d99a85\`, oro bianco o argento \`#c9
 
 ## Ipotesi e valori del designer
 
-Per SMLib esporta \`ipotesi\` come oggetto percorso → motivo (es. \`{ 'stelo.spessore': 'Non visibile nella foto' }\`), oppure come elenco di percorsi. Sono accettati anche puntatori JSON come \`/stelo/spessore\`. Il kernel li porta nelle descrizioni dello schema con il marcatore \`[sinopia:assumed]\`; non aggiungerli a \`defaultParams\` né al record dei valori. La UI mostra «Ipotesi: controlla» finché il valore non è fissato dal designer. Non inventare un motivo su una misura ricavata da un riferimento certo.
+Tacco, fondo, fibbia, occhiello, borchia, placca, puntale, anello, pendente: usa la ricetta del kernel, \`import { fibbia } from '@sinopia/famiglie'\`, \`main\` → \`fibbia.costruisci(p, { variante })\`; cambia i parametri, non la ricetta.
+
+Per SMLib esporta \`ipotesi\` come oggetto percorso → motivo (es. \`{ 'stelo.spessore': 'Non visibile nella foto' }\`, anche \`'[c=0.6 f=proporzione min=7 max=9] motivo'\`), oppure come elenco di percorsi. Sono accettati anche puntatori JSON come \`/stelo/spessore\`. Il kernel li porta nelle descrizioni dello schema con il marcatore \`[sinopia:assumed]\`; non aggiungerli a \`defaultParams\` né al record dei valori. La UI mostra «Ipotesi: controlla» finché il valore non è fissato dal designer. Non inventare un motivo su una misura ricavata da un riferimento certo.
 
 I valori in \`.tau/parameters/\` sono scelte esplicite e mostrano il lucchetto: non cambiarli salvo richiesta della persona. Per modifiche autonome aggiorna i valori iniziali nel modello e conserva i valori fissati. I nomi restituiti e le chiavi di primo livello devono coincidere, ignorando spazi, underscore e maiuscole; non accorpare castone e pietra. Usa nomi nella lingua dell'interfaccia. Il peso appare solo quando il solido ha volume valido e densità dichiarata; non chiamare oro 18 kt un metallo di densità sconosciuta.
 

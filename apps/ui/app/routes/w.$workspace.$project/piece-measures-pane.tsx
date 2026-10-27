@@ -17,6 +17,7 @@ import { useProject } from '#hooks/use-project.js';
 import { formatNumber, useTranslation } from '#i18n/translate.js';
 import { languageLocales } from '#i18n/language.js';
 import {
+  assumptionState,
   flatMeasurePiece,
   groupPieceMeasures,
   modelMeasureSummary,
@@ -134,7 +135,8 @@ export const PieceGroup = memo(function PieceGroup({
       hideRequiredMark: true,
       inferredHint: (kind) => t(kind === 'unit' ? 'measures.inferredUnit' : 'measures.inferredSemantics'),
       resetLabel: (name) => t('measures.reset', { name }),
-      fieldDescription: (_path, description) => (description.startsWith('[sinopia:assumed]') ? '' : description),
+      // The assumption marker travels in the description; its words show in the note's tooltip, never raw.
+      fieldDescription: (_path, description) => (description.startsWith('[sinopia:assumed') ? '' : description),
       // A flat measure inside its piece drops the piece's name: «Larghezza» under Marquise, not «Marquise larghezza».
       fieldLabel: (path, fallback) => {
         const key = path.at(-1) ?? fallback;
@@ -144,17 +146,50 @@ export const PieceGroup = memo(function PieceGroup({
       fieldNote: (path) => {
         const locked = valueAtPath(values, path) !== undefined;
         const assumption = parameterAssumption(schema, path);
-        return locked ? (
+        const state = assumptionState(assumption);
+        if (locked) {
           // A note, not an alarm: small, neutral, the lock in the selection's titanium (UI-UX-SinopiaCAD §3.2).
-          <span className='flex items-center gap-1 text-xs leading-4 text-muted-foreground'>
-            <LockKeyhole aria-hidden='true' className='size-3 text-accent-foreground' />
-            {t('measures.locked')}
-          </span>
-        ) : assumption === undefined ? null : (
-          <span title={assumption || undefined} className='text-xs leading-4 text-muted-foreground'>
-            {t('measures.assumed')}
+          return (
+            <span className='flex items-center gap-1 text-xs leading-4 text-muted-foreground'>
+              <LockKeyhole aria-hidden='true' className='size-3 text-accent-foreground' />
+              {t('measures.locked')}
+            </span>
+          );
+        }
+        if (assumption === undefined || state === undefined) {
+          return null;
+        }
+        const confidence =
+          assumption.confidence === undefined
+            ? undefined
+            : formatNumber(assumption.confidence, language, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        const band =
+          assumption.min !== undefined && assumption.max !== undefined
+            ? t('measures.plausibleBand', {
+                min: formatNumber(assumption.min, language, { maximumFractionDigits: 2 }),
+                max: formatNumber(assumption.max, language, { maximumFractionDigits: 2 }),
+              })
+            : undefined;
+        const title = [assumption.reason, band].filter(Boolean).join(' · ') || undefined;
+        return (
+          <span title={title} data-assumption={state} className='text-xs leading-4 text-muted-foreground'>
+            {state === 'estimated' && confidence !== undefined
+              ? t('measures.estimated', { confidence })
+              : confidence === undefined
+                ? t('measures.assumed')
+                : t('measures.assumedFromPhoto', { confidence })}
           </span>
         );
+      },
+      // A recognition's plausible range, drawn as a darker stretch of the slider until the value is the designer's.
+      fieldBand: (path) => {
+        if (valueAtPath(values, path) !== undefined) {
+          return undefined;
+        }
+        const assumption = parameterAssumption(schema, path);
+        return assumption?.min !== undefined && assumption.max !== undefined
+          ? { min: assumption.min, max: assumption.max }
+          : undefined;
       },
     }),
     [group.node, language, schema, t, values],

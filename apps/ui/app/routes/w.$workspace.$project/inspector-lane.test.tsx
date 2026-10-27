@@ -65,6 +65,8 @@ vi.mock('#components/chat/assistant-dock.js', () => ({
   ),
 }));
 vi.mock('#routes/w.$workspace.$project/chat-parameters.js', () => ({ useProjectParametersSource: () => ({}) }));
+// The recognition card has its own test (`inspector-recognition.test.tsx`); here it is a slot of the lane.
+vi.mock('#routes/w.$workspace.$project/inspector-recognition.js', () => ({ InspectorRecognition: () => undefined }));
 vi.mock('#routes/w.$workspace.$project/piece-measures-pane.js', () => ({
   InspectorPieceMeasures: ({ frame: wrap }: { readonly frame: (measures: React.ReactNode) => React.JSX.Element }) =>
     wrap(<div data-testid='piece-parameters' />),
