@@ -1,5 +1,6 @@
 import type { DirectEditTool } from '#graphics/three/react/direct-edit-tool.js';
 import type { PlanarFaceTool } from '#graphics/three/react/planar-face-tool.js';
+import type { SketchTool } from '#graphics/three/react/sketch-tool.js';
 import type { ProducibilityOverlay } from '#graphics/three/react/producibility-overlay.types.js';
 import { memo } from 'react';
 import type { CanvasProps } from '@react-three/fiber';
@@ -23,6 +24,8 @@ type CadViewerProperties = Omit<ThreeViewerProperties, 'graphicsBackend'> &
     readonly artifact?: Artifact;
     readonly planarFaceTool?: PlanarFaceTool;
     readonly directEditTool?: DirectEditTool;
+    /** A sketch on the model (E4): its plane, entities, snaps and the ghost of its operation. */
+    readonly sketchTool?: SketchTool;
     /** The producibility veil (E1) over the faces a check points at. */
     readonly producibilityOverlay?: ProducibilityOverlay;
     readonly artifactHash?: string;
@@ -45,6 +48,7 @@ export const CadViewer = memo(
     artifact,
     planarFaceTool,
     directEditTool,
+    sketchTool,
     producibilityOverlay,
     artifactHash,
     sourceFile,
@@ -72,6 +76,7 @@ export const CadViewer = memo(
           gltfFile={known.content}
           planarFaceTool={planarFaceTool}
           directEditTool={directEditTool}
+          sketchTool={sketchTool}
           producibilityOverlay={producibilityOverlay}
           sourceFile={sourceFile}
           geometryHash={artifactHash}

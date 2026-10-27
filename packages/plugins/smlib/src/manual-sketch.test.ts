@@ -59,9 +59,7 @@ describe('sketched outlines', () => {
       ],
     };
     expect(manualProfileSchema.safeParse({ ...open, closed: false }).success).toBe(true);
-    expect(manualProfileSchema.safeParse({ ...open, closed: true }).error?.issues[0]?.message).toContain(
-      'must end where it starts',
-    );
+    expect(() => manualProfileSchema.parse({ ...open, closed: true })).toThrow('must end where it starts');
     const straightArc = {
       ...top,
       kind: 'path',
@@ -69,12 +67,12 @@ describe('sketched outlines', () => {
       segments: [{ kind: 'arc', through: { x: 1, y: 0 }, to: { x: 2, y: 0 } }],
       closed: false,
     };
-    expect(manualProfileSchema.safeParse(straightArc).error?.issues[0]?.message).toContain('not on one line');
+    expect(() => manualProfileSchema.parse(straightArc)).toThrow('not on one line');
   });
 
   it('refuses a frame whose X direction leaves its plane', () => {
     const tilted = { ...rectangle(top, [-2, -1, 2, 1]), frame: { xDir: [1, 0, 1], normal: [0, 0, 1] } };
-    expect(manualProfileSchema.safeParse(tilted).error?.issues[0]?.message).toContain('X direction lying in its plane');
+    expect(() => manualProfileSchema.parse(tilted)).toThrow('X direction lying in its plane');
   });
 
   it('places a frame sketch on its face: local X and Y follow the frame, not a principal plane', () => {

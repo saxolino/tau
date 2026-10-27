@@ -36,23 +36,32 @@ const profilePlane = (library: SmlibLibrary, profile: ManualProfile) =>
 
 const local3 = ({ x, y }: { x: number; y: number }): ManualVector => [x, y, 0];
 
+/** One exact native edge of a sketched outline, from the end of the previous one. */
+function pathEdge(
+  library: SmlibLibrary,
+  start: { x: number; y: number },
+  segment: Extract<ManualProfile, { kind: 'path' }>['segments'][number],
+): Edge {
+  switch (segment.kind) {
+    case 'line': {
+      return library.Line(local3(start), local3(segment.to));
+    }
+    case 'arc': {
+      return library.ThreePointArc(local3(start), local3(segment.through), local3(segment.to));
+    }
+    case 'spline': {
+      return library.Spline([start, ...segment.through, segment.to].map((point) => local3(point)));
+    }
+  }
+}
+
 /** Exact native edges of a sketched outline, in its local plane. */
 function pathEdges(library: SmlibLibrary, profile: Extract<ManualProfile, { kind: 'path' }>): Edge[] {
   let from = profile.start;
   return profile.segments.map((segment) => {
-    const start = from;
+    const edge = pathEdge(library, from, segment);
     from = segment.to;
-    switch (segment.kind) {
-      case 'line': {
-        return library.Line(local3(start), local3(segment.to));
-      }
-      case 'arc': {
-        return library.ThreePointArc(local3(start), local3(segment.through), local3(segment.to));
-      }
-      case 'spline': {
-        return library.Spline([start, ...segment.through, segment.to].map((point) => local3(point)));
-      }
-    }
+    return edge;
   });
 }
 
@@ -64,30 +73,40 @@ function pathEdges(library: SmlibLibrary, profile: Extract<ManualProfile, { kind
  */
 export function buildManualProfileWire(library: SmlibLibrary, profile: ManualProfile): Wire {
   let local: Wire;
-  if (profile.kind === 'circle' || profile.kind === 'arc') {
-    local = new library.Wire(
-      library.CenterArc(
-        [profile.center.x, profile.center.y, 0],
-        profile.radius,
-        profile.kind === 'circle' ? 0 : profile.startAngle,
-        profile.kind === 'circle' ? 360 : profile.sweepAngle,
-      ),
-    );
-  } else if (profile.kind === 'path') {
-    local = new library.Wire(pathEdges(library, profile));
-  } else if (profile.kind === 'polygon') {
-    local = library.Polyline(
-      profile.points.map(({ x, y }): ManualVector => [x, y, 0]),
-      { close: isManualProfileClosed(profile) },
-    );
-  } else {
-    local = new library.Wire(
-      manualProfileSegments(profile).map((segment) =>
-        library.Bezier(
-          [segment.start, segment.control1, segment.control2, segment.end].map(({ x, y }): ManualVector => [x, y, 0]),
+  switch (profile.kind) {
+    case 'circle':
+    case 'arc': {
+      local = new library.Wire(
+        library.CenterArc(
+          [profile.center.x, profile.center.y, 0],
+          profile.radius,
+          profile.kind === 'circle' ? 0 : profile.startAngle,
+          profile.kind === 'circle' ? 360 : profile.sweepAngle,
         ),
-      ),
-    );
+      );
+      break;
+    }
+    case 'path': {
+      local = new library.Wire(pathEdges(library, profile));
+      break;
+    }
+    case 'polygon': {
+      local = library.Polyline(
+        profile.points.map(({ x, y }): ManualVector => [x, y, 0]),
+        { close: isManualProfileClosed(profile) },
+      );
+      break;
+    }
+    case 'spline': {
+      local = new library.Wire(
+        manualProfileSegments(profile).map((segment) =>
+          library.Bezier(
+            [segment.start, segment.control1, segment.control2, segment.end].map(({ x, y }): ManualVector => [x, y, 0]),
+          ),
+        ),
+      );
+      break;
+    }
   }
   if (!Number.isFinite(local.length) || local.length <= 1e-9 || local.isClosed !== isManualProfileClosed(profile)) {
     throw new Error('The profile did not produce the intended nonempty native curve.');
