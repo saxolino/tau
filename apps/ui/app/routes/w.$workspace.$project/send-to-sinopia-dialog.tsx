@@ -216,9 +216,12 @@ function SendForm({
   const [receipt, setReceipt] = useState<SinopiaSendReceipt>();
   const deliveryId = useRef(pending?.deliveryId ?? randomUuid());
   const dialogLifetime = useRef<AbortController | undefined>(undefined);
+  // The delivery source the current lifetime belongs to: a send never prepares files with another render's source.
+  const lifetimeSource = useRef(prepareSinopia);
   useEffect(() => {
     const controller = new AbortController();
     dialogLifetime.current = controller;
+    lifetimeSource.current = prepareSinopia;
     // oxlint-disable-next-line react/set-state-in-effect -- Release an obsolete render's delivery gesture when its source changes.
     setIsSending(false);
     return () => {
@@ -275,7 +278,10 @@ function SendForm({
         }
       }
       if (!sent) {
-        const files = await prepareSinopia(signal, version.data === undefined ? undefined : `v${String(version.data)}`);
+        const files = await lifetimeSource.current(
+          signal,
+          version.data === undefined ? undefined : `v${String(version.data)}`,
+        );
         signal.throwIfAborted();
         setPrepared(files);
         if (!hasPending) {

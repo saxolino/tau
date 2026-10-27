@@ -368,7 +368,8 @@ export function useRiconoscimentoNuovo(
         if (annullato()) {
           return;
         }
-        console.error('Recognition failed:', error);
+        // The address and the «Riprova» count are what restart this flow, so a failure names them.
+        console.error('Recognition failed:', error, { chiave, giro });
         setFase({
           fase: 'errore',
           parte,

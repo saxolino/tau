@@ -117,7 +117,8 @@ export function useAssistantModel(valutatore: ValutatoreVarianti | undefined): M
           );
         }
       } catch (error) {
-        console.error('Failed to read the model for the assistant:', error);
+        // The model's revision is what restarts this read, so a failure names it.
+        console.error('Failed to read the model for the assistant:', error, { revisione });
       }
     })();
     return () => {
@@ -167,7 +168,8 @@ export function useAssistantModel(valutatore: ValutatoreVarianti | undefined): M
             setControllo({ stato: 'pronto', esiti: esito.esiti, correzioni: esito.correzioni });
           }
         } catch (error) {
-          console.error('The manufacturability check failed:', error);
+          // The fingerprint is what restarts this check, so a failure names it.
+          console.error('The manufacturability check failed:', error, { impronta });
           if (corsa.viva) {
             setControllo({ stato: 'errore' });
           }
