@@ -1,4 +1,5 @@
 import { annotateParameterAssumptions } from '#parameter-assumptions.js';
+import { completaSchemaFamiglia } from '#famiglie/schema-famiglia.js';
 /**
  * SMLib Kernel Module
  *
@@ -353,7 +354,10 @@ export const smlibKernel = defineKernel({
       errorContext.entryUrl = executeResult.entryUrl;
 
       const defaultParameters = extractDefaultParameters(executeResult.value);
-      const jsonSchema = annotateParameterAssumptions(await jsonSchemaFromJson(defaultParameters), executeResult.value);
+      const jsonSchema = annotateParameterAssumptions(
+        completaSchemaFamiglia(await jsonSchemaFromJson(defaultParameters), executeResult.value),
+        executeResult.value,
+      );
       return createKernelSuccess({
         parameters: createKernelParameterDeclaration(defaultParameters, jsonSchema, {
           id: 'urn:taucad:smlib:parameters',

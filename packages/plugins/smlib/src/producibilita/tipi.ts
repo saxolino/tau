@@ -55,6 +55,11 @@ export type MisurePezzo = Readonly<{
   /** Il minimo di `spessori` e il punto in cui è stato misurato. */
   spessoreMinimo: number;
   doveSpessore?: Vettore3;
+  /** Facce di fianchi di rilievo (quasi verticali, più basse di 0,5 mm): non contano per `spessoreMinimo`. */
+  scalini: readonly number[];
+  /** Il minimo degli spessori dei fianchi di rilievo (il tratto più sottile) e dove; Infinity se non ce n'è. */
+  trattoMinimo: number;
+  doveTratto?: Vettore3;
   /** Sformo per faccia, indice per indice. */
   sformi: readonly SformoFaccia[];
   /** Facce intrappolate rispetto alla direzione: un raggio da esse lungo il verso di uscita rincontra il pezzo. */

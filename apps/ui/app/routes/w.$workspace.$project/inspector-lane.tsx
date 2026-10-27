@@ -22,6 +22,7 @@ import { InspectorPieceMeasures } from '#routes/w.$workspace.$project/piece-meas
 import { InspectorRecognition } from '#routes/w.$workspace.$project/inspector-recognition.js';
 import { InspectorProducibilita } from '#routes/w.$workspace.$project/inspector-producibilita.js';
 import { InspectorPhotos } from '#routes/w.$workspace.$project/inspector-photos.js';
+import { InspectorLogo } from '#routes/w.$workspace.$project/inspector-logo.js';
 import { InspectorSerie } from '#routes/w.$workspace.$project/inspector-serie.js';
 import { useProjectWorkspace, useWorkspaceLanes } from '#routes/w.$workspace.$project/project-workspace-context.js';
 
@@ -357,6 +358,7 @@ export function InspectorLane({
             <div ref={slot} data-slot='inspector-tools' />
             <InspectorPieceParameters />
             <InspectorSerie />
+            <InspectorLogo />
             <InspectorProducibilita />
             <InspectorPhotos />
             <div ref={historySlot} data-slot='inspector-history' />

@@ -79,3 +79,31 @@ describe('logo da SVG', () => {
     expect(trattoMinimoLogo(foro, 1)).toBeCloseTo(10, 1);
   });
 });
+
+describe('logo salvato', () => {
+  it('should rewrite the logo as a clean compact SVG that reads back to the same shape', async () => {
+    const { svgDaLogo } = await import('#famiglie/logo-svg.js');
+    const sporco = svg(
+      '<script>alert(1)</script><path d="M0 0H40V30H0Z M10 10V20H30V10Z" onclick="x()"/><image href="http://e.x/a.png"/>',
+    );
+    const logo = leggiLogoSvg(sporco);
+    const pulito = svgDaLogo(logo);
+    expect(pulito).not.toMatch(/script|onclick|image|http:\/\/e\.x/u);
+    const riletto = leggiLogoSvg(pulito);
+    expect(riletto.larghezza).toBe(40);
+    expect(riletto.contorni.map(({ buco }) => buco).toSorted()).toEqual([false, true]);
+  });
+
+  it('should simplify a heavy outline to fit the limit, and refuse one that cannot fit', async () => {
+    const { svgDaLogo } = await import('#famiglie/logo-svg.js');
+    const punti = Array.from(
+      { length: 800 },
+      (_, k) => `${50 + 40 * Math.cos((k / 800) * 2 * Math.PI)} ${50 + 40 * Math.sin((k / 800) * 2 * Math.PI)}`,
+    );
+    const logo = leggiLogoSvg(svg(`<polygon points="${punti.join(' ')}"/>`));
+    const testo = svgDaLogo(logo, 6000);
+    expect(testo.length).toBeLessThanOrEqual(6000);
+    expect(leggiLogoSvg(testo).contorni).toHaveLength(1);
+    expect(() => svgDaLogo(logo, 120)).toThrow(ErroreLogo);
+  });
+});

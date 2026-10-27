@@ -29,6 +29,17 @@ const quasiVerticale = 0.02;
 const coperturaForo = 200;
 /** Oltre questo spessore nessuna soglia di parete guarda (la più alta è il legno, 6 mm): non serve la prova dello spigolo. */
 const spessoreRilevante = 10;
+/**
+ * Altezza (mm, lungo la direzione di sformo) sotto la quale una faccia quasi verticale è un fianco di rilievo, non di
+ * parete: il bordo in rilievo di una placca (0,3 mm), le lettere, il logo, un filo su un anello. Di questi fianchi si
+ * misura la larghezza come per ogni altra faccia, ma la guarda `TRATTO_MIN` (tratto minimo del processo), non
+ * `PARETE_MIN`: un filo largo 0,8 mm e alto 0,3 mm sopra una lastra di 1,5 mm non è una parete di 0,8 mm. I fianchi alti
+ * almeno 0,5 mm restano pareti. Per il sottosquadro invece non si guardano: a quell'altezza il campione, a 0,01 mm dal
+ * fianco, cade quasi sempre sotto il piano superiore del rilievo stesso (prova: sul logo triangolare il raggio verso
+ * l'alto colpiva la faccia superiore del logo a 0,165 mm dalla partenza) e dà un sottosquadro falso; lo sformo mancante
+ * lo dice `SFORMO`. Una faccia orizzontale non è mai uno scalino.
+ */
+const altezzaScalino = 0.5;
 /** Raggio massimo di una griffa (mm): oltre è un gambo o una colonna. */
 const raggioMassimoGriffa = 1;
 
@@ -295,24 +306,59 @@ function colpoVero(colpo: Smlib.Hit<Smlib.Face>, { punto, da }: Readonly<{ punto
   }
 }
 
+/** Una faccia quasi verticale (rispetto a `d`) più bassa di `altezzaScalino`. */
+function èScalino(faccia: Smlib.Face, d: Punto): boolean {
+  try {
+    const { min, max } = faccia.bbox();
+    const angoli = [min.x, max.x].flatMap((x) =>
+      [min.y, max.y].flatMap((y) => [min.z, max.z].map((z) => scalare([x, y, z], d))),
+    );
+    const altezza = Math.max(...angoli) - Math.min(...angoli);
+    if (altezza > altezzaScalino) {
+      return false;
+    }
+    const punto = faccia.interiorPoint();
+    return Math.abs(scalare(faccia.normalAt(punto).toArray(), d)) < 0.3;
+  } catch {
+    return false;
+  }
+}
+
 /** Spessori per faccia e facce intrappolate con un solo `raycastMany` (l'albero dei raggi si costruisce una volta). */
 function raggi(
   forma: Smlib.Part,
   facce: readonly Faccia[],
   { direzione, campioniPerFaccia }: Readonly<{ direzione: Vettore3; campioniPerFaccia: number }>,
-): { spessori: number[]; minimo: number; dove?: Punto; intrappolate: number[]; campioni: number } {
+): {
+  spessori: number[];
+  minimo: number;
+  dove?: Punto;
+  tratto: number;
+  doveTratto?: Punto;
+  scalini: number[];
+  intrappolate: number[];
+  campioni: number;
+} {
   const d = unitario(direzione);
+  const scalini = new Set<number>();
   const origini: Punto[] = [];
   const direzioni: Punto[] = [];
   /** Per raggio: faccia, tipo (spessore, uscita), e per i quasi verticali il gemello dell'altro verso. */
   const legami: Array<{ faccia: number; tipo: 'spessore' | 'uscita' | 'uscita_doppia'; punto: Punto; da: Smlib.Face }> =
     [];
   for (const [indice, faccia] of facce.entries()) {
+    const scalino = èScalino(faccia.faccia, d);
+    if (scalino) {
+      scalini.add(indice);
+    }
     for (const { punto, normale } of campioniFaccia(faccia, campioniPerFaccia)) {
       origini.push(differenza(punto, per(normale, scostamento)));
       direzioni.push(per(normale, -1));
       const da = faccia.faccia;
       legami.push({ faccia: indice, tipo: 'spessore', punto, da });
+      if (scalino) {
+        continue;
+      }
       const fuori = somma(punto, per(normale, scostamento));
       const verso = scalare(normale, d);
       if (Math.abs(verso) < quasiVerticale) {
@@ -333,8 +379,11 @@ function raggi(
   const intrappolate = new Set<number>();
   let minimo = Number.POSITIVE_INFINITY;
   let dove: Punto | undefined;
+  let tratto = Number.POSITIVE_INFINITY;
+  let doveTratto: Punto | undefined;
+  const campioniTratto = new Map<number, Array<{ spessore: number; punto: Punto }>>();
   if (origini.length === 0) {
-    return { spessori, minimo, intrappolate: [], campioni: 0 };
+    return { spessori, minimo, tratto, scalini: [], intrappolate: [], campioni: 0 };
   }
   const colpi = forma.raycastMany(origini, direzioni);
   for (let indice = 0; indice < legami.length; indice++) {
@@ -350,6 +399,14 @@ function raggi(
         spessore < spessori[legame.faccia]! &&
         (spessore >= spessoreRilevante || colpoVero(colpo, legame))
       ) {
+        if (scalini.has(legame.faccia)) {
+          // Di un fianco di rilievo vale la mediana dei campioni: alle punte acute dei contorni (lettere, logo) lo
+          // spessore tende a zero senza che il tratto sia sottile; il valore del fianco è quello tipico.
+          const campioniFaccia = campioniTratto.get(legame.faccia) ?? [];
+          campioniFaccia.push({ spessore, punto: origini[indice]! });
+          campioniTratto.set(legame.faccia, campioniFaccia);
+          continue;
+        }
         spessori[legame.faccia] = spessore;
         if (spessore < minimo) {
           minimo = spessore;
@@ -373,10 +430,22 @@ function raggi(
       indice++;
     }
   }
+  for (const [faccia, campioni] of campioniTratto) {
+    const ordinati = campioni.toSorted((a, b) => a.spessore - b.spessore);
+    const tipico = ordinati[Math.floor((ordinati.length - 1) / 2)]!;
+    spessori[faccia] = tipico.spessore;
+    if (tipico.spessore < tratto) {
+      tratto = tipico.spessore;
+      doveTratto = tipico.punto;
+    }
+  }
   return {
     spessori,
     minimo,
     ...(dove ? { dove } : {}),
+    tratto,
+    ...(doveTratto ? { doveTratto } : {}),
+    scalini: [...scalini].toSorted((a, b) => a - b),
     intrappolate: [...intrappolate].toSorted((a, b) => a - b),
     campioni: legami.filter(({ tipo }) => tipo === 'spessore').length,
   };
@@ -410,6 +479,8 @@ export function misuraPezzo(lib: Lib, forma: unknown, opzioni: OpzioniMisura): M
     pietra: opzioni.pietra === true,
     spessori: [],
     spessoreMinimo: Number.POSITIVE_INFINITY,
+    trattoMinimo: Number.POSITIVE_INFINITY,
+    scalini: [],
     sformi: [],
     intrappolate: [],
     fori: [],
@@ -444,6 +515,9 @@ export function misuraPezzo(lib: Lib, forma: unknown, opzioni: OpzioniMisura): M
     spessori: misurati.spessori,
     spessoreMinimo: misurati.minimo,
     ...(misurati.dove ? { doveSpessore: misurati.dove } : {}),
+    trattoMinimo: misurati.tratto,
+    ...(misurati.doveTratto ? { doveTratto: misurati.doveTratto } : {}),
+    scalini: misurati.scalini,
     sformi: sformiPerFaccia(
       forma,
       facce.map(({ faccia }) => faccia),

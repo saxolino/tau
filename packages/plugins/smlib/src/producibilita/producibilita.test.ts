@@ -276,3 +276,81 @@ describe('analisi completa sulle famiglie predefinite (STEP del kernel → worke
     expect(trova(dopo.controlli, 'SFORMO')).toBeUndefined();
   });
 });
+
+describe('placca: scalini sotto la tolleranza', () => {
+  const cornice = '<svg viewBox="0 0 100 60"><path d="M50 4 L96 56 H4 Z M50 24 L66 46 H34 Z"/></svg>';
+  const analizza = (
+    parametri: unknown,
+    processo: 'pressofusione_zama' | 'tranciatura_lamiera' | 'fusione_cera_persa',
+  ) => {
+    const { pezzi } = valutaFamiglia(lib, famiglie.placca!, { parametri, verifiche: false });
+    const corpi = pezzi.flatMap((pezzo) => (pezzo.shape instanceof lib.Part ? [pezzo.shape.named(pezzo.name)] : []));
+    return funzioniProducibilita(lib).analizza({
+      step: new TextEncoder().encode(lib.toStep(corpi, { assembly: true, name: 'placca' })),
+      pezzi: pezzi.map((pezzo) => ({ nome: pezzo.name, processo, materiale: pezzo.materiale })),
+      direzione: su,
+      famiglia: { id: 'placca', parametri, processo },
+    });
+  };
+  const bloccanti = (risposta: ReturnType<typeof analizza>) =>
+    risposta.controlli.filter(({ livello }) => livello === 'blocco').map(({ codice }) => codice);
+
+  it('should not block the default zamak plate for its raised rim (0.8 mm wide, 0.3 mm high)', () => {
+    const risposta = analizza({}, 'pressofusione_zama');
+    expect(bloccanti(risposta)).toEqual([]);
+    const parete = risposta.controlli.find(({ codice }) => codice === 'PARETE_MIN');
+    // La parete vera è la lastra (1,5 mm) o il perno (≈ 1,3 mm), non il filo del bordo (0,79 mm).
+    expect(parete?.valore).toBeGreaterThan(1.2);
+    expect(risposta.controlli.find(({ codice }) => codice === 'SOTTOSQUADRO')?.livello).toBe('ok');
+    // Il filo del bordo (0,8 mm) è sopra il tratto minimo della zama (0,4 mm).
+    expect(risposta.controlli.find(({ codice }) => codice === 'TRATTO_MIN')).toMatchObject({
+      livello: 'ok',
+      soglia: 0.4,
+    });
+    expect(risposta.controlli.find(({ codice }) => codice === 'TRATTO_MIN')?.valore).toBeCloseTo(0.79, 1);
+  });
+
+  it('should not read the 0.3 mm steps of a logo as walls or undercuts, raised or engraved', () => {
+    for (const modo of ['rilievo', 'inciso'] as const) {
+      const risposta = analizza({ logo: { svg: cornice, modo } }, 'pressofusione_zama');
+      expect(bloccanti(risposta)).toEqual([]);
+      expect(risposta.controlli.find(({ codice }) => codice === 'PARETE_MIN')?.valore).toBeGreaterThanOrEqual(
+        1.2 - 1e-6,
+      );
+      expect(risposta.controlli.find(({ codice }) => codice === 'SOTTOSQUADRO')?.livello).toBe('ok');
+    }
+  });
+
+  it('should not block a free-outline plate, nor the other processes, and keep a 1° draft as a pass', () => {
+    const contorno = {
+      piastra: {
+        forma: 'contorno',
+        contorno: [
+          [0, 0],
+          [10, 2],
+          [20, 0],
+          [18, 8],
+          [10, 12],
+          [2, 8],
+        ],
+      },
+    };
+    const libera = analizza(contorno, 'pressofusione_zama');
+    expect(bloccanti(libera)).toEqual([]);
+    expect(libera.controlli.find(({ codice }) => codice === 'SFORMO')?.livello).toBe('ok');
+    for (const [processo, costruzione] of [
+      ['tranciatura_lamiera', { processo: 'tranciatura_lamiera', materiale: 'ottone' }],
+      ['fusione_cera_persa', { processo: 'fusione_cera_persa', materiale: 'argento_925' }],
+    ] as const) {
+      expect(bloccanti(analizza({ costruzione }, processo))).toEqual([]);
+    }
+  });
+
+  it('should still read a real thin wall: a rim 0.8 mm wide AND 3 mm high', () => {
+    const risposta = analizza(
+      { bordo: { rilievo: 1, larghezza: 0.8 }, piastra: { spessore: 3 } },
+      'pressofusione_zama',
+    );
+    expect(risposta.controlli.find(({ codice }) => codice === 'PARETE_MIN')?.valore).toBeLessThan(1.2);
+  });
+});

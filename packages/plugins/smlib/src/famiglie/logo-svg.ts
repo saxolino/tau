@@ -524,3 +524,77 @@ export function trattoMinimoLogo(logo: LogoLetto, scala: number, margine = 0): n
   }
   return minimo * scala;
 }
+
+/** Semplifica una poligonale chiusa (Douglas–Peucker sul giro intero, partendo dai due punti più lontani). */
+function semplifica(punti: readonly Punto2[], tolleranza: number): Punto2[] {
+  if (tolleranza <= 0 || punti.length <= 4) {
+    return [...punti];
+  }
+  const distanza = (p: Punto2, a: Punto2, b: Punto2): number => {
+    const [dx, dy] = [b[0] - a[0], b[1] - a[1]];
+    const lunghezza = Math.hypot(dx, dy);
+    return lunghezza === 0
+      ? Math.hypot(p[0] - a[0], p[1] - a[1])
+      : Math.abs(dx * (a[1] - p[1]) - dy * (a[0] - p[0])) / lunghezza;
+  };
+  const tratto = (da: number, a: number, giro: readonly Punto2[]): Punto2[] => {
+    let [massimo, indice] = [0, -1];
+    for (let i = da + 1; i < a; i++) {
+      const d = distanza(giro[i]!, giro[da]!, giro[a]!);
+      if (d > massimo) {
+        [massimo, indice] = [d, i];
+      }
+    }
+    return massimo > tolleranza
+      ? [...tratto(da, indice, giro).slice(0, -1), ...tratto(indice, a, giro)]
+      : [giro[da]!, giro[a]!];
+  };
+  const meta = Math.floor(punti.length / 2);
+  const prima = tratto(0, meta, punti);
+  const seconda = tratto(meta, punti.length, [...punti, punti[0]!]);
+  return [...prima.slice(0, -1), ...seconda.slice(0, -1)];
+}
+
+/**
+ * Riscrive il logo letto come un SVG compatto e pulito: un solo `path` con i contorni come poligoni, senza script,
+ * stili o elementi esterni. È quello che si salva in `logo.svg`: mai il testo dell'utente. Se supera `massimo`
+ * caratteri, i contorni si semplificano a gradini finché ci stanno (e restano semplici).
+ * @param logo - Il logo letto.
+ * @param massimo - Lunghezza massima del testo.
+ * @returns L'SVG.
+ * @throws ErroreLogo `SVG_NON_VALIDO` se nemmeno semplificato sta nel limite.
+ * @public
+ */
+export function svgDaLogo(logo: LogoLetto, massimo = 6000): string {
+  const grande = Math.max(logo.larghezza, logo.altezza);
+  const arrotonda = (v: number): string => String(Math.round(v * 100) / 100);
+  for (const frazione of [0, 0.001, 0.002, 0.004, 0.008, 0.015, 0.03, 0.06]) {
+    const contorni = logo.contorni.map(({ punti }) => semplifica(punti, frazione * grande));
+    if (contorni.some((punti) => punti.length < 3 || !poligonoSemplice(punti))) {
+      continue;
+    }
+    const d = contorni
+      .map((punti) => `M${punti.map(([x, y]) => `${arrotonda(x)} ${arrotonda(logo.altezza - y)}`).join(' ')}Z`)
+      .join(' ');
+    const testo = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${arrotonda(logo.larghezza)} ${arrotonda(logo.altezza)}"><path d="${d}"/></svg>`;
+    if (testo.length <= massimo) {
+      return testo;
+    }
+  }
+  throw new ErroreLogo('SVG_NON_VALIDO', 'Il logo è troppo complesso: semplifica i tracciati e riprova.');
+}
+
+/**
+ * I contorni del logo come campo `d` di un percorso (Y in basso, come sullo schermo), per disegnarne l'anteprima
+ * senza passare dall'SVG dell'utente.
+ * @param logo - Il logo letto.
+ * @returns Il campo `d`.
+ * @public
+ */
+export const percorsoLogo = (logo: LogoLetto): string =>
+  logo.contorni
+    .map(
+      ({ punti }) =>
+        `M${punti.map(([x, y]) => `${Math.round(x * 100) / 100} ${Math.round((logo.altezza - y) * 100) / 100}`).join(' ')}Z`,
+    )
+    .join(' ');
