@@ -21,6 +21,7 @@ import { progettoRiconosciuto } from '#services/riconoscimento-progetto.js';
 import type { RecordRiconoscimento } from '#services/riconoscimento-record.js';
 import { creaVerificatoreBrowser } from '#services/riconoscimento-verifica.js';
 import { caricaSchedaParte, ErroreParte } from '#services/sinopia-parts.js';
+import { caricaSchedaPezzo } from '#services/sinopia-pezzo.js';
 import type { LetturaNuovo, ParteCaricata } from '#services/sinopia-parts.js';
 import { ErroreRiconoscimento, riconosciParte, riconoscimentoRegistrato } from '#services/sinopia-recognize.js';
 import type { EsitoRiconoscimento } from '#services/sinopia-recognize.js';
@@ -58,6 +59,8 @@ const messaggioParte: Record<ErroreParte['codice'], PlainMessageKey> = {
   partiAssenti: 'riconoscimento.errors.partsMissing',
   parteAssente: 'riconoscimento.errors.partMissing',
   mascheraAssente: 'riconoscimento.errors.maskMissing',
+  pezzoAssente: 'riconoscimento.errors.pieceMissing',
+  immagineTroppoGrande: 'riconoscimento.errors.imageTooLarge',
 };
 
 const messaggioRiconoscimento = (errore: ErroreRiconoscimento): PlainMessageKey =>
@@ -245,7 +248,9 @@ export function useRiconoscimentoNuovo(
         const caricata =
           lettura.stato === 'prova'
             ? await caricaProvaFibbia()
-            : await caricaSchedaParte(lettura.parametri, strumentiBrowser);
+            : lettura.stato === 'pezzo'
+              ? await caricaSchedaPezzo(lettura.parametri, strumentiBrowser)
+              : await caricaSchedaParte(lettura.parametri, strumentiBrowser);
         const immagineUrl = URL.createObjectURL(caricata.immagine);
         const mascheraUrl = URL.createObjectURL(caricata.mascheraPng);
         urls.current.push(immagineUrl, mascheraUrl);

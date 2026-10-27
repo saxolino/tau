@@ -40,9 +40,11 @@ function FotoParte({ parte }: Readonly<{ parte: ParteVista }>): React.JSX.Elemen
           }}
         />
         <span className='absolute top-2 left-2 rounded-md border border-border bg-background/90 px-2 py-0.5 font-mono text-[10px] leading-4 tracking-[0.12em] text-muted-foreground uppercase'>
-          {schedaParte.maschera?.origine === 'contorno'
-            ? t('riconoscimento.maskFromOutline')
-            : t('riconoscimento.maskWatermark')}
+          {parte.scontornoDaSfondo
+            ? t('riconoscimento.maskFromBackground')
+            : schedaParte.maschera?.origine === 'contorno'
+              ? t('riconoscimento.maskFromOutline')
+              : t('riconoscimento.maskWatermark')}
         </span>
       </div>
       <figcaption className='space-y-0.5'>

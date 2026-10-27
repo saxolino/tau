@@ -103,6 +103,17 @@ export const strumentiBrowser: StrumentiParti = {
     context.putImageData(immagine, 0, 0);
     return inBlob(canvas, 'image/png');
   },
+  pixel: async (immagine, latoMassimo) => {
+    const intero = await createImageBitmap(immagine);
+    const fattore = Math.min(1, latoMassimo / Math.max(intero.width, intero.height));
+    const larghezza = Math.max(2, Math.round(intero.width * fattore));
+    const altezza = Math.max(2, Math.round(intero.height * fattore));
+    const canvas = tela(larghezza, altezza);
+    const context = contesto2d(canvas);
+    context.drawImage(intero, 0, 0, larghezza, altezza);
+    intero.close();
+    return { larghezza, altezza, rgba: context.getImageData(0, 0, larghezza, altezza).data };
+  },
   segmenta: async (immagine, query) => {
     // S-04: Sinopia's `segment-part` (SAM-3) with the shared session; same JWT, same storage rules as in the Studio.
     const config = readSinopiaConfig();

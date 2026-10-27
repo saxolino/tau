@@ -35,6 +35,8 @@ export const searchParameterName = {
   sinopiaMask: 'mask',
   sinopiaPartType: 'partType',
   sinopiaLibrary: 'library',
+  // «/cad/nuovo» from a supplier-catalogue card: `supplier_products.id` (no project, no asset, no part).
+  sinopiaSupplier: 'supplier',
   sinopiaMeasure: 'measure',
   // Development only: a recorded recognition («prova»), no Sinopia read and no paid call.
   recognitionTrial: 'prova',
