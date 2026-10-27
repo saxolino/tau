@@ -1010,3 +1010,12 @@ Blocchi C1, C2, C5 e D4 del piano di Claude (`PIANO-CLAUDE-2026-10-26.md`), dall
   consegna e aspetta il «pronto» di ciascuno (che arriva solo a kernel WebAssembly istanziato); controlla anche che
   nessun `*.worker-*.js` sia vuoto. `scripts/sinopiacad/build.sh` la lancia dopo ogni build e fallisce se un worker
   non risponde.
+- **Secondo difetto, stesso sintomo.** Con i worker di nuovo pieni, il primo controllo della fibbia durava 30,5 s
+  («fillet: the probe worker did not start within 30 s») e i controlli dell'assistente finivano nel loro timeout di
+  30 s. smlibwasm avvia il supervisore del suo worker di sonda quando valuta `dist/_guard.js` e conta che succeda
+  prima del `await` di primo livello del kernel; nella build il guardiano era fuso nel chunk `exporters-*`, che importa
+  quello del kernel, e partiva solo dopo: il primo raccordo bloccava il thread (`Atomics.wait`) prima che il
+  supervisore fosse partito. `apps/ui/vite.config.ts` (`uiWorkerRolldownOptions`), `apps/ui/serve/vite.config.ts` e
+  `apps/ui/desktop/vite.config.ts`: nei bundle dei worker il guardiano ha un chunk suo (`smlibwasm-guard-*`), che non
+  aspetta il kernel. Il controllo passa da 30 571 ms a circa 550 ms; la prova chiede al worker delle varianti il
+  controllo vero di una fibbia e fallisce oltre 15 s o con l'avviso del worker di sonda.

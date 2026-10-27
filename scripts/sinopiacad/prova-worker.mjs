@@ -7,7 +7,9 @@
 // fa l'interfaccia (`new Worker(url, { type: 'module' })`) e aspetta il suo «pronto»: il messaggio che `expose()` di
 // `@classcad/smlibwasm/worker` manda solo dopo aver caricato le funzioni e il kernel WebAssembly. Un worker vuoto (il suo
 // `expose()` scartato dal bundler), uno che non si carica o uno il cui kernel non si istanzia fanno fallire la prova.
-// Controlla anche che nessun file `*.worker-*.js` della build sia vuoto.
+// Controlla anche che nessun file `*.worker-*.js` della build sia vuoto e chiede al worker delle varianti il controllo
+// di una fibbia (`controlla`): un raccordo passa dal worker di sonda di smlibwasm, e se il suo supervisore parte dopo il
+// kernel (il guardiano fuso in un chunk che aspetta il kernel) il primo raccordo perde 30 s e la prova fallisce.
 //
 // Uso: node scripts/sinopiacad/prova-worker.mjs [cartella della build]   (predefinita: apps/ui/serve/build/client)
 // `build.sh` la lancia dopo ogni build: se un worker non risponde, la build fallisce.
@@ -28,6 +30,27 @@ const WORKER = ['producibilita.worker', 'verifica-silhouette.worker', 'varianti.
 /** Il messaggio di `expose()` (`@classcad/smlibwasm/worker`): `{ [TAG]: 'ready', names }` o `{ [TAG]: 'ready', error }`. */
 const TAG = '$smlibwasm';
 const PAGINA = `${base}__prova-worker.html`;
+/** Millisecondi entro cui il controllo della fibbia deve finire (normale: meno di un secondo; il difetto: 30 s). */
+const attesaControllo = 15_000;
+/** La fibbia predefinita (`fibbia.predefiniti()` di `@taucad/smlib/famiglie`), con i raccordi del telaio. */
+const FIBBIA = {
+  famiglia: 'fibbia',
+  variante: 'rettangolare',
+  parametri: {
+    cinturino: { larghezza: 20, spessore: 3 },
+    telaio: {
+      altezzaInterna: 12,
+      sezioneLarghezza: 3,
+      sezioneSpessore: 2.5,
+      raggioAngoli: 3,
+      profilo: 'bombato',
+      raggioBordo: 0.75,
+    },
+    ardiglione: { diametro: 2.5, gioco: 0.3, materiale: 'acciaio' },
+    traversino: { abilitato: false, larghezza: 2.5, profilo: 'piatto' },
+    costruzione: { processo: 'pressofusione_zama', materiale: 'zama', sformo: 1 },
+  },
+};
 
 const TIPI = {
   '.html': 'text/html; charset=utf-8',
@@ -118,6 +141,10 @@ try {
   pagina.on('pageerror', (errore) => {
     console.error(`  [pagina] ${errore.message}`);
   });
+  const avvisi = [];
+  pagina.on('console', (messaggio) => {
+    if (/probe worker/u.test(messaggio.text())) avvisi.push(messaggio.text());
+  });
   await pagina.goto(`${origine}${PAGINA}`);
   const isolata = await pagina.evaluate(() => globalThis.crossOriginIsolated);
   if (!isolata) fallisci('la pagina di prova non è crossOriginIsolated: le intestazioni COOP/COEP non arrivano');
@@ -160,6 +187,39 @@ try {
   }
   if (![...serviti].some((p) => /\/smlibwasm-[\w-]+\.wasm$/u.test(p))) {
     fallisci('nessun worker ha chiesto il kernel smlibwasm-*.wasm');
+  }
+
+  // 3. Un controllo vero nel worker delle varianti: costruisce la fibbia, raccordi compresi (worker di sonda).
+  const varianti = trovati.find((t) => t.worker === 'varianti.worker');
+  if (varianti) {
+    const controllo = await pagina.evaluate(
+      async ({ url, TAG, FIBBIA, attesaControllo }) =>
+        new Promise((risolvi) => {
+          const inizio = performance.now();
+          const w = new Worker(url, { type: 'module', name: 'varianti' });
+          const fine = (esito) => {
+            clearTimeout(timer);
+            w.terminate();
+            risolvi({ ms: Math.round(performance.now() - inizio), ...esito });
+          };
+          const timer = setTimeout(() => {
+            fine({ ok: false, errore: `nessuna risposta in ${attesaControllo} ms` });
+          }, attesaControllo);
+          w.addEventListener('message', ({ data }) => {
+            if (data?.[TAG] === 'ready') {
+              w.postMessage({ [TAG]: 'call', id: 1, name: 'controlla', value: [FIBBIA], bodies: [], package: false });
+            } else if (data?.[TAG] === 'done') {
+              fine({ ok: true, peso: data.value?.pesoGrammi });
+            } else if (data?.[TAG] === 'failed') {
+              fine({ ok: false, errore: JSON.stringify(data.error) });
+            }
+          });
+        }),
+      { url: varianti.url, TAG, FIBBIA, attesaControllo },
+    );
+    if (!controllo.ok) fallisci(`controllo della fibbia nel worker delle varianti: ${controllo.errore}`);
+    else if (avvisi.length > 0) fallisci(`controllo della fibbia: ${avvisi.join(' · ')}`);
+    else console.log(`✓ controllo della fibbia in ${controllo.ms} ms (≈ ${Number(controllo.peso).toFixed(1)} g)`);
   }
 } finally {
   await browser.close();
