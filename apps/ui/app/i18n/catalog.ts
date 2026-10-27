@@ -23,6 +23,7 @@ import { inspectorMessages } from '#i18n/messages/inspector.js';
 import { riconoscimentoMessages } from '#i18n/messages/riconoscimento.js';
 import { assistantMessages } from '#i18n/messages/assistant.js';
 import { producibilitaMessages } from '#i18n/messages/producibilita.js';
+import { fotoCampioneMessages } from '#i18n/messages/foto-campione.js';
 
 /**
  * Every area's messages under its own namespace: `t('project.topBar.versions')`. One area per file in
@@ -52,6 +53,7 @@ export const areas = {
   inspector: inspectorMessages,
   library: libraryMessages,
   riconoscimento: riconoscimentoMessages,
+  fotoCampione: fotoCampioneMessages,
   assistant: assistantMessages,
   producibilita: producibilitaMessages,
 } as const;

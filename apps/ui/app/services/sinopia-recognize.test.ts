@@ -10,6 +10,7 @@ vi.mock('#environment.config.js', () => ({
 vi.mock('#lib/sinopia-data-client.js', () => ({
   requireSinopiaUser: async () => ({ userId: 'u', token: 'jwt-of-the-user' }),
 }));
+vi.mock('#services/sinopia-foto.js', () => ({ leggiPrezziCad: async () => ({ cad_recognize: 2 }) }));
 
 const immagini: ImmaginiRiconoscimento = {
   ritaglio: { mediaType: 'image/jpeg', data: '/9j/4AAQ' },
@@ -26,7 +27,7 @@ describe('client of /v1/recognize', () => {
     }) as unknown as typeof globalThis.fetch;
     const esito = await riconosciParte(
       { schedaParte: schedaParteDiProva, immagini, lingua: 'it' },
-      { fetch, progettoCad: 'proj_1' },
+      { fetch, progettoCad: 'proj_1', prezzo: async () => 2, requestId: '44444444-4444-4444-8444-444444444444' },
     );
     expect(esito.scheda).toStrictEqual(schedaRiconoscimentoDiProva);
     expect(chiamate[0]!.url).toBe('https://sinopia.test/functions/v1/sinopiacad/v1/recognize');
@@ -34,6 +35,8 @@ describe('client of /v1/recognize', () => {
     expect(headers['authorization']).toBe('Bearer jwt-of-the-user');
     expect(headers['x-tau-project-id']).toBe('proj_1');
     expect(JSON.parse(chiamate[0]!.init.body as string)).toStrictEqual({
+      requestId: '44444444-4444-4444-8444-444444444444',
+      maxCreditCost: 2,
       schedaParte: schedaParteDiProva,
       immagini: { ritaglio: immagini.ritaglio, intera: immagini.intera },
       fattoreRitaglio: 1.39,
@@ -89,5 +92,31 @@ describe('client of /v1/recognize', () => {
       throw new TypeError('offline');
     }) as unknown as typeof globalThis.fetch;
     await expect(riconosciParte(richiesta, { fetch: rete })).rejects.toMatchObject({ codice: 'NETWORK' });
+  });
+
+  it('should not call the function while the price of a recognition is not active, and type the credit errors', async () => {
+    const fetch = vi.fn(async () => Response.json(riconoscimentoRegistrato())) as unknown as typeof globalThis.fetch;
+    const richiesta: Parameters<typeof riconosciParte>[0] = { schedaParte: schedaParteDiProva, immagini, lingua: 'it' };
+    await expect(riconosciParte(richiesta, { fetch, prezzo: async () => undefined })).rejects.toMatchObject({
+      codice: 'CREDITS_NOT_CONFIGURED',
+    });
+    expect(fetch).not.toHaveBeenCalled();
+    const pochi = (async () =>
+      Response.json(
+        { error: { type: 'INSUFFICIENT_CREDITS', message: 'Crediti insufficienti' } },
+        { status: 402 },
+      )) as unknown as typeof globalThis.fetch;
+    await expect(riconosciParte(richiesta, { fetch: pochi })).rejects.toMatchObject({
+      codice: 'INSUFFICIENT_CREDITS',
+      stato: 402,
+    });
+    let corpo: Record<string, unknown> = {};
+    const legge = (async (_url: string, init?: RequestInit) => {
+      corpo = JSON.parse(init!.body as string) as Record<string, unknown>;
+      return Response.json(riconoscimentoRegistrato());
+    }) as unknown as typeof globalThis.fetch;
+    await riconosciParte(richiesta, { fetch: legge });
+    expect(corpo['maxCreditCost']).toBe(2);
+    expect(corpo['requestId']).toMatch(/^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/u);
   });
 });
