@@ -14,6 +14,8 @@ const baseConfig: UserConfig = {
     'src/varianti/varianti.worker.ts',
     'src/producibilita/index.ts',
     'src/producibilita/producibilita.worker.ts',
+    'src/consegna/index.ts',
+    'src/consegna/consegna.worker.ts',
   ],
   sourcemap: false,
   clean: true,

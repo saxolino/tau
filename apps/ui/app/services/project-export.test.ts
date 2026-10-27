@@ -17,7 +17,13 @@ import { buildGltfComponentManifest } from '@taucad/viewer/graphics/metadata/glt
 import { createExportFile } from '@taucad/types/constants';
 import type { ExportFile } from '@taucad/types';
 import { createOcScope } from '@taucad/occt-core';
+import { WebIO } from '@gltf-transform/core';
+import { allExtensions } from '@taucad/geometry-core';
+import { PDFDocument } from 'pdf-lib';
+import { funzioniConsegna } from '@taucad/smlib/consegna';
+import { pieceVolumeMm3 } from '#lib/piece-weight.js';
 import { checkStepExport, inspectStep } from './project-export-step.js';
+import { convertStepToIges } from './project-export-iges.js';
 import { exportPieces, isClosedStl, prepareStl } from './project-export-mesh.js';
 import {
   captureProjectPhoto,
@@ -26,7 +32,7 @@ import {
   prepareSinopiaFiles,
   projectExportSketches,
 } from './project-export.js';
-import type { ProjectExportSource } from './project-export.js';
+import type { ProjectDelivery, ProjectExportSource } from './project-export.js';
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 const runtime: RuntimeDefinition = defineRuntime({ kernels: [replicadKernel()], bundlers: [esbuildBundler()] });
@@ -624,5 +630,220 @@ describe('independent STEP qualification of manual plate edits', () => {
     const final = await evaluate(0, [hole, push, pull]);
     expect(inspectStep(oc, final.bytes)).toEqual([{ name: names[0], solids: 1, valid: true }]);
     expect(checkStepExport(oc, { bytes: final.bytes, expectedNames: names })).toMatchObject({ status: 'verified' });
+  });
+});
+
+describe('SinopiaCAD delivery of an SMLib model (E3a): SMLib writes and checks, OpenCASCADE only converts IGES', () => {
+  const deliveryRuntime: RuntimeDefinition = defineRuntime({ kernels: [smlibKernel()], bundlers: [esbuildBundler()] });
+  const deliveryClient = createTestRuntimeClient({
+    runtime: deliveryRuntime,
+    files: {
+      'main.ts': `
+  import { Box, Cylinder, Pos } from '@classcad/smlibwasm';
+  export default function main() {
+    return [
+      { name: 'Telaio', shape: Box(40, 20, 3).cut(Pos(0, 0, -2).mul(Cylinder(3, 10))), color: '#9aa0a6' },
+      { name: 'Ardiglione', shape: Pos(0, 0, 3).mul(Box(2, 18, 2)), color: '#9aa0a6' },
+    ];
+  }
+`,
+    },
+  });
+  let opened: Awaited<ReturnType<typeof openSource>>;
+  let delivery: ProjectDelivery;
+  let lib: typeof import('@classcad/smlibwasm');
+  beforeAll(async () => {
+    opened = await openSource(deliveryClient, 'smlib');
+    lib = await import('@classcad/smlibwasm');
+    const funzioni = funzioniConsegna(lib);
+    delivery = {
+      consegna: {
+        step: async (richiesta) => funzioni.step(richiesta),
+        rileggi: async (richiesta) => funzioni.rileggi(richiesta),
+        dxf: async (richiesta) => funzioni.dxf(richiesta),
+        tavola: async (richiesta) => funzioni.tavola(richiesta),
+      },
+      convertIges: async (bytes) => convertStepToIges(oc, bytes),
+      projectName: 'Fibbia prova',
+      pieces: opened.source.pieces.map((node) => ({
+        nome: node.name,
+        volumeMm3: pieceVolumeMm3(node)!,
+        ...(node.name === 'Telaio' ? { materiale: { chiave: 'ottone', nome: 'Ottone', colore: '#b8995a' } } : {}),
+      })),
+      glbMaterials: new Map([
+        [
+          'Telaio',
+          {
+            chiave: 'ottone',
+            nome: 'Ottone',
+            colore: '#b8995a',
+            metalness: 1,
+            roughness: 0.3,
+            processo: 'tranciatura_lamiera',
+          },
+        ],
+      ]),
+      sheet: (drawings, selectedNames, versionLabel) => ({
+        progetto: 'Fibbia prova',
+        selezione: selectedNames?.join(', ') ?? 'Tutti i pezzi',
+        versione: versionLabel ?? 'Bozza',
+        data: new Date('2026-10-27T10:00:00Z'),
+        lingua: 'it',
+        viste: drawings.viste,
+        ingombro: drawings.ingombro,
+        pezzi: [{ nome: 'Telaio', materiale: 'Ottone' }],
+        misure: [],
+        controlli: [],
+        testi: {
+          titolo: 'Tavola tecnica',
+          progetto: 'Progetto',
+          pezzi: 'Pezzi',
+          versione: 'Versione',
+          data: 'Data',
+          scala: 'Scala',
+          unita: 'mm',
+          proiezione: 'primo diedro (ISO)',
+          foglio: 'Foglio',
+          fronte: 'Fronte',
+          lato: 'Lato sinistro',
+          alto: 'Dall’alto',
+          isometrica: 'Isometrica',
+          nonInScala: 'non in scala',
+          colonnaPezzo: 'Pezzo',
+          colonnaMateriale: 'Materiale',
+          colonnaProcesso: 'Processo',
+          colonnaPeso: 'Peso',
+          pesoTotale: 'Peso totale',
+          misure: 'Misure principali',
+          producibilita: 'Producibilità',
+          nessunControllo: 'Nessun controllo',
+          livelli: { blocco: 'Blocco', avviso: 'Avviso', ok: 'Ok', info: 'Nota' },
+          note: 'Note',
+          segue: 'Segue',
+        },
+      }),
+    };
+  });
+  afterAll(() => {
+    deliveryClient.terminate();
+  });
+  const prepareDelivered = async (
+    format: 'step' | 'iges' | 'dxf' | 'pdf' | 'glb',
+    selectedNames?: string[],
+    overrides: Partial<ProjectExportSource> = {},
+  ) =>
+    prepareProjectExport({
+      source: { ...opened.source, delivery, ...overrides },
+      format,
+      selectedNames,
+      signal: new AbortController().signal,
+    });
+
+  it('should verify the STEP by reading it back with SMLib, never calling the OpenCASCADE check', async () => {
+    const verifyStep = vi.fn(opened.source.verifyStep);
+    const result = await prepareDelivered('step', undefined, { verifyStep });
+    expect(result.status).toBe('verified');
+    expect(verifyStep).not.toHaveBeenCalled();
+    if (result.status !== 'verified') {
+      return;
+    }
+    const read = [...(lib.fromStep(result.files[0]!.bytes) as Iterable<{ name: string | null; volume: number }>)];
+    expect(read.map(({ name }) => name).sort()).toEqual(['Ardiglione', 'Telaio · Ottone']);
+    expect(result.measured?.size.map((value) => Math.round(value * 1000) / 1000)).toEqual([40, 20, 5.5]);
+    expect(result.measured?.pieces.map(({ name }) => name)).toEqual(['Telaio', 'Ardiglione']);
+  });
+
+  it('should refuse a STEP whose volume differs from the Measures, naming the piece', async () => {
+    const wrong: ProjectDelivery = {
+      ...delivery,
+      pieces: delivery.pieces.map((piece) => (piece.nome === 'Ardiglione' ? { ...piece, volumeMm3: 100 } : piece)),
+    };
+    expect(await prepareDelivered('step', undefined, { delivery: wrong })).toEqual({
+      status: 'needsFix',
+      problem: 'volume',
+      pieces: ['Ardiglione'],
+    });
+  });
+
+  it('should deliver an IGES of solids converted by OpenCASCADE and read back by SMLib', async () => {
+    const result = await prepareDelivered('iges', ['Telaio']);
+    expect(result).toMatchObject({ status: 'verified', files: [{ name: 'model.iges', mimeType: 'application/iges' }] });
+    if (result.status === 'verified') {
+      expect(new TextDecoder().decode(result.files[0]!.bytes)).toMatch(/^ {5}186 /mu);
+    }
+  });
+
+  it('should write the true-size outline of the flat frame and the views of the whole buckle', async () => {
+    const outline = await prepareDelivered('dxf', ['Telaio']);
+    expect(outline).toMatchObject({ status: 'verified', files: [{ name: 'model.dxf', mimeType: 'application/dxf' }] });
+    if (outline.status === 'verified') {
+      const text = new TextDecoder().decode(outline.files[0]!.bytes);
+      expect(text.match(/\nCIRCLE\r?\n/gu)).toHaveLength(1);
+      expect(text).not.toContain('HIDDEN');
+    }
+    const views = await prepareDelivered('dxf');
+    expect(views.status).toBe('verified');
+    if (views.status === 'verified') {
+      expect(new TextDecoder().decode(views.files[0]!.bytes)).toContain('HIDDEN');
+    }
+  });
+
+  it('should make the PDF sheet from the SMLib drawings, with the version it is given', async () => {
+    const result = await prepareProjectExport({
+      source: { ...opened.source, delivery },
+      format: 'pdf',
+      signal: new AbortController().signal,
+      versionLabel: 'v4',
+    });
+    expect(result).toMatchObject({
+      status: 'ready',
+      files: [{ name: 'Fibbia prova.pdf', mimeType: 'application/pdf' }],
+    });
+    if (result.status === 'ready') {
+      const pdf = await PDFDocument.load(result.files[0]!.bytes);
+      expect(pdf.getPageCount()).toBe(1);
+      expect(pdf.getTitle()).toBe('Tavola tecnica — Fibbia prova');
+    }
+  });
+
+  it('should name each piece’s material in the GLB, with its process in the node extras', async () => {
+    const result = await prepareDelivered('glb');
+    expect(result.status).toBe('ready');
+    if (result.status !== 'ready') {
+      return;
+    }
+    const document = await new WebIO().registerExtensions(allExtensions).readBinary(result.files[0]!.bytes);
+    const ottone = document
+      .getRoot()
+      .listMaterials()
+      .find((material) => material.getName() === 'Ottone');
+    expect(ottone?.getMetallicFactor()).toBe(1);
+    const nodes = document.getRoot().listNodes();
+    const telaio = nodes.find(
+      (node) => (node.getExtras() as { sinopiacad?: { pezzo?: string } }).sinopiacad?.pezzo === 'Telaio',
+    );
+    expect(telaio?.getExtras()).toMatchObject({
+      sinopiacad: { materiale: 'ottone', nomeMateriale: 'Ottone', processo: 'tranciatura_lamiera' },
+    });
+    // The pin has no material picked: it keeps the colour it was modelled with.
+    expect(
+      nodes.some(
+        (node) => (node.getExtras() as { sinopiacad?: { pezzo?: string } }).sinopiacad?.pezzo === 'Ardiglione',
+      ),
+    ).toBe(false);
+  });
+
+  it('should prepare the Sinopia handoff with the sheet, and keep IGES, DXF and PDF away from other kernels', async () => {
+    const files = await prepareSinopiaFiles({
+      source: { ...opened.source, delivery },
+      signal: new AbortController().signal,
+    });
+    expect(files.step.status).toBe('verified');
+    expect(files.pdf).toMatchObject({ status: 'ready', files: [{ mimeType: 'application/pdf' }] });
+    for (const format of ['iges', 'dxf', 'pdf'] as const) {
+      expect(
+        await prepareProjectExport({ source: { ...source, delivery }, format, signal: new AbortController().signal }),
+      ).toEqual({ status: 'needsFix', problem: 'unavailable' });
+    }
   });
 });

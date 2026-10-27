@@ -19,6 +19,7 @@ const hooks = vi.hoisted(() => ({
   readdir: vi.fn(),
   unlink: vi.fn(),
   currentUser: '10000000-0000-4000-8000-000000000001',
+  pieces: [] as unknown[],
 }));
 vi.mock('#hooks/use-project.js', () => ({ useProject: () => ({ projectId: 'local' }) }));
 vi.mock('#hooks/use-file-manager.js', () => ({
@@ -26,7 +27,9 @@ vi.mock('#hooks/use-file-manager.js', () => ({
     recordFiles: { readFile: hooks.read, writeFile: hooks.write, readdir: hooks.readdir, unlink: hooks.unlink },
   }),
 }));
-vi.mock('#hooks/use-project-export.js', () => ({ useProjectExport: () => ({ prepareSinopia: hooks.prepare }) }));
+vi.mock('#hooks/use-project-export.js', () => ({
+  useProjectExport: () => ({ prepareSinopia: hooks.prepare, deliveryPieces: hooks.pieces, deliveryAvailable: false }),
+}));
 vi.mock('#lib/sinopia-data-client.js', () => ({ getSinopiaDataClient: async () => ({ userId: hooks.currentUser }) }));
 vi.mock('#components/ui/sonner.js', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 const owner = '10000000-0000-4000-8000-000000000001';
@@ -42,6 +45,7 @@ const prepared: SinopiaSendFiles = {
   step: { status: 'verified', files: [createExportFile('step', 'model', new Uint8Array([1]))] },
   glb: { status: 'ready', files: [createExportFile('glb', 'model', new Uint8Array([2]))] },
   photo: { status: 'ready', files: [createExportFile('png', 'preview', new Uint8Array([3]))] },
+  pdf: { status: 'needsFix', problem: 'unavailable' },
 };
 const stored = new Map<string, Uint8Array<ArrayBuffer>>();
 let saved: SinopiaSendReceipt | undefined;

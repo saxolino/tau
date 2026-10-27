@@ -6,7 +6,7 @@ import type { SinopiaCadLink } from '#services/sinopia-cad.js';
 import type { prepareSinopiaFiles } from '#services/project-export.js';
 import { isNotFound } from '#db/attachment-store.js';
 
-export type SinopiaSendFormat = 'step' | 'glb' | 'photo';
+export type SinopiaSendFormat = 'step' | 'glb' | 'photo' | 'pdf';
 export type SinopiaSendFiles = Awaited<ReturnType<typeof prepareSinopiaFiles>>;
 export type SinopiaSendReceipt = Readonly<{
   assetId: string;
@@ -24,6 +24,14 @@ type SinopiaSendRecordFiles = {
   readdir(path: string): Promise<string[]>;
 };
 type ReceiptQuery = { link: SinopiaCadLink; projectId: string; assetId: string; signal?: AbortSignal };
+/** What each delivered piece is made of and how (E3a): Sinopia reads it with the CAD model's version. */
+export type SinopiaSendPiece = Readonly<{
+  nome: string;
+  materiale?: Readonly<{ chiave: string; nome: string }>;
+  processo?: string;
+  pesoGrammi?: number;
+  volumeMm3?: number;
+}>;
 type SinopiaSendRequest = {
   link: SinopiaCadLink;
   projectId: string;
@@ -32,6 +40,10 @@ type SinopiaSendRequest = {
   note: string;
   signal: AbortSignal;
   deliveryId: string;
+  /** Material, process and weight of each piece; absent for a model without them. */
+  pieces?: readonly SinopiaSendPiece[];
+  /** The model's own preview in the same project, used as the version's thumbnail when no photo is sent. */
+  fallbackThumbnailPath?: string;
 };
 type SinopiaSender = {
   nextVersion(link: SinopiaCadLink, projectId: string, signal?: AbortSignal): Promise<number>;
@@ -64,6 +76,33 @@ const receiptSchema = z.object({
 const migrationMissing = (error: { code?: string; message?: string }): boolean =>
   error.code === '23514' && /assets_type_check/u.test(error.message ?? '');
 
+/** The file name of each delivered format inside the version's folder. */
+export const deliveryFileName = (format: SinopiaSendFormat): string =>
+  format === 'photo' ? 'preview.png' : format === 'pdf' ? 'tavola.pdf' : `model.${format}`;
+
+/** Only the model's own preview inside the destination project may stand in for the photo. */
+export function sameProjectThumbnail(path: string | undefined, projectId: string, modelId: string): string | undefined {
+  if (!path?.startsWith(`projects/${projectId}/cad/${modelId}/`)) {
+    return undefined;
+  }
+  return path.includes('\\') || path.split('/').some((part) => !part || part === '.' || part === '..')
+    ? undefined
+    : path;
+}
+
+/** The pieces as the asset's metadata stores them (`metadata.pezzi`): snake_case keys, rounded numbers. */
+export function deliveryPieces(pieces: readonly SinopiaSendPiece[]): Array<Record<string, string | number>> {
+  /* eslint-disable @typescript-eslint/naming-convention -- Persisted Sinopia metadata keys. */
+  return pieces.slice(0, 200).map((piece) => ({
+    nome: piece.nome.slice(0, 200),
+    ...(piece.materiale ? { materiale: piece.materiale.chiave, materiale_nome: piece.materiale.nome } : {}),
+    ...(piece.processo === undefined ? {} : { processo: piece.processo }),
+    ...(piece.pesoGrammi === undefined ? {} : { peso_g: Math.round(piece.pesoGrammi * 100) / 100 }),
+    ...(piece.volumeMm3 === undefined ? {} : { volume_mm3: Math.round(piece.volumeMm3 * 1000) / 1000 }),
+  }));
+  /* eslint-enable @typescript-eslint/naming-convention -- Back to the domain's camelCase names. */
+}
+
 /** Validate selected results at the delivery boundary, including exact STEP verification. */
 export function selectedSinopiaFiles(
   prepared: SinopiaSendFiles,
@@ -85,7 +124,8 @@ export function selectedSinopiaFiles(
       !file ||
       file.bytes.length === 0 ||
       (format === 'glb' && file.mimeType !== 'model/gltf-binary') ||
-      (format === 'photo' && file.mimeType !== 'image/png')
+      (format === 'photo' && file.mimeType !== 'image/png') ||
+      (format === 'pdf' && file.mimeType !== 'application/pdf')
     ) {
       throw new SinopiaSendError('files');
     }
@@ -191,6 +231,8 @@ export function createSinopiaSender(getClient = getSinopiaDataClient): SinopiaSe
       note,
       signal,
       deliveryId,
+      pieces,
+      fallbackThumbnailPath,
     }: SinopiaSendRequest): Promise<SinopiaSendReceipt> {
       if (![link.modelId, projectId, link.userId, deliveryId].every((id) => uuid.safeParse(id).success)) {
         throw new SinopiaSendError('destination');
@@ -223,7 +265,7 @@ export function createSinopiaSender(getClient = getSinopiaDataClient): SinopiaSe
         const entries = files.map(({ format, file }) => ({
           format,
           file,
-          path: `${prefix}/${format === 'photo' ? 'preview.png' : `model.${format}`}`,
+          path: `${prefix}/${deliveryFileName(format)}`,
         }));
         try {
           for (const entry of entries) {
@@ -280,7 +322,11 @@ export function createSinopiaSender(getClient = getSinopiaDataClient): SinopiaSe
                 mime_type: entry.file.mimeType,
                 size_bytes: entry.file.bytes.length,
               })),
-              thumbnail_path: entries.find((entry) => entry.format === 'photo')?.path ?? null,
+              thumbnail_path:
+                entries.find((entry) => entry.format === 'photo')?.path ??
+                sameProjectThumbnail(fallbackThumbnailPath, projectId, link.modelId) ??
+                null,
+              ...(pieces && pieces.length > 0 ? { pezzi: deliveryPieces(pieces) } : {}),
             },
           });
           /* eslint-enable @typescript-eslint/naming-convention -- The remaining delivery lifecycle uses domain camelCase names. */
@@ -344,7 +390,7 @@ const pendingSchema = z.object({
   projectId: z.uuid(),
   modelId: z.uuid(),
   userId: z.uuid(),
-  selected: z.array(z.enum(['step', 'glb', 'photo'])).min(1),
+  selected: z.array(z.enum(['step', 'glb', 'photo', 'pdf'])).min(1),
   note: z.string().max(2000),
 });
 export type PendingSinopiaDelivery = z.infer<typeof pendingSchema>;

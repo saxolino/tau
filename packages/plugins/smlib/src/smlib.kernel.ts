@@ -740,26 +740,13 @@ export const smlibKernel = defineKernel({
 type ExportCoordinateSystem = 'y-up' | 'z-up' | undefined;
 
 /**
- * A name as STEP text: smlibwasm writes ASCII only and turns any other character into `?`, so other characters
- * become ISO 10303-21 `\X2\`/`\X4\` directives and a backslash is doubled. Readers decode the original name.
+ * A name as the STEP writer takes it. smlibwasm 0.5 writes names as ISO 10303-21 text itself (`\X2\…\X0\` for
+ * accented letters, `\X4\` beyond the basic plane, a doubled backslash), so the authored name goes as it is: encoding it
+ * here too (as 0.3 needed) wrote the directives literally, and «Pietrina più» came back as `Pietrina pi\X2\00F9\X0\`.
  * @param name - The authored name.
- * @returns ASCII text that reads back as `name`.
+ * @returns The same name.
  */
-const toStepName = (name: string): string => {
-  let text = '';
-  for (const character of name) {
-    const code = character.codePointAt(0)!;
-    if (character === '\\') {
-      text += String.raw`\\`;
-    } else if (code < 0x80) {
-      text += character;
-    } else {
-      const hex = code.toString(16).toUpperCase();
-      text += code > 0xff_ff ? `\\X4\\${hex.padStart(8, '0')}\\X0\\` : `\\X2\\${hex.padStart(4, '0')}\\X0\\`;
-    }
-  }
-  return text;
-};
+const toStepName = (name: string): string => name;
 
 /**
  * A body to export: faces become sheets, and y-up turns the Z-up model about X by −90°.
