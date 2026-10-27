@@ -74,6 +74,8 @@ export const producibilitaMessages = defineMessages({
       SVUOTAMENTO: 'Svuotamento',
       SOLIDO_NON_VALIDO: 'Solido non valido',
       RACCORDO_RIDOTTO: 'Raccordo ridotto',
+      TRATTO_MIN_LOGO: 'Tratto del logo',
+      SFORMO_LOGO: 'Sformo del logo',
     },
     gate: {
       title: 'Prima di esportare',
@@ -156,6 +158,8 @@ export const producibilitaMessages = defineMessages({
       SVUOTAMENTO: 'Hollowing',
       SOLIDO_NON_VALIDO: 'Invalid solid',
       RACCORDO_RIDOTTO: 'Reduced fillet',
+      TRATTO_MIN_LOGO: 'Logo stroke',
+      SFORMO_LOGO: 'Logo draft',
     },
     gate: {
       title: 'Before exporting',

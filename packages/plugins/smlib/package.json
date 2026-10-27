@@ -51,6 +51,7 @@
     "./verifica/worker": "./src/verifica/verifica.worker.ts",
     "./varianti": "./src/varianti/index.ts",
     "./varianti/worker": "./src/varianti/varianti.worker.ts",
+    "./serie": "./src/serie/index.ts",
     "./producibilita": "./src/producibilita/index.ts",
     "./producibilita/worker": "./src/producibilita/producibilita.worker.ts",
     "./consegna": "./src/consegna/index.ts",
@@ -109,6 +110,11 @@
         "types": "./dist/varianti/varianti.worker.d.mts",
         "import": "./dist/varianti/varianti.worker.mjs",
         "default": "./dist/varianti/varianti.worker.mjs"
+      },
+      "./serie": {
+        "types": "./dist/serie/index.d.mts",
+        "import": "./dist/serie/index.mjs",
+        "default": "./dist/serie/index.mjs"
       },
       "./producibilita": {
         "types": "./dist/producibilita/index.d.mts",

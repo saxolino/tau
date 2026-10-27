@@ -3,7 +3,7 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type * as Smlib from '@classcad/smlibwasm';
 import { anello } from '#famiglie/anello.js';
-import { diametroInterno, tagliaDaDiametro } from '#famiglie/taglie-anello.js';
+import { diametroInterno, rigaTaglia, tabellaTaglie, tagliaDaDiametro } from '#famiglie/taglie-anello.js';
 import { valoriDerivati } from '#famiglie/parametri.js';
 import { rileggiStep } from '#famiglie/verifiche-comuni.js';
 import { budgetTarato } from '#famiglie/budget-tempo.js';
@@ -115,5 +115,45 @@ describe('famiglia anello', () => {
     const { tempo, valore: pezzi } = cronometra(() => anello.costruisci(lib, p));
     expect(tempo).toBeLessThan(budgetTarato(lib));
     expect(rileggiStep(lib, pezzi, 'anello').esito.livello).toBe('ok');
+  });
+});
+
+describe('tabella delle taglie degli anelli', () => {
+  it('should match published values in every system', () => {
+    // ISO 8653: la taglia è la circonferenza interna; IT = circonferenza − 40; US 0,8128 mm di diametro per taglia.
+    expect(diametroInterno('eu_iso', 44)).toBeCloseTo(14.01, 2);
+    expect(diametroInterno('eu_iso', 62)).toBeCloseTo(19.74, 2);
+    expect(diametroInterno('it', 8)).toBeCloseTo(15.28, 2);
+    expect(diametroInterno('it', 24)).toBeCloseTo(20.37, 2);
+    for (const [us, pubblicato] of [
+      [5, 15.7],
+      [7, 17.3],
+      [9, 18.9],
+      [10, 19.8],
+    ] as const) {
+      expect(Math.abs(diametroInterno('us', us) - pubblicato)).toBeLessThan(0.1);
+    }
+  });
+
+  it('should list every allowed size of a system, growing, each read in all systems', () => {
+    const italiane = tabellaTaglie('it');
+    expect(italiane).toHaveLength(35);
+    expect(italiane[0]!.valore).toBe(1);
+    expect(italiane.at(-1)!.valore).toBe(35);
+    const us = tabellaTaglie('us');
+    expect(us).toHaveLength(25);
+    expect(us.map(({ valore }) => valore).slice(0, 3)).toEqual([3, 3.5, 4]);
+    for (const tabella of [italiane, us, tabellaTaglie('eu_iso'), tabellaTaglie('diametro')]) {
+      for (const [indice, riga] of tabella.entries()) {
+        if (indice > 0) {
+          expect(riga.diametro).toBeGreaterThan(tabella[indice - 1]!.diametro);
+        }
+        expect(riga.circonferenza).toBeCloseTo(riga.diametro * Math.PI, 6);
+      }
+    }
+    const riga = rigaTaglia('it', 14);
+    expect(riga).toMatchObject({ it: 14, eu_iso: 54 });
+    expect(riga.us).toBe(7);
+    expect(riga.circonferenza).toBeCloseTo(54, 6);
   });
 });

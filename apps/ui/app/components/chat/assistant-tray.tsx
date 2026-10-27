@@ -22,9 +22,11 @@ import type { Language } from '#i18n/language.js';
 import { formatNumber, useTranslation } from '#i18n/translate.js';
 import type { PlainMessageKey, Translate } from '#i18n/translate.js';
 import { chipsAssistente, rigaEsito, rigaModifica, schedaModello } from '#lib/assistant-brief.js';
+import { controlliDaProducibilita } from '#lib/scheda-controlli.js';
 import type { ChipAssistente } from '#lib/assistant-brief.js';
 import type { BloccoVarianti, InsiemeAgente } from '#lib/assistant-variants-marker.js';
 import { groupPieceMeasures, pieceNameKey, readablePieceName } from '#lib/piece-measures.js';
+import { useProducibilita } from '#routes/w.$workspace.$project/producibilita-context.js';
 import { chiudiValutatoreVarianti, prendiValutatoreVarianti } from '#services/varianti-worker.js';
 
 /**
@@ -586,6 +588,8 @@ function useScheda():
   const tray = useAssistantTray();
   const { language } = useTranslation();
   const modello = tray?.modello;
+  // The rows of «Producibilità» come from the inspector's own checks; the worker's answer only feeds the next steps.
+  const producibilita = useProducibilita();
   return useMemo(() => {
     if (!modello || modello.pieces.length === 0) {
       return undefined;
@@ -609,9 +613,13 @@ function useScheda():
       ipotesi: modello.ipotesi,
       language,
     });
-    const controlli = controlliDi(modello, language);
+    const controlli = !famiglia
+      ? undefined
+      : producibilita
+        ? controlliDaProducibilita(producibilita, language)
+        : controlliDi(modello, language);
     return { scheda, ...(controlli ? { controlli } : {}), chips };
-  }, [language, modello]);
+  }, [language, modello, producibilita]);
 }
 
 /**

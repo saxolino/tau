@@ -196,3 +196,17 @@ export const sogliaSformo = (processo: Processo, materiale?: string): number | u
   const soglie = soglieProcessi[processo];
   return (materiale === undefined ? undefined : soglie.sformoPerMateriale[materiale]) ?? soglie.sformoMinimo;
 };
+
+/** Il tratto minimo non scende mai sotto questo (mm): la linea più fine che nessun processo del catalogo tiene. */
+const trattoAssolutoMinimo = 0.3;
+
+/**
+ * Il tratto minimo di un segno in rilievo o in incisione (testo, logo) per processo: un terzo della parete minima
+ * generica del processo, mai sotto 0,3 mm. Dà 0,4 mm in pressofusione (parete 1,2), 0,3 mm in cera persa, in
+ * tranciatura, in CNC e nelle stampe 3D.
+ * @param processo - Processo produttivo.
+ * @returns Millimetri.
+ * @public
+ */
+export const sogliaTratto = (processo: Processo): number =>
+  Math.max(trattoAssolutoMinimo, Math.round((soglieProcessi[processo].pareteMinima / 3) * 100) / 100);

@@ -26,6 +26,7 @@ import { producibilitaMessages } from '#i18n/messages/producibilita.js';
 import { fotoCampioneMessages } from '#i18n/messages/foto-campione.js';
 import { sketchMessages } from '#i18n/messages/sketch.js';
 import { consegnaMessages } from '#i18n/messages/consegna.js';
+import { serieMessages } from '#i18n/messages/serie.js';
 
 /**
  * Every area's messages under its own namespace: `t('project.topBar.versions')`. One area per file in
@@ -60,6 +61,7 @@ export const areas = {
   producibilita: producibilitaMessages,
   sketch: sketchMessages,
   consegna: consegnaMessages,
+  serie: serieMessages,
 } as const;
 
 /** The Italian catalog, the source of every key. */

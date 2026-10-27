@@ -10,6 +10,10 @@ import type { AsseVariante, PropostaVariante } from '#varianti/assi.js';
 import { candidatiCorrezione } from '#varianti/mestiere.js';
 import type { Correzione } from '#varianti/mestiere.js';
 import { scriviParametro } from '#famiglie/parametri.js';
+import { riepilogoSerie } from '#serie/costruzione.js';
+import type { RiepilogoSerie } from '#serie/costruzione.js';
+import { pianoSerie } from '#serie/piano.js';
+import type { RichiestaSerie } from '#serie/piano.js';
 
 /**
  * Le funzioni del worker delle varianti (D4 e D5), esposte da `varianti.worker.ts` e chiamate con `KernelWorker`.
@@ -172,8 +176,13 @@ const ATTENUAZIONI = [0.5, 0.25] as const;
 export function funzioniVarianti(lib: typeof Smlib): {
   controlla: (richiesta: RichiestaControllo) => Promise<ControlloAttuale>;
   proponi: (richiesta: RichiestaVarianti) => Promise<EsitoVarianti>;
+  /** E3b: la tabella riassuntiva di una serie per taglia (misure, volume, peso), nello stesso worker. */
+  serie: (richiesta: RichiestaSerie & Readonly<{ processo?: Processo }>) => Promise<RiepilogoSerie>;
 } {
   return {
+    async serie({ processo, ...richiesta }) {
+      return riepilogoSerie(lib, pianoSerie(richiesta), processo === undefined ? {} : { processo });
+    },
     async controlla(richiesta) {
       const inizio = performance.now();
       const { tutti, immagine: _immagine, inquadratura: _inquadratura, ...controllo } = valuta(lib, richiesta);

@@ -43,7 +43,9 @@ export const famigliaCatalogo = (famiglia: FamigliaQualsiasi): FamigliaCatalogo 
   versione: famiglia.versione,
   varianti: [...famiglia.varianti],
   partTypes: [...famiglia.partTypes],
-  parametri: famiglia.parametri.map((definizione) => parametroCatalogo(definizione)),
+  parametri: famiglia.parametri
+    .filter((definizione) => !definizione.fuoriRiconoscimento)
+    .map((definizione) => parametroCatalogo(definizione)),
 });
 
 /**

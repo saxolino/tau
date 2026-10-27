@@ -1,5 +1,8 @@
 import { KernelWorker } from '@classcad/smlibwasm/worker';
 import type { WorkerLike } from '@classcad/smlibwasm/worker';
+import type { RiepilogoSerie } from '#serie/costruzione.js';
+import type { RichiestaSerie } from '#serie/piano.js';
+import type { Processo } from '#famiglie/famiglia.js';
 import type {
   ControlloAttuale,
   EsitoVarianti,
@@ -17,6 +20,11 @@ import type {
 export type ValutatoreVarianti = {
   controlla: (richiesta: RichiestaControllo, opzioni?: { signal?: AbortSignal }) => Promise<ControlloAttuale>;
   proponi: (richiesta: RichiestaVarianti, opzioni?: { signal?: AbortSignal }) => Promise<EsitoVarianti>;
+  /** E3b: la tabella di una serie per taglia. */
+  serie: (
+    richiesta: RichiestaSerie & Readonly<{ processo?: Processo }>,
+    opzioni?: { signal?: AbortSignal },
+  ) => Promise<RiepilogoSerie>;
   /** Termina il worker se c'è (le richieste in corso finiscono con `AbortError`). */
   chiudi: () => void;
 };
@@ -49,6 +57,9 @@ export function creaValutatoreVarianti(
     },
     async proponi(richiesta, { signal } = {}) {
       return avvia().call('proponi', [richiesta], { timeout: durataMassima, ...(signal ? { signal } : {}) });
+    },
+    async serie(richiesta, { signal } = {}) {
+      return avvia().call('serie', [richiesta], { timeout: durataMassima, ...(signal ? { signal } : {}) });
     },
     chiudi() {
       worker?.terminate();
