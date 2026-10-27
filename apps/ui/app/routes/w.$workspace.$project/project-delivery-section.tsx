@@ -16,6 +16,7 @@ import type { PreparedExport } from '#services/project-export.types.js';
 import type { ProjectExportRows } from '#services/project-export.js';
 import {
   SinopiaConsegnaError,
+  allegatiCadAmmessi,
   chiediPreventivo,
   fornitoriPerTipo,
   isTipoPezzo,
@@ -247,6 +248,14 @@ function QuotePanel({
   });
   const supplier = suppliers.data?.find(({ id }) => id === supplierId);
   const sheet = fileOf(rows.pdf, 'ready');
+  const step = fileOf(rows.step, 'verified');
+  // Fail-closed: the STEP goes with the message only once the inbox admits CAD files.
+  const cadAttachments = useQuery({
+    queryKey: ['sinopia-inbox-cad-attachments', link.userId],
+    queryFn: async () => allegatiCadAmmessi(),
+    retry: false,
+    staleTime: 5 * 60_000,
+  });
   const measured = rows.step?.status === 'verified' ? rows.step.measured : undefined;
 
   const send = async (): Promise<void> => {
@@ -258,31 +267,38 @@ function QuotePanel({
     try {
       const photo = fileOf(await capture(signal), 'ready');
       const amount = Number.parseInt(quantity, 10);
-      const testo = testoPreventivo({
-        progetto: name,
-        tipo: t(`consegna.quote.types.${type}`),
-        quantita: Number.isFinite(amount) && amount > 0 ? amount : undefined,
-        nota: note,
-        pezzi: pieces.map((pezzo) => {
-          const size = measured?.pieces.find((piece) => piece.name === pezzo.nome)?.size;
-          return {
-            nome: pezzo.nome,
-            ...(pezzo.materiale ? { materiale: pezzo.materiale.nome } : {}),
-            ...(pezzo.processo ? { processo: t(`producibilita.processes.${pezzo.processo}`) } : {}),
-            ...(pezzo.pesoGrammi === undefined ? {} : { pesoGrammi: pezzo.pesoGrammi }),
-            ...(size ? { ingombro: size } : {}),
-          };
-        }),
-        misure: [],
-        allegati: [sheet?.name, photo?.name].filter((nome): nome is string => Boolean(nome)),
-        ...(lastVersion === undefined ? {} : { versione: lastVersion }),
-        lingua: language,
-      });
-      const conversation = await chiediPreventivo({
+      // The step file is named after the project, as the supplier will save it.
+      const stepFile = step ? { ...step, name: `${name}.step` } : undefined;
+      const testo = (stepAllegato: boolean): string =>
+        testoPreventivo({
+          progetto: name,
+          tipo: t(`consegna.quote.types.${type}`),
+          quantita: Number.isFinite(amount) && amount > 0 ? amount : undefined,
+          nota: note,
+          pezzi: pieces.map((pezzo) => {
+            const size = measured?.pieces.find((piece) => piece.name === pezzo.nome)?.size;
+            return {
+              nome: pezzo.nome,
+              ...(pezzo.materiale ? { materiale: pezzo.materiale.nome } : {}),
+              ...(pezzo.processo ? { processo: t(`producibilita.processes.${pezzo.processo}`) } : {}),
+              ...(pezzo.pesoGrammi === undefined ? {} : { pesoGrammi: pezzo.pesoGrammi }),
+              ...(size ? { ingombro: size } : {}),
+            };
+          }),
+          misure: [],
+          allegati: [sheet?.name, photo?.name, stepAllegato ? stepFile?.name : undefined].filter(
+            (nome): nome is string => Boolean(nome),
+          ),
+          ...(lastVersion === undefined ? {} : { versione: lastVersion }),
+          stepAllegato,
+          lingua: language,
+        });
+      const { conversazione: conversation } = await chiediPreventivo({
         link,
         fornitoreId: supplier.id,
         testo,
         file: [sheet, photo].filter((file): file is NonNullable<typeof file> => file !== undefined),
+        ...(stepFile ? { step: stepFile } : {}),
         clientId: clientId.current,
         signal,
       });
@@ -405,7 +421,11 @@ function QuotePanel({
           />
         </label>
       </div>
-      <p className='text-xs text-muted-foreground'>{t('consegna.quote.attachments')}</p>
+      <p className='text-xs text-muted-foreground'>
+        {cadAttachments.data === true && step
+          ? t('consegna.quote.attachmentsWithStep')
+          : t('consegna.quote.attachments')}
+      </p>
       <div className='flex flex-wrap items-center justify-end gap-2'>
         <Button variant='ghost' size='sm' className='pointer-coarse:min-h-11' onClick={onDone}>
           {t('consegna.quote.close')}

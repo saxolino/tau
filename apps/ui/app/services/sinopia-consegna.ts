@@ -91,7 +91,7 @@ export class SinopiaConsegnaError extends Error {
   }
 }
 
-type Client = Pick<SupabaseClient, 'from' | 'storage' | 'rpc'>;
+type Client = Pick<SupabaseClient, 'from' | 'storage' | 'rpc' | 'functions'>;
 type Sessione = { client: Client; userId: string };
 type ApriSessione = () => Promise<Sessione>;
 
@@ -99,7 +99,7 @@ const uuid = z.uuid();
 
 /**
  * Whether the Library can hold CAD files: the `file_path` and `glb_path` columns exist (migration
- * `20261027120000_libreria_file_cad.sql`, applied only with Marko's OK). Fail-closed: any error, a missing column or
+ * `20261027140000_libreria_file_cad.sql`, applied only with Marko's OK). Fail-closed: any error, a missing column or
  * no session hides «Salva in Libreria».
  *
  * @param apri - The admitted session.
@@ -409,8 +409,33 @@ export type DatiPreventivo = Readonly<{
   allegati: readonly string[];
   /** The Sinopia delivery the STEP and GLB are in, when the model was sent. */
   versione?: number;
+  /** The verified STEP travels with the message (the inbox admits CAD files and the server checked it). */
+  stepAllegato?: boolean;
   lingua: 'it' | 'en';
 }>;
+
+/** What the message says of the 3D files: the attached STEP, or where STEP and GLB are. */
+const righeFile = ({ lingua, versione, stepAllegato }: DatiPreventivo): string => {
+  const it = lingua === 'it';
+  if (stepAllegato) {
+    if (versione === undefined) {
+      return it
+        ? 'Lo STEP allegato è quello verificato da SinopiaCAD (riletto prima dell’invio). Il GLB su richiesta.'
+        : 'The attached STEP is the one SinopiaCAD verified (read back before sending). GLB on request.';
+    }
+    return it
+      ? `Lo STEP allegato è quello verificato da SinopiaCAD; il GLB è nella versione ${String(versione)} del CAD nel progetto Sinopia.`
+      : `The attached STEP is the one SinopiaCAD verified; the GLB is version ${String(versione)} of the CAD in the Sinopia project.`;
+  }
+  if (versione === undefined) {
+    return it
+      ? 'STEP e GLB su richiesta, esportati da SinopiaCAD.'
+      : 'STEP and GLB on request, exported from SinopiaCAD.';
+  }
+  return it
+    ? `STEP e GLB nella versione ${String(versione)} del CAD nel progetto Sinopia: te li giro qui se ti servono.`
+    : `STEP and GLB are version ${String(versione)} of the CAD in the Sinopia project: I can forward them here.`;
+};
 
 /**
  * The first message of the quote request: what the part is, of what, how big and heavy, how many, which files.
@@ -446,13 +471,7 @@ export function testoPreventivo(dati: DatiPreventivo): string {
       : []),
     '',
     it ? `Allegati: ${dati.allegati.join(', ')}.` : `Attached: ${dati.allegati.join(', ')}.`,
-    dati.versione === undefined
-      ? it
-        ? 'STEP e GLB su richiesta, esportati da SinopiaCAD.'
-        : 'STEP and GLB on request, exported from SinopiaCAD.'
-      : it
-        ? `STEP e GLB nella versione ${String(dati.versione)} del CAD nel progetto Sinopia: te li giro qui se ti servono.`
-        : `STEP and GLB are version ${String(dati.versione)} of the CAD in the Sinopia project: I can forward them here.`,
+    righeFile(dati),
     ...(dati.nota.trim() ? ['', dati.nota.trim()] : []),
   ];
   return righe.join('\n').slice(0, 4000);
@@ -461,8 +480,11 @@ export function testoPreventivo(dati: DatiPreventivo): string {
 /** A file attached to a network message, as `send_contextual_network_message` stores it. */
 export type AllegatoRete = Readonly<{ path: string; name: string; type: string; size_bytes: number }>;
 
-/** The network reference formats (`network-references` bucket): images and PDF, 10 MB, five per message. */
-const mimeAllegati = new Set(['image/png', 'image/jpeg', 'image/webp', 'application/pdf']);
+/**
+ * The network reference formats (`network-references` bucket): images and PDF, 10 MB, five per message; the STEP once
+ * the inbox admits CAD files (migration `20261027150000_posta_allegati_cad.sql`) and the server has read it.
+ */
+const mimeAllegati = new Set(['image/png', 'image/jpeg', 'image/webp', 'application/pdf', 'application/step']);
 const pesoMassimoAllegato = 10_485_760;
 
 /**
@@ -477,7 +499,6 @@ export function chiamatePreventivo(
     userId: string;
     fornitoreId: string;
     progettoId: string;
-    testo: string;
     file: readonly ExportFile[];
     clientId: string;
     idFile: () => string;
@@ -485,7 +506,10 @@ export function chiamatePreventivo(
 ): {
   avvia: { p_expected_actor: string; p_other: string };
   allegati: Array<{ allegato: AllegatoRete; file: ExportFile }>;
-  invia: (conversazione: string) => {
+  invia: (
+    conversazione: string,
+    messaggio: Readonly<{ testo: string; allegati: readonly AllegatoRete[] }>,
+  ) => {
     p_expected_actor: string;
     p_conversation: string;
     p_client_id: string;
@@ -514,42 +538,64 @@ export function chiamatePreventivo(
       },
     };
   });
-  const testo = input.testo.trim().slice(0, 10_000);
-  if (!testo) {
-    throw new SinopiaConsegnaError('files');
-  }
   return {
     avvia: { p_expected_actor: input.userId, p_other: input.fornitoreId },
     allegati,
-    invia: (conversazione) => ({
-      p_expected_actor: input.userId,
-      p_conversation: conversazione,
-      p_client_id: input.clientId,
-      p_content: testo,
-      p_context: { source_project_id: input.progettoId },
-      p_attachments: allegati.map(({ allegato }) => allegato),
-    }),
+    invia: (conversazione, messaggio) => {
+      const testo = messaggio.testo.trim().slice(0, 10_000);
+      if (!testo) {
+        throw new SinopiaConsegnaError('files');
+      }
+      return {
+        p_expected_actor: input.userId,
+        p_conversation: conversazione,
+        p_client_id: input.clientId,
+        p_content: testo,
+        p_context: { source_project_id: input.progettoId },
+        p_attachments: [...messaggio.allegati],
+      };
+    },
   };
 }
 
 /**
- * «Chiedi preventivo»: the existing Sinopia path to a supplier (single inbox), with the sheet and photo attached.
+ * Whether the inbox admits CAD files: the probe of migration `20261027150000_posta_allegati_cad.sql` answers `true`.
+ * Fail-closed: a missing function, any error or no session means «no».
  *
- * @param input - Link (account and project), supplier, text, files.
  * @param apri - The admitted session.
- * @returns The conversation to open in Sinopia.
+ * @returns True only when the probe answers.
+ */
+export async function allegatiCadAmmessi(apri: ApriSessione = getSinopiaDataClient): Promise<boolean> {
+  try {
+    const { client } = await apri();
+    const risposta: { data: unknown; error: unknown } = await client.rpc('network_cad_attachments_enabled');
+    return risposta.error === null && risposta.data === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * «Chiedi preventivo»: the existing Sinopia path to a supplier (single inbox), with the sheet and photo attached, and
+ * the verified STEP when the inbox admits CAD files and the server's check (`verifica-allegato-cad`) reads it as a
+ * STEP. Without either, the message goes as before and says where the STEP is.
+ *
+ * @param input - Link (account and project), supplier, the text for «STEP attached» or not, files, the STEP.
+ * @param apri - The admitted session.
+ * @returns The conversation to open in Sinopia, and whether the STEP went with the message.
  */
 export async function chiediPreventivo(
   input: Readonly<{
     link: SinopiaCadLink;
     fornitoreId: string;
-    testo: string;
+    testo: (stepAllegato: boolean) => string;
     file: readonly ExportFile[];
+    step?: ExportFile;
     clientId: string;
     signal?: AbortSignal;
   }>,
   apri: ApriSessione = getSinopiaDataClient,
-): Promise<string> {
+): Promise<{ conversazione: string; stepAllegato: boolean }> {
   let sessione: Sessione;
   try {
     sessione = await apri();
@@ -560,12 +606,18 @@ export async function chiediPreventivo(
     throw new SinopiaConsegnaError('session');
   }
   const { client, userId } = sessione;
+  const step =
+    input.step?.mimeType === 'application/step' &&
+    input.step.bytes.length > 0 &&
+    input.step.bytes.length <= pesoMassimoAllegato &&
+    (await allegatiCadAmmessi(async () => sessione))
+      ? input.step
+      : undefined;
   const chiamate = chiamatePreventivo({
     userId,
     fornitoreId: input.fornitoreId,
     progettoId: input.link.projectId,
-    testo: input.testo,
-    file: input.file,
+    file: [...input.file, ...(step ? [step] : [])],
     clientId: input.clientId,
     idFile: randomUuid,
   });
@@ -575,6 +627,8 @@ export async function chiediPreventivo(
     throw new SinopiaConsegnaError('destination');
   }
   const caricati: string[] = [];
+  const inclusi: AllegatoRete[] = [];
+  let stepAllegato = false;
   let inviato = false;
   try {
     for (const { allegato, file } of chiamate.allegati) {
@@ -589,20 +643,37 @@ export async function chiediPreventivo(
         throw new SinopiaConsegnaError('failed');
       }
       caricati.push(allegato.path);
+      if (file === step) {
+        // The server reads the file before a message may carry it; a refused STEP stays out of the message.
+        // oxlint-disable-next-line no-await-in-loop -- The check belongs to this upload.
+        const verifica = await client.functions.invoke('verifica-allegato-cad', { body: { path: allegato.path } });
+        stepAllegato = verifica.error === null;
+        if (!stepAllegato) {
+          continue;
+        }
+      }
+      inclusi.push(allegato);
     }
     await requireSinopiaUser(userId);
-    const { error } = await client.rpc('send_contextual_network_message', chiamate.invia(conversazione.data));
+    const { error } = await client.rpc(
+      'send_contextual_network_message',
+      chiamate.invia(conversazione.data, { testo: input.testo(stepAllegato), allegati: inclusi }),
+    );
     if (error) {
       throw new SinopiaConsegnaError('failed');
     }
     inviato = true;
-    return conversazione.data;
+    return { conversazione: conversazione.data, stepAllegato };
   } catch (error) {
     throw error instanceof SinopiaConsegnaError ? error : new SinopiaConsegnaError('failed');
   } finally {
-    if (!inviato && caricati.length > 0) {
+    // Files the message does not carry go: all of them when it was not sent, a refused STEP when it was.
+    const daTogliere = inviato
+      ? caricati.filter((path) => !inclusi.some((allegato) => allegato.path === path))
+      : caricati;
+    if (daTogliere.length > 0) {
       try {
-        await client.storage.from('network-references').remove(caricati);
+        await client.storage.from('network-references').remove(daTogliere);
       } catch {
         console.error('[sinopia-consegna] unused message references need cleanup');
       }

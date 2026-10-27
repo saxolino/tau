@@ -34,6 +34,7 @@ vi.mock('#services/sinopia-consegna.js', async (importOriginal) => ({
   salvaInLibreria: state.save,
   chiediPreventivo: state.quote,
   fornitoriPerTipo: state.suppliers,
+  allegatiCadAmmessi: async () => true,
 }));
 
 const link: SinopiaCadLink = {
@@ -93,7 +94,7 @@ beforeEach(() => {
   state.link = link;
   state.columns = true;
   state.save.mockResolvedValue('70000000-0000-4000-8000-000000000007');
-  state.quote.mockResolvedValue('60000000-0000-4000-8000-000000000006');
+  state.quote.mockResolvedValue({ conversazione: '60000000-0000-4000-8000-000000000006', stepAllegato: true });
   state.suppliers.mockResolvedValue([
     {
       id: '50000000-0000-4000-8000-000000000005',
@@ -153,13 +154,21 @@ describe('Consegna inside Esporta (E3a)', () => {
     await waitFor(() => {
       expect(state.quote).toHaveBeenCalledOnce();
     });
-    const [request] = state.quote.mock.calls[0] as [{ fornitoreId: string; testo: string; file: unknown[] }];
+    const [request] = state.quote.mock.calls[0] as [
+      { fornitoreId: string; testo: (stepAllegato: boolean) => string; file: unknown[]; step?: { name: string } },
+    ];
     expect(request.fornitoreId).toBe('50000000-0000-4000-8000-000000000005');
     expect(request.file).toEqual([sheet, photo]);
-    expect(request.testo).toContain('Richiesta di preventivo · Fibbia · progetto «Fibbia Riviera»');
-    expect(request.testo).toContain('Quantità: 500 pz');
-    expect(request.testo).toContain('· Telaio — Ottone — Tranciatura lamiera — 44 × 32 × 3 mm — 10,2 g');
-    expect(request.testo).toContain('versione 3');
+    // The verified STEP goes along, named after the project; the text says whether it travelled.
+    expect(request.step).toMatchObject({ name: 'Fibbia Riviera.step', mimeType: 'application/step' });
+    const senza = request.testo(false);
+    expect(senza).toContain('Richiesta di preventivo · Fibbia · progetto «Fibbia Riviera»');
+    expect(senza).toContain('Quantità: 500 pz');
+    expect(senza).toContain('· Telaio — Ottone — Tranciatura lamiera — 44 × 32 × 3 mm — 10,2 g');
+    expect(senza).toContain('STEP e GLB nella versione 3');
+    const con = request.testo(true);
+    expect(con).toContain('Allegati: Fibbia.pdf, preview.png, Fibbia Riviera.step.');
+    expect(con).toContain('Lo STEP allegato è quello verificato da SinopiaCAD');
   });
 
   it('should hide «Salva in Libreria» without the Library columns and say how to link an unlinked model', async () => {

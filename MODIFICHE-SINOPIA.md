@@ -959,3 +959,26 @@ Blocchi C1, C2, C5 e D4 del piano di Claude (`PIANO-CLAUDE-2026-10-26.md`), dall
   (`metadata.pezzi`) e la miniatura del modello quando la foto non si invia (`apps/ui/app/services/sinopia-send.ts`,
   `send-to-sinopia-dialog.tsx`); «Salva in Libreria» e «Chiedi preventivo» in
   `apps/ui/app/services/sinopia-consegna.ts`. Testi in `apps/ui/app/i18n/messages/{consegna,export,sinopia-send}.ts`.
+
+## 27 ottobre 2026 — OpenCASCADE solo per l'IGES, con l'avviso di licenza; STEP allegato a «Chiedi preventivo»
+
+- **Scrivere l'IGES senza OpenCASCADE non si può oggi.** smlibwasm 0.5 e smlibpy 0.5 (Apache-2.0/MIT) leggono l'IGES
+  ma non lo scrivono: l'elenco dei formati di `exporters` dice «IGES … read», e il nucleo ha solo scrittori interni di
+  NLib non esposti. Nel repository le altre librerie IGES sono build di OpenCASCADE (`libcascade`,
+  `replicad-opencascadejs`, `occt-import-js`). L'IGES resta quindi su OpenCASCADE.
+- **Come lo si usa.** Il modulo è `libcascade` 3.1.0 da npm, non costruito in questo repository: licenza
+  `LGPL-2.1-only WITH Open-CASCADE-Exception-1.0`, costruito da `taucad/opencascade.js` (commit 341fa789…) su OCCT
+  (commit b8f597c6…) con emscripten 6.0.5, come dice il suo `opencascade_single.provenance.json`. Nella build il glue
+  (`opencascade_single.js`) e il WebAssembly (`opencascade_single.wasm`) escono come file a parte, identici byte per
+  byte a quelli del pacchetto (SHA-256 confrontati su una build di produzione), caricati per URL dal worker usa e getta
+  `apps/ui/app/workers/project-export.worker.ts` (6,5 KB): non modificati e sostituibili. In Esporta la riga IGES ora
+  si prepara solo a richiesta («Prepara IGES»), quindi aprire Esporta non carica OpenCASCADE
+  (`routes/w.$workspace.$project/project-export-dialog-view.tsx`, `i18n/messages/export.ts`). I motori OpenCASCADE e
+  Replicad di Tau e l'import BREP restano come in Tau.
+- **Avviso.** «Informazioni» ha la sezione «Componenti di terzi» con l'avviso Open CASCADE (eccezione LGPL), i link
+  al sorgente di OCCT e del modulo ai commit della build, alla LGPL 2.1 e all'eccezione, più SMLib e pdf-lib
+  (`apps/ui/app/components/nav/about-sinopiacad.tsx`, `i18n/messages/shell.ts`).
+- **STEP nella posta.** «Chiedi preventivo» allega lo STEP verificato quando la posta di Sinopia ammette i file CAD
+  (`network_cad_attachments_enabled`, rilevamento fail-closed) e il server ne ha letto il contenuto
+  (`verifica-allegato-cad`); altrimenti il messaggio di prima (`apps/ui/app/services/sinopia-consegna.ts`,
+  `routes/w.$workspace.$project/project-delivery-section.tsx`, `i18n/messages/consegna.ts`).

@@ -36,7 +36,9 @@ const tavola: ExportFile = { name: 'Fibbia.pdf', bytes: new Uint8Array([37, 80, 
 type Request = { url: URL; method: string; body: string };
 
 /** A real supabase-js client over an in-memory transport: no network, no database. */
-function fixture(options: { columns?: boolean; failInsert?: boolean; failSend?: boolean } = {}) {
+function fixture(
+  options: { columns?: boolean; failInsert?: boolean; failSend?: boolean; cadInbox?: boolean; stepCheck?: number } = {},
+) {
   const requests: Request[] = [];
   const response = (data: unknown, status = 200): Response =>
     new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json' } });
@@ -83,6 +85,17 @@ function fixture(options: { columns?: boolean; failInsert?: boolean; failSend?: 
     }
     if (url.pathname === '/rest/v1/rpc/start_network_conversation') {
       return response(conversation);
+    }
+    if (url.pathname === '/rest/v1/rpc/network_cad_attachments_enabled') {
+      return options.cadInbox
+        ? response(true)
+        : response({ code: 'PGRST202', message: 'Could not find the function' }, 404);
+    }
+    if (url.pathname === '/functions/v1/verifica-allegato-cad') {
+      const status = options.stepCheck ?? 200;
+      return status === 200
+        ? response({ kind: 'step' })
+        : response({ error: 'Content does not match its type' }, status);
     }
     if (url.pathname === '/rest/v1/rpc/send_contextual_network_message') {
       return options.failSend ? response({ code: 'P0001', message: 'Invalid message' }, 400) : response({ id: 'm' });
@@ -330,7 +343,6 @@ describe('Chiedi preventivo', () => {
       userId: owner,
       fornitoreId: supplier,
       progettoId: projectId,
-      testo: ' Richiesta ',
       file: [tavola, foto],
       clientId: '80000000-0000-4000-8000-000000000008',
       idFile: () => `90000000-0000-4000-8000-00000000000${String(++next)}`,
@@ -345,7 +357,12 @@ describe('Chiedi preventivo', () => {
       },
       { path: `${owner}/90000000-0000-4000-8000-000000000002`, name: 'preview.png', type: 'image/png', size_bytes: 4 },
     ]);
-    expect(chiamate.invia(conversation)).toEqual({
+    expect(
+      chiamate.invia(conversation, {
+        testo: ' Richiesta ',
+        allegati: chiamate.allegati.map(({ allegato }) => allegato),
+      }),
+    ).toEqual({
       p_expected_actor: owner,
       p_conversation: conversation,
       p_client_id: '80000000-0000-4000-8000-000000000008',
@@ -353,14 +370,14 @@ describe('Chiedi preventivo', () => {
       p_context: { source_project_id: projectId },
       p_attachments: chiamate.allegati.map(({ allegato }) => allegato),
     });
-    // The inbox takes images and PDF only, and never a message to oneself.
+    expect(() => chiamate.invia(conversation, { testo: '  ', allegati: [] })).toThrow(SinopiaConsegnaError);
+    // The inbox takes images, PDF and the STEP (once admitted), nothing else, and never a message to oneself.
     expect(() =>
       chiamatePreventivo({
         userId: owner,
         fornitoreId: supplier,
         progettoId: projectId,
-        testo: 'x',
-        file: [step],
+        file: [glb],
         clientId: '80000000-0000-4000-8000-000000000008',
         idFile: () => '90000000-0000-4000-8000-000000000001',
       }),
@@ -370,7 +387,6 @@ describe('Chiedi preventivo', () => {
         userId: owner,
         fornitoreId: owner,
         progettoId: projectId,
-        testo: 'x',
         file: [],
         clientId: '80000000-0000-4000-8000-000000000008',
         idFile: () => '90000000-0000-4000-8000-000000000001',
@@ -380,28 +396,92 @@ describe('Chiedi preventivo', () => {
 
   it('should start the conversation, upload the references, send the message and return the conversation', async () => {
     const test = fixture();
-    const id = await chiediPreventivo(
+    const esito = await chiediPreventivo(
       {
         link,
         fornitoreId: supplier,
-        testo: 'Richiesta',
+        testo: (conStep) => (conStep ? 'Con STEP' : 'Richiesta'),
         file: [tavola, foto],
+        step,
         clientId: '80000000-0000-4000-8000-000000000008',
       },
       test.apri,
     );
-    expect(id).toBe(conversation);
+    // Before the migration the probe is missing: no STEP is uploaded and the text says so.
+    expect(esito).toEqual({ conversazione: conversation, stepAllegato: false });
     expect(
       test.requests.map(({ url, method }) => `${method} ${url.pathname.replace(/[\da-f-]{36}/gu, '<id>')}`),
     ).toEqual([
+      'POST /rest/v1/rpc/network_cad_attachments_enabled',
       'POST /rest/v1/rpc/start_network_conversation',
       'POST /storage/v1/object/network-references/<id>/<id>',
       'POST /storage/v1/object/network-references/<id>/<id>',
       'POST /rest/v1/rpc/send_contextual_network_message',
     ]);
-    const sent = JSON.parse(test.requests.at(-1)!.body) as { p_context: unknown; p_attachments: unknown[] };
+    const sent = JSON.parse(test.requests.at(-1)!.body) as {
+      p_context: unknown;
+      p_attachments: unknown[];
+      p_content: string;
+    };
     expect(sent.p_context).toEqual({ source_project_id: projectId });
     expect(sent.p_attachments).toHaveLength(2);
+    expect(sent.p_content).toBe('Richiesta');
+  });
+
+  it('should attach the verified STEP once the inbox admits it and the server has read it', async () => {
+    const test = fixture({ cadInbox: true });
+    const esito = await chiediPreventivo(
+      {
+        link,
+        fornitoreId: supplier,
+        testo: (conStep) => (conStep ? 'Con STEP' : 'Richiesta'),
+        file: [tavola, foto],
+        step: { ...step, name: 'Fibbia Riviera.step' },
+        clientId: '80000000-0000-4000-8000-000000000008',
+      },
+      test.apri,
+    );
+    expect(esito.stepAllegato).toBe(true);
+    const uploads = test.requests.filter(
+      ({ url, method }) => method === 'POST' && url.pathname.startsWith('/storage/'),
+    );
+    expect(uploads).toHaveLength(3);
+    const check = test.requests.find(({ url }) => url.pathname === '/functions/v1/verifica-allegato-cad')!;
+    const stepPath = decodeURIComponent(uploads[2]!.url.pathname).replace('/storage/v1/object/network-references/', '');
+    expect(JSON.parse(check.body)).toEqual({ path: stepPath });
+    const sent = JSON.parse(test.requests.at(-1)!.body) as {
+      p_content: string;
+      p_attachments: Array<{ name: string; type: string; path: string }>;
+    };
+    expect(sent.p_content).toBe('Con STEP');
+    expect(sent.p_attachments.at(-1)).toMatchObject({
+      name: 'Fibbia Riviera.step',
+      type: 'application/step',
+      path: stepPath,
+    });
+  });
+
+  it('should leave out and remove a STEP the server refuses, and still send the request', async () => {
+    const test = fixture({ cadInbox: true, stepCheck: 422 });
+    const esito = await chiediPreventivo(
+      {
+        link,
+        fornitoreId: supplier,
+        testo: (conStep) => (conStep ? 'Con STEP' : 'Richiesta'),
+        file: [tavola, foto],
+        step,
+        clientId: '80000000-0000-4000-8000-000000000008',
+      },
+      test.apri,
+    );
+    expect(esito.stepAllegato).toBe(false);
+    const sent = JSON.parse(
+      test.requests.find(({ url }) => url.pathname === '/rest/v1/rpc/send_contextual_network_message')!.body,
+    ) as { p_content: string; p_attachments: Array<{ type: string }> };
+    expect(sent.p_content).toBe('Richiesta');
+    expect(sent.p_attachments.map(({ type }) => type)).toEqual(['application/pdf', 'image/png']);
+    const removal = test.requests.find(({ method }) => method === 'DELETE')!;
+    expect((JSON.parse(removal.body) as { prefixes: string[] }).prefixes).toHaveLength(1);
   });
 
   it('should remove the uploaded references when the message is refused', async () => {
@@ -411,7 +491,7 @@ describe('Chiedi preventivo', () => {
         {
           link,
           fornitoreId: supplier,
-          testo: 'Richiesta',
+          testo: () => 'Richiesta',
           file: [tavola],
           clientId: '80000000-0000-4000-8000-000000000008',
         },

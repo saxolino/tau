@@ -72,7 +72,7 @@ describe.each<Language>(['it', 'en'])('export dialog in %s', (language) => {
       />,
     );
     await waitFor(() => {
-      expect(prepare).toHaveBeenCalledTimes(7);
+      expect(prepare).toHaveBeenCalledTimes(6);
     });
     for (const format of ['STEP', 'STL', 'GLB']) {
       const row = within(screen.getByRole('region', { name: format }));
@@ -101,7 +101,7 @@ describe.each<Language>(['it', 'en'])('export dialog in %s', (language) => {
     );
     expect(screen.getByRole('dialog', { name: t('export.title', { name: 'Collana' }) })).toBeInTheDocument();
     await waitFor(() => {
-      expect(prepare).toHaveBeenCalledTimes(7);
+      expect(prepare).toHaveBeenCalledTimes(6);
     });
     expect(within(screen.getByRole('region', { name: 'STEP' })).getByRole('status')).toHaveTextContent(
       t('export.verified'),
@@ -216,9 +216,12 @@ describe('delivery rows (E3a)', () => {
         delivery={delivery}
       />,
     );
-    expect(
-      await within(screen.getByRole('region', { name: 'IGES' })).findByText(t('export.verified')),
-    ).toBeInTheDocument();
+    // IGES loads OpenCASCADE: it waits for the click, after the automatic checks.
+    const iges = within(screen.getByRole('region', { name: 'IGES' }));
+    expect(iges.getByRole('status')).toHaveTextContent(t('export.onDemand'));
+    await user.click(iges.getByRole('button', { name: t('export.prepareFormat', { format: 'IGES' }) }));
+    expect(await iges.findByText(t('export.verified'))).toBeInTheDocument();
+    expect(iges.getByRole('button', { name: t('export.download', { format: 'IGES' }) })).toBeEnabled();
     const dxf = within(screen.getByRole('region', { name: 'DXF' }));
     expect(await dxf.findByText(t('export.volumePieces', { names: 'Rametto' }))).toBeInTheDocument();
     expect(dxf.getByRole('button', { name: t('export.download', { format: 'DXF' }) })).toBeDisabled();
@@ -230,6 +233,32 @@ describe('delivery rows (E3a)', () => {
     expect(delivery).toHaveBeenLastCalledWith(
       expect.objectContaining({ selectedNames: undefined, rows: expect.objectContaining({ pdf: results.pdf }) }),
     );
+  });
+  it('should never prepare IGES, the one format that loads OpenCASCADE, until it is asked for', async () => {
+    setLanguage('en');
+    const user = userEvent.setup();
+    const prepare = vi.fn(async (format: ProjectExportFormat) => results[format]);
+    render(
+      <ExportDialogView
+        name='Collana'
+        pieces={pieces}
+        prepare={prepare}
+        capture={capture}
+        onAskAgent={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
+    );
+    await waitFor(() => {
+      expect(prepare).toHaveBeenCalledTimes(6);
+    });
+    expect(prepare.mock.calls.map(([format]) => format)).not.toContain('iges');
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Pieces' }), 'piece:Rametto');
+    const row = within(screen.getByRole('region', { name: 'IGES' }));
+    await user.click(row.getByRole('button', { name: 'Prepare IGES' }));
+    await waitFor(() => {
+      expect(prepare).toHaveBeenCalledWith('iges', ['Rametto'], expect.any(AbortSignal));
+    });
+    expect(prepare.mock.calls.filter(([format]) => format === 'iges')).toHaveLength(1);
   });
   it('should offer only the rows it is given for models the delivery cannot write', async () => {
     setLanguage('en');

@@ -89,9 +89,17 @@ type ExportDialogProps = {
   readonly onOpenChange: (open: boolean) => void;
   /** The rows to offer, in order: IGES, DXF and the PDF sheet only for models the delivery can write. */
   readonly formats?: readonly ProjectExportFormat[];
+  /**
+   * Rows prepared only when asked: IGES needs OpenCASCADE (LGPL), whose WebAssembly module then loads in its own
+   * worker; opening Esporta never loads it.
+   */
+  readonly onDemand?: readonly ProjectExportFormat[];
   /** The delivery to Sinopia (E3a), under the rows: it reads the files the rows prepared for this selection. */
   readonly delivery?: (state: { rows: ProjectExportRows; selectedNames: string[] | undefined }) => React.ReactNode;
 };
+
+/** IGES is prepared at the click: it is the one format that loads OpenCASCADE. */
+const onDemandFormats: readonly ProjectExportFormat[] = ['iges'];
 
 /** Independent results: a successful GLB never grants a STEP verification badge. */
 export function ExportDialogView({
@@ -103,6 +111,7 @@ export function ExportDialogView({
   onAskAgent,
   onOpenChange,
   formats = projectExportFormats,
+  onDemand = onDemandFormats,
   delivery,
 }: ExportDialogProps): React.JSX.Element {
   const { t } = useTranslation();
@@ -115,7 +124,13 @@ export function ExportDialogView({
     rows: ProjectExportRows;
   }>();
   const [downloading, setDownloading] = useState<ProjectExportFormat>();
+  const [requested, setRequested] = useState<{ key: string; formats: readonly ProjectExportFormat[] }>();
   const preparationLifetime = useRef<AbortController | undefined>(undefined);
+  // The automatic checks of this selection: a format asked for later waits for them (exports run one at a time).
+  const automaticRun = useRef<Promise<void>>(Promise.resolve());
+  const requestKey = `${selection}:${String(attempt)}`;
+  const isRequested = (format: ProjectExportFormat): boolean =>
+    requested?.key === requestKey && requested.formats.includes(format);
   const rows: ProjectExportRows =
     prepared?.prepare === prepare && prepared.selection === selection && prepared.attempt === attempt
       ? prepared.rows
@@ -125,7 +140,7 @@ export function ExportDialogView({
     const controller = new AbortController();
     preparationLifetime.current = controller;
     const run = async (): Promise<void> => {
-      for (const format of formats) {
+      for (const format of formats.filter((candidate) => !onDemand.includes(candidate))) {
         if (isAborted(controller.signal)) {
           return;
         }
@@ -146,11 +161,41 @@ export function ExportDialogView({
         }
       }
     };
-    void run();
+    automaticRun.current = run();
     return () => {
       controller.abort();
     };
-  }, [prepare, selection, attempt, formats]);
+  }, [prepare, selection, attempt, formats, onDemand]);
+
+  /** Prepare a row asked for at the click, after the automatic checks of the same selection. */
+  const prepareOnDemand = async (format: ProjectExportFormat): Promise<void> => {
+    const controller = preparationLifetime.current;
+    if (!controller || isAborted(controller.signal)) {
+      return;
+    }
+    setRequested((previous) => ({
+      key: requestKey,
+      formats: [...(previous?.key === requestKey ? previous.formats : []), format],
+    }));
+    await automaticRun.current;
+    if (isAborted(controller.signal)) {
+      return;
+    }
+    const result = await prepare(format, selection === 'all' ? undefined : [selection.slice(6)], controller.signal);
+    if (!isAborted(controller.signal)) {
+      setPrepared((previous) => ({
+        prepare,
+        selection,
+        attempt,
+        rows: {
+          ...(previous?.prepare === prepare && previous.selection === selection && previous.attempt === attempt
+            ? previous.rows
+            : {}),
+          [format]: result,
+        },
+      }));
+    }
+  };
 
   const download = useCallback(
     async (format: ProjectExportFormat): Promise<void> => {
@@ -217,7 +262,8 @@ export function ExportDialogView({
         <div className='divide-y rounded-md border'>
           {formats.map((format) => {
             const result = rows[format];
-            const status = result?.status ?? 'checking';
+            const waiting = result === undefined && onDemand.includes(format) && !isRequested(format);
+            const status = waiting ? 'onDemand' : (result?.status ?? 'checking');
             const openPieces =
               result?.status === 'needsFix' && result.problem === 'invalid' ? result.pieces : undefined;
             const ask = openPieces?.length ? askAgent(t, format, openPieces.join(', ')) : undefined;
@@ -245,18 +291,31 @@ export function ExportDialogView({
                     {status === 'needsFix' ? <CircleAlertIcon aria-hidden className='size-3.5 text-warning' /> : null}
                     {t(`export.${status}`)}
                   </span>
-                  <Button
-                    variant='outline'
-                    size='xs'
-                    aria-busy={downloading === format}
-                    className='pointer-coarse:min-h-11'
-                    disabled={!canDownload(format, result) || downloading !== undefined}
-                    onClick={() => {
-                      void download(format);
-                    }}
-                  >
-                    {downloadLabel(t, format, Boolean(openPieces?.length))}
-                  </Button>
+                  {waiting ? (
+                    <Button
+                      variant='outline'
+                      size='xs'
+                      className='pointer-coarse:min-h-11'
+                      onClick={() => {
+                        void prepareOnDemand(format);
+                      }}
+                    >
+                      {t('export.prepareFormat', { format: label })}
+                    </Button>
+                  ) : (
+                    <Button
+                      variant='outline'
+                      size='xs'
+                      aria-busy={downloading === format}
+                      className='pointer-coarse:min-h-11'
+                      disabled={!canDownload(format, result) || downloading !== undefined}
+                      onClick={() => {
+                        void download(format);
+                      }}
+                    >
+                      {downloadLabel(t, format, Boolean(openPieces?.length))}
+                    </Button>
+                  )}
                 </div>
                 {result?.status === 'needsFix' ? (
                   <div className='col-span-2 flex flex-wrap items-center gap-x-2 gap-y-1'>

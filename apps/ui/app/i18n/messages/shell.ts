@@ -173,6 +173,18 @@ export const shellMessages = defineMessages({
       terms: 'Condizioni d’uso',
       version: 'Versione {version}',
       close: 'Chiudi',
+      thirdParty: {
+        title: 'Componenti di terzi',
+        occt: 'SinopiaCAD usa Open CASCADE Technology per scrivere i file IGES (e nei motori OpenCASCADE e Replicad di Tau), con licenza LGPL 2.1 e l’eccezione Open CASCADE. Il modulo WebAssembly (libcascade 3.1.0: opencascade_single.js e opencascade_single.wasm) si carica a parte solo quando serve, non è modificato e si può sostituire con un’altra build compatibile.',
+        occtSource: 'Sorgente di OpenCASCADE (commit della build)',
+        occtModule: 'Sorgente del modulo WebAssembly (libcascade 3.1.0)',
+        lgpl: 'Licenza LGPL 2.1',
+        occtException: 'Eccezione Open CASCADE',
+        smlib:
+          'SMLib, il motore CAD (smlibwasm 0.5), con licenze MIT e Apache-2.0; pdf-lib per le tavole PDF, con licenza MIT.',
+        smlibSite: 'Documentazione di SMLib',
+        pdfLib: 'Sorgente di pdf-lib',
+      },
     },
     cookies: {
       menuItem: 'Preferenze sui cookie',
@@ -358,6 +370,18 @@ export const shellMessages = defineMessages({
       terms: 'Terms of use',
       version: 'Version {version}',
       close: 'Close',
+      thirdParty: {
+        title: 'Third-party components',
+        occt: 'SinopiaCAD uses Open CASCADE Technology to write IGES files (and in Tau’s OpenCASCADE and Replicad engines), under the LGPL 2.1 with the Open CASCADE exception. The WebAssembly module (libcascade 3.1.0: opencascade_single.js and opencascade_single.wasm) is loaded separately only when needed, is unmodified and can be replaced with another compatible build.',
+        occtSource: 'Open CASCADE source (the build’s commit)',
+        occtModule: 'WebAssembly module source (libcascade 3.1.0)',
+        lgpl: 'LGPL 2.1 licence',
+        occtException: 'Open CASCADE exception',
+        smlib:
+          'SMLib, the CAD engine (smlibwasm 0.5), under the MIT and Apache-2.0 licences; pdf-lib for PDF drawings, under the MIT licence.',
+        smlibSite: 'SMLib documentation',
+        pdfLib: 'pdf-lib source',
+      },
     },
     cookies: {
       menuItem: 'Cookie preferences',

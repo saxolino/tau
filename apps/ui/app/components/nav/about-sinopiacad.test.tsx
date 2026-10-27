@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AboutDialog } from '#components/nav/about-sinopiacad.js';
+import { AboutDialog, occtNotice } from '#components/nav/about-sinopiacad.js';
 import { resetLanguageForTests, setLanguage } from '#i18n/language.js';
 import type { Language } from '#i18n/language.js';
 
@@ -53,6 +53,27 @@ describe.each(['it', 'en'] as const)('AboutDialog in %s', (language) => {
       'href',
       'https://sinopialab.com/beta/condizioni',
     );
+  });
+
+  it('should give the Open CASCADE notice with its licence, exception and the exact sources of the module', () => {
+    setLanguage(language);
+    render(<AboutDialog isOpen onOpenChange={vi.fn()} />);
+    const notice = within(
+      screen.getByRole('region', { name: language === 'it' ? 'Componenti di terzi' : 'Third-party components' }),
+    );
+    expect(notice.getByText(/Open CASCADE Technology.+LGPL 2\.1.+libcascade 3\.1\.0/u)).toBeInTheDocument();
+    const hrefs = notice.getAllByRole('link').map((link) => link.getAttribute('href'));
+    expect(hrefs).toEqual([
+      occtNotice.source,
+      occtNotice.module,
+      occtNotice.lgpl,
+      occtNotice.exception,
+      'https://smlibpy.classcad.ch/docs/javascript',
+      'https://github.com/Hopding/pdf-lib',
+    ]);
+    // The links name the exact build: the OCCT and libcascade commits of the module's provenance file.
+    expect(occtNotice.source).toContain('b8f597c677811d1f9f4d8a97f5ae2825c0353a42');
+    expect(occtNotice.module).toContain('341fa789f49ce73db76a0209d89ae518cc64a52d');
   });
 
   it('should close from its close action', () => {
