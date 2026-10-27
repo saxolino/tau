@@ -49,3 +49,5 @@ export type { ParametriPendente, VariantePendente } from '#famiglie/pendente.js'
 export { puntale } from '#famiglie/puntale.js';
 export type { ParametriPuntale } from '#famiglie/puntale.js';
 export { ovale, ovaleQuattroCentri, estrudiSformato } from '#famiglie/profili.js';
+export { ErroreLogo, leggiLogoSvg, percorsoLogo, svgDaLogo } from '#famiglie/logo-svg.js';
+export type { CodiceErroreLogo, LogoLetto } from '#famiglie/logo-svg.js';
