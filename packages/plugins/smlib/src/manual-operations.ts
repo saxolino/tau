@@ -19,8 +19,78 @@ export type ManualVector = z.infer<typeof vector>;
 /** A uniquely named source piece; never a mesh index. @public */
 export type ManualTarget = z.infer<typeof target>;
 
-const profilePlacement = { plane, origin: vector };
+const frameTolerance = 1e-6;
+/**
+ * The axes of a sketch drawn on a picked planar face: local X along `xDir`, the normal out of the face. Without it a
+ * profile lies on its principal plane; with it `plane` names only the nearest principal plane, for 2D drawings.
+ */
+const profileFrame = z
+  .object({ xDir: direction, normal: direction })
+  .strict()
+  .refine(
+    ({ xDir, normal }) =>
+      Math.abs(xDir[0] * normal[0] + xDir[1] * normal[1] + xDir[2] * normal[2]) <=
+      frameTolerance * Math.hypot(...xDir) * Math.hypot(...normal),
+    'A sketch frame needs an X direction lying in its plane.',
+  );
+const profilePlacement = { plane, origin: vector, frame: profileFrame.optional() };
 const profileCenter = z.object({ x: scalar, y: scalar }).strict();
+const profilePoint = z.object({ x: scalar, y: scalar }).strict();
+/** One piece of a sketched outline: a line, a circular arc through a point, or a spline through points. */
+const pathSegment = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('line'), to: profilePoint }).strict(),
+  z.object({ kind: z.literal('arc'), through: profilePoint, to: profilePoint }).strict(),
+  z.object({ kind: z.literal('spline'), through: z.array(profilePoint).min(1).max(254), to: profilePoint }).strict(),
+]);
+/** A sketched outline segment in profile-local millimetres. @public */
+export type ManualPathSegment = z.infer<typeof pathSegment>;
+
+const pathTolerance = 1e-6;
+const samePoint = (a: ManualProfilePoint, b: ManualProfilePoint): boolean =>
+  Math.hypot(a.x - b.x, a.y - b.y) <= pathTolerance;
+
+/** Distinct consecutive points, arcs that bend, and a closure flag that says what the geometry does. */
+function refineManualPath(
+  profile: Readonly<{ start: ManualProfilePoint; segments: readonly ManualPathSegment[]; closed: boolean }>,
+  context: z.RefinementCtx,
+): void {
+  let from = profile.start;
+  for (const [index, segment] of profile.segments.entries()) {
+    const through = segment.kind === 'line' ? [] : segment.kind === 'arc' ? [segment.through] : segment.through;
+    const points = [from, ...through, segment.to];
+    if (points.some((point, at) => at > 0 && samePoint(point, points[at - 1]!))) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Consecutive sketch points must be distinct.',
+        path: ['segments', index],
+      });
+    }
+    if (segment.kind === 'arc') {
+      const chord = { x: segment.to.x - from.x, y: segment.to.y - from.y };
+      const bend = { x: segment.through.x - from.x, y: segment.through.y - from.y };
+      if (samePoint(from, segment.to) || Math.abs(chord.x * bend.y - chord.y * bend.x) <= pathTolerance) {
+        context.addIssue({
+          code: 'custom',
+          message: 'An arc needs three distinct points that are not on one line.',
+          path: ['segments', index],
+        });
+      }
+    }
+    from = segment.to;
+  }
+  if (samePoint(from, profile.start) !== profile.closed) {
+    context.addIssue({
+      code: 'custom',
+      message: profile.closed
+        ? 'A closed sketch must end where it starts.'
+        : 'An open sketch must not end where it starts; mark it closed.',
+      path: ['closed'],
+    });
+  }
+  if (profile.closed && profile.segments.length === 1 && profile.segments[0]!.kind !== 'spline') {
+    context.addIssue({ code: 'custom', message: 'A closed sketch needs at least two segments.', path: ['segments'] });
+  }
+}
 
 /** Analytic or point-authored profile in the local coordinates of a placed principal plane. @public */
 export const manualProfileSchema = z
@@ -59,9 +129,22 @@ export const manualProfileSchema = z
           ),
       })
       .strict(),
+    z
+      .object({
+        ...profilePlacement,
+        kind: z.literal('path'),
+        start: profilePoint,
+        segments: z.array(pathSegment).min(1).max(256),
+        closed: z.boolean(),
+      })
+      .strict(),
   ])
   .superRefine((profile, context) => {
     if (profile.kind === 'circle' || profile.kind === 'arc') {
+      return;
+    }
+    if (profile.kind === 'path') {
+      refineManualPath(profile, context);
       return;
     }
     if (profile.closed !== false && profile.points.length < 3) {
@@ -197,7 +280,7 @@ export function offsetManualProfile(profile: ManualProfile, distance: number): M
   if (!Number.isFinite(distance) || Math.abs(distance) <= profileTolerance || Math.abs(distance) > 1_000_000) {
     throw new Error('Offset distance must be finite, nonzero and within the model limits.');
   }
-  if (profile.kind === 'spline') {
+  if (profile.kind === 'spline' || profile.kind === 'path') {
     throw new Error('Spline offset is unsupported. Use a line profile, circle or circular arc.');
   }
   if (profile.kind === 'circle' || profile.kind === 'arc') {
@@ -418,6 +501,14 @@ export type ManualFaceInfo = {
   geometry: ManualFaceGeometry;
 };
 
+/** What a profile is swept along: a sketched curve (open or closed), or an exact edge of a named piece. @public */
+export const manualSweepPathSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('sketch'), profile: manualProfileSchema }).strict(),
+  z.object({ kind: z.literal('edge'), piece: target, geometry: manualEdgeGeometrySchema }).strict(),
+]);
+/** A sweep path. @public */
+export type ManualSweepPath = z.infer<typeof manualSweepPathSchema>;
+
 const base = { id: identifier, enabled: z.boolean().optional() };
 const booleanMode = z.enum(['new', 'add', 'cut']);
 const creation = { mode: booleanMode, name: authoredName.optional(), target: target.optional() };
@@ -446,6 +537,37 @@ export const manualOperationSchema = z
         type: z.literal('extrude'),
         profile: manualProfileSchema,
         distance: scalar.refine((value) => Math.abs(value) > 1e-6, 'Extrusion distance must be nonzero.'),
+        /** Draft in degrees: positive narrows the solid away from the sketch. */
+        taper: z
+          .number()
+          .min(-60)
+          .max(60)
+          .refine((value) => Math.abs(value) > 1e-6, 'A draft angle must be nonzero.')
+          .optional(),
+      })
+      .strict(),
+    z
+      .object({
+        ...base,
+        ...creation,
+        type: z.literal('revolve'),
+        profile: manualProfileSchema,
+        /** The axis, in the profile's own millimetres: a sketch line, or a model edge laid on the sketch plane. */
+        axis: z.object({ start: profilePoint, end: profilePoint }).strict(),
+        angle: z
+          .number()
+          .min(-360)
+          .max(360)
+          .refine((value) => Math.abs(value) > 1e-6, 'A revolution needs a nonzero angle.'),
+      })
+      .strict(),
+    z
+      .object({
+        ...base,
+        ...creation,
+        type: z.literal('sweep'),
+        profile: manualProfileSchema,
+        path: manualSweepPathSchema,
       })
       .strict(),
     z
@@ -465,7 +587,7 @@ export const manualOperationSchema = z
       .strict(),
   ])
   .superRefine((operation, context) => {
-    if (operation.type !== 'extrude') {
+    if (operation.type !== 'extrude' && operation.type !== 'revolve' && operation.type !== 'sweep') {
       return;
     }
     if (!isManualProfileClosed(operation.profile)) {
@@ -474,6 +596,12 @@ export const manualOperationSchema = z
         message: 'Extrusion requires a closed profile. Close the profile first.',
         path: ['profile'],
       });
+    }
+    if (
+      operation.type === 'revolve' &&
+      Math.hypot(operation.axis.end.x - operation.axis.start.x, operation.axis.end.y - operation.axis.start.y) <= 1e-6
+    ) {
+      context.addIssue({ code: 'custom', message: 'A revolution axis needs two distinct points.', path: ['axis'] });
     }
     if (operation.mode === 'new' && (!operation.name || operation.target !== undefined)) {
       context.addIssue({ code: 'custom', message: 'A new piece needs a name and no target.' });
