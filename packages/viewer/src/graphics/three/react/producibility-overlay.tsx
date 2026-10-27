@@ -37,8 +37,9 @@ export function ProducibilityOverlayMesh({
   const [meshes, setMeshes] = useState<readonly Mesh[]>([]);
   useEffect(() => {
     if (!scene || !overlay || (overlay.artifactKey !== undefined && overlay.artifactKey !== artifactKey)) {
+      // Keep the same empty list: a new `[]` would re-render the mesh and run this effect again, forever.
       // oxlint-disable-next-line react/set-state-in-effect -- The veil follows the presented scene, read after commit.
-      setMeshes([]);
+      setMeshes((prima) => (prima.length === 0 ? prima : []));
       return undefined;
     }
     const tints = {
