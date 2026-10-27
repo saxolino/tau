@@ -1087,3 +1087,27 @@ collector. Numeri prima e dopo nello studio, sezione «Misura dopo la tassellatu
   `client/runtime-document-session.test.ts`, `types/runtime-document-protocol-payload-shape.test.ts`,
   `packages/plugins/middleware/src/geometry-cache.middleware.test.ts`, `apps/ui/app/machines/cad.machine.test.ts`,
   `apps/ui/app/routes/w.$workspace.$project/chat-parameters.test.tsx`.
+
+## 27 ottobre 2026 — il CAD mentre nasce: «Cantiere» e «Montaggio»
+
+Mentre l'agente costruisce un modello da zero il riquadro 3D non resta vuoto, e i pezzi del primo modello entrano uno
+alla volta. Tutto viene da ciò che il turno porta già (chiamate di strumenti e testo dell'agente): nessuna chiamata in
+più al modello, nessun cambio alle istruzioni, nessuna attesa.
+
+- **Montaggio nel visore.** `packages/viewer/src/graphics/three/react/model-assembly.ts` (nuovo, esportato da
+  `package.json` e costruito da `tsdown.config.ts`): l'host lo arma, il visore lo suona; un primo modello dopo nessuno
+  entra un pezzo alla volta (al massimo 3 s in tutto), poi i nomi restano per un momento e il montaggio finisce.
+  `gltf-mesh.tsx`: offre ogni presentazione al montaggio prima del primo fotogramma, nasconde solo nel disegno i pezzi
+  non ancora entrati (lo stato di interazione li tiene tutti: selezione, misure, conteggi ed export non cambiano),
+  disegna tutto subito se si sceglie un pezzo non entrato e misura dove cade ogni pezzo entrato sul canvas.
+  `cad/cad-viewer.tsx`: passa il montaggio.
+- **Cantiere e nomi dei pezzi nell'app.** `apps/ui/app/lib/cantiere.ts` (nuovo): i passi dell'agente dalle sue
+  chiamate, l'ingombro letto dal suo testo («telaio 38 × 32 mm», «x», virgola decimale, cm) e la regola «montaggio
+  solo al primo modello dell'assistente nel turno». `apps/ui/app/lib/montaggio.ts` (nuovo): nome e misura principale
+  di un pezzo (dai parametri come le Misure, altrimenti dall'ingombro) e posa delle etichette.
+  `apps/ui/app/routes/w.$workspace.$project/viewer-cantiere.tsx` (nuovo): il livello sopra il canvas, senza clic e
+  sotto la barra del riquadro. `chat-viewer.tsx`: un montaggio per riquadro, il livello nel modo editor, un clic sul
+  riquadro durante il montaggio mostra tutto. `apps/ui/app/i18n/messages/cantiere.ts` (nuovo) e `i18n/catalog.ts`.
+- **Test.** `packages/viewer/src/graphics/three/react/model-assembly.test.ts`, `gltf-mesh.assembly.test.tsx`,
+  `apps/ui/app/lib/cantiere.test.ts`, `apps/ui/app/lib/montaggio.test.ts`,
+  `apps/ui/app/routes/w.$workspace.$project/viewer-cantiere.test.tsx` (nuovi).
