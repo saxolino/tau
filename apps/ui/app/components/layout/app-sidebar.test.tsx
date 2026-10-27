@@ -2,7 +2,7 @@ import { resetLanguageForTests, setLanguage } from '#i18n/language.js';
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AppSidebar } from '#components/layout/app-sidebar.js';
+import { AppSidebar, sinopiaDashboardUrl } from '#components/layout/app-sidebar.js';
 import { SidebarProvider } from '#components/ui/sidebar.js';
 import { TooltipProvider } from '@taucad/ui/components/tooltip';
 import { KeyboardProvider } from '@taucad/ui/components/keyboard';
@@ -85,6 +85,34 @@ describe('AppSidebar', () => {
     expect(screen.queryByText('New project')).not.toBeInTheDocument();
   });
 
+  it('should lead back to Sinopia with a path when served under /cad of sinopialab.com', () => {
+    vi.stubEnv('BASE_URL', '/cad/');
+    try {
+      expect(sinopiaDashboardUrl()).toBe('/dashboard');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(sinopiaDashboardUrl()).toBe('https://sinopialab.com/dashboard');
+  });
+
+  it('should lead back to Sinopia’s dashboard with a full navigation, and end with the account card', () => {
+    renderSidebar('/w/home/bracket');
+    const back = screen.getByRole('link', { name: 'Back to Sinopia' });
+    expect(back).toHaveAttribute('href', 'https://sinopialab.com/dashboard');
+    expect(back.closest('[data-slot=sidebar-footer]')).not.toBeNull();
+    expect(screen.getByRole('heading', { name: 'Sinopia' })).toBeInTheDocument();
+    // The footer's last row is the account card.
+    const footer = back.closest('[data-slot=sidebar-footer]');
+    expect(footer?.lastElementChild?.textContent).toContain('Account');
+  });
+
+  it('should name the current page by its row, with the projects row current under /projects too', () => {
+    renderSidebar('/projects/trash');
+    expect(screen.getByRole('link', { name: 'Projects' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('link', { name: 'Home' })).not.toHaveAttribute('aria-current');
+    expect(screen.getByRole('navigation', { name: 'Navigation' })).toBeInTheDocument();
+  });
+
   it('should keep the same frame on every page, the home no longer current elsewhere', () => {
     renderSidebar('/w/home/bracket');
     expect(screen.getByRole('link', { name: 'Home' })).not.toHaveAttribute('aria-current');
@@ -107,7 +135,7 @@ describe('AppSidebar', () => {
   it('uses an Allotment-owned browser pane without duplicate titlebar controls', () => {
     const { container } = renderSidebar();
     const sidebar = screen.getByRole('complementary', { name: 'Application sidebar' });
-    const projectsButton = getNavLink('Projects')?.querySelector('[data-sidebar=menu-button]');
+    const projectsButton = getNavLink('Projects');
 
     expect(sidebar).toHaveAttribute('id', 'app-sidebar');
     expect(sidebar).toHaveClass('w-full', 'border-r');

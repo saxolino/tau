@@ -330,11 +330,72 @@ describe('Chiedi preventivo', () => {
       '· Telaio — Ottone — Tranciatura lamiera — 44 × 32 × 3 mm — 12,3 g',
       '· Ardiglione — Ottone',
       '',
+      'Producibilità (controlli di SinopiaCAD sul solido; soglie di mestiere da confermare con te):',
+      '· Non verificata: i controlli non erano pronti o non descrivevano la versione inviata.',
+      '',
+      'Finitura: non indicata. Tolleranze: non indicate.',
+      '',
       'Allegati: Fibbia.pdf, preview.png.',
       'STEP e GLB nella versione 3 del CAD nel progetto Sinopia: te li giro qui se ti servono.',
       '',
       'Finitura oro galvanico',
     ]);
+  });
+
+  it('should write the complete request: overall size and weight, outcome with warnings, finish and tolerances', () => {
+    const testo = testoPreventivo({
+      progetto: 'Fibbia Riviera',
+      tipo: 'Fibbia',
+      quantita: 500,
+      nota: '',
+      pezzi: [{ nome: 'Telaio', materiale: 'Ottone', processo: 'Tranciatura lamiera', pesoGrammi: 12.34 }],
+      misure: [],
+      ingombroTotale: [44, 32, 3],
+      pesoTotaleGrammi: 12.34,
+      finitura: ' galvanica oro ',
+      tolleranze: '±0,1 mm sul perno',
+      producibilita: {
+        verificata: true,
+        righe: [
+          { livello: 'blocco', testo: 'Telaio: Parete minima — 0,4 mm (soglia 0,8 mm)' },
+          { livello: 'avviso', testo: 'Telaio: Raggio minimo — 0,3 mm (soglia 0,5 mm)' },
+        ],
+      },
+      allegati: ['Fibbia.pdf', 'preview.png', 'Fibbia Riviera.step'],
+      stepAllegato: true,
+      lingua: 'it',
+    });
+    expect(testo.split('\n')).toEqual([
+      'Richiesta di preventivo · Fibbia · progetto «Fibbia Riviera»',
+      'Quantità: 500 pz',
+      '',
+      'Pezzi:',
+      '· Telaio — Ottone — Tranciatura lamiera — 12,3 g',
+      'Insieme: 44 × 32 × 3 mm — 12,3 g',
+      '',
+      'Producibilità (controlli di SinopiaCAD sul solido; soglie di mestiere da confermare con te):',
+      '· 1 blocchi, 1 avvisi.',
+      '  - BLOCCO: Telaio: Parete minima — 0,4 mm (soglia 0,8 mm)',
+      '  - Avviso: Telaio: Raggio minimo — 0,3 mm (soglia 0,5 mm)',
+      '',
+      'Finitura: galvanica oro. Tolleranze: ±0,1 mm sul perno.',
+      '',
+      'Allegati: Fibbia.pdf, preview.png, Fibbia Riviera.step.',
+      'Lo STEP allegato è quello verificato da SinopiaCAD (riletto prima dell’invio). Il GLB su richiesta.',
+    ]);
+    const pulito = testoPreventivo({
+      progetto: 'P',
+      tipo: 'Fibbia',
+      quantita: 10,
+      nota: '',
+      pezzi: [],
+      misure: [],
+      producibilita: { verificata: true, righe: [] },
+      allegati: [],
+      lingua: 'en',
+    });
+    expect(pulito).toContain('No blocks or warnings on the checks run. This is not an approval');
+    expect(pulito).toContain('Finish: not specified. Tolerances: not specified.');
   });
 
   it('should build the existing inbox calls: conversation, references in the account folder, message with the project', () => {

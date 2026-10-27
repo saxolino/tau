@@ -42,6 +42,8 @@ const fake = vi.hoisted(() => {
     linkModel: vi.fn<(input: { localProjectId: string; userId: string; name: string }) => Promise<SinopiaCadLink>>(),
     save: vi.fn(),
     read: vi.fn<() => Promise<SinopiaCadModel | undefined>>(async () => undefined),
+    /** The open-time check of the link against the row found by id + user (the model may have moved project). */
+    reconcile: vi.fn<(files: unknown, root: string, link: SinopiaCadLink) => Promise<SinopiaCadLink>>(),
   };
 });
 vi.mock('@xstate/react', () => ({
@@ -65,6 +67,7 @@ vi.mock('#services/sinopia-cad.js', () => ({
   linkSinopiaCadModel: fake.linkModel,
   sinopiaCadLocalId: { set: vi.fn() },
   getSinopiaCadModel: fake.read,
+  reconcileSinopiaCadLink: fake.reconcile,
   saveSinopiaCadRevision: fake.save,
   patchSinopiaCadThumbnail: fake.save,
   inferSinopiaCadEngine: () => 'smlib',
@@ -86,6 +89,8 @@ beforeEach(() => {
   fake.session.status = 'signed-in';
   fake.stored = fake.link;
   fake.linkModel.mockReset();
+  fake.reconcile.mockReset();
+  fake.reconcile.mockImplementation(async (_files, _root, link) => link);
   fake.link.baseRevisionId = null;
   delete fake.link.localRevisionId;
   fake.save.mockImplementation(async (input: { link: typeof fake.link; revisionId: string }) => ({
@@ -159,6 +164,61 @@ describe('mounted Sinopia autosave lifecycle', () => {
     expect(fake.save).toHaveBeenCalledOnce();
     await flush(5000);
     expect(fake.save).toHaveBeenCalledOnce();
+    view.unmount();
+    client.clear();
+  });
+
+  it('autosaves under the repaired link when the model now lives in another Sinopia project', async () => {
+    const moved = { ...fake.link, projectId: '00000000-0000-4000-8000-000000000009' };
+    fake.reconcile.mockResolvedValue(moved);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+    const view = renderHook(() => useSinopiaCadSync(), { wrapper });
+    await flush();
+    await flush();
+    expect(fake.reconcile).toHaveBeenCalledWith(
+      fake.fileManager.recordFiles,
+      `/projects/${fake.project.projectId}`,
+      fake.link,
+    );
+    expect(view.result.current.link).toEqual(moved);
+    await flush(2000);
+    await flush();
+    expect(fake.save).toHaveBeenCalledOnce();
+    expect(fake.save).toHaveBeenCalledWith(expect.objectContaining({ link: moved }));
+    expect(view.result.current.link?.projectId).toBe(moved.projectId);
+    view.unmount();
+    client.clear();
+  });
+
+  it('keeps the stored link, and its conflict protection, when the link check itself fails', async () => {
+    fake.reconcile.mockRejectedValue(new Error('offline'));
+    fake.link.baseRevisionId = fake.status.headRevisionId;
+    fake.link.localRevisionId = fake.status.headRevisionId;
+    fake.read.mockResolvedValue({
+      id: fake.link.modelId,
+      project_id: fake.link.projectId,
+      user_id: fake.link.userId,
+      name: 'Ring',
+      engine: 'smlib',
+      head_revision_id: 'b'.repeat(40),
+      snapshot_path: 'remote',
+      thumbnail_path: null,
+      snapshot_bytes: 1,
+      updated_at: '2026-10-23T10:00:00Z',
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+    const view = renderHook(() => useSinopiaCadSync(), { wrapper });
+    await flush();
+    await flush();
+    expect(view.result.current.link).toEqual(fake.link);
+    expect(view.result.current.state.kind).toBe('conflict');
+    expect(fake.save).not.toHaveBeenCalled();
     view.unmount();
     client.clear();
   });

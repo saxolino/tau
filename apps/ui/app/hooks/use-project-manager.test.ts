@@ -3276,8 +3276,10 @@ describe('useProjectManager.createProject', () => {
   });
 
   it.each([
-    { generatedName: 'New Project', expectedName: 'New Project', outputKind: 'generic output' },
-    { generatedName: '   ', expectedName: 'New Project', outputKind: 'blank output' },
+    { generatedName: 'New Project', expectedName: 'Nuovo progetto', outputKind: 'generic output' },
+    { generatedName: '   ', expectedName: 'Nuovo progetto', outputKind: 'blank output' },
+    { generatedName: 'Untitled Project', expectedName: 'Nuovo progetto', outputKind: 'English placeholder output' },
+    { generatedName: 'Fibbia 30 mm', expectedName: 'Fibbia 30 mm', outputKind: 'a real name' },
   ])('should create with $expectedName when naming returns $outputKind', async ({ generatedName, expectedName }) => {
     mockGenerateProjectName.mockResolvedValueOnce(generatedName);
     const { result } = renderHook(() => useProjectManager(), { wrapper: createWrapper() });
@@ -3309,7 +3311,7 @@ describe('useProjectManager.createProject', () => {
     );
 
     const prepared = mockPrepareProjectCreation.mock.calls.at(-1)?.[0];
-    expect(prepared?.manifest.name).toBe('New Project');
+    expect(prepared?.manifest.name).toBe('Nuovo progetto');
     expect(mockCommitPendingProjectDirectory).toHaveBeenCalledOnce();
   });
 

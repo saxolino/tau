@@ -113,6 +113,15 @@ vi.mock('#components/chat/new-project-chat-composer.js', () => ({
     );
   },
 }));
+vi.mock('#routes/_index/home-hero-example.js', () => ({
+  HomeHeroExample: ({ onTryExample }: { readonly onTryExample: () => void }) => (
+    <figure>
+      <button type='button' onClick={onTryExample}>
+        Prova questo esempio
+      </button>
+    </figure>
+  ),
+}));
 vi.mock('#routes/_index/home-recent-projects.js', () => ({
   HomeRecentProjects: () => (
     <section aria-label='I tuoi progetti'>
@@ -407,6 +416,28 @@ describe('SinopiaHome', () => {
         .getAllByRole('img')
         .map((image) => image.getAttribute('alt')),
     ).toEqual(['Immagine allegata', 'Immagine allegata']);
+  });
+
+  it('offers words as the third way in: the lane opens and its composer takes focus', async () => {
+    rememberAgentLaneOpen(false);
+    renderHome();
+    expect(screen.queryByRole('complementary', { name: 'Agente' })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Descrivi all’assistente' }));
+    expect(agentLane()).toBeInTheDocument();
+    await waitFor(() => {
+      expect(focusComposer).toHaveBeenCalled();
+    });
+    expect(submitProject).not.toHaveBeenCalled();
+  });
+
+  it('puts the hero’s example (the assistant’s buckle) into the draft when it is tried', async () => {
+    renderHome();
+    await userEvent.click(screen.getByRole('button', { name: 'Prova questo esempio' }));
+    expect(setDraftText).toHaveBeenLastCalledWith('Una fibbia 30 mm per cinturino');
+    await waitFor(() => {
+      expect(focusComposer).toHaveBeenCalled();
+    });
+    expect(submitProject).not.toHaveBeenCalled();
   });
 
   it('hides and shows the lane with its toggle and ⌃C, remembering the choice', async () => {

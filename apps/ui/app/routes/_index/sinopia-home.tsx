@@ -18,13 +18,16 @@ import {
 } from '#routes/w.$workspace.$project/agent-lane-toggle-button.js';
 import { HomeAgentLane } from '#routes/_index/home-agent-lane.js';
 import { useNewProjectSubmit } from '#components/chat/use-new-project-submit.js';
-import { useDraftSelector } from '#hooks/use-chat.js';
+import { useDraftActions, useDraftSelector } from '#hooks/use-chat.js';
+import { HomeHero } from '#routes/_index/home-hero.js';
+import { HomeHeroExample } from '#routes/_index/home-hero-example.js';
 import { HomeImageDropZone } from '#routes/_index/home-image-drop-zone.js';
 import { HomeRecentProjects } from '#routes/_index/home-recent-projects.js';
 import { useHomeImageIntake } from '#routes/_index/use-home-image-intake.js';
 
 import { SinopiaProjectStrip } from '#routes/_index/sinopia-project-strip.js';
 import { OpenSinopiaModelFromLink, useSinopiaEntryLink } from '#routes/_index/sinopia-entry-link.js';
+import { rememberSampleSectionRequest } from '#lib/sinopia-section-request.js';
 import type { SinopiaReferenceSelection } from '#services/sinopia-references.js';
 
 const hasFiles = (dataTransfer: DataTransfer): boolean => dataTransfer.types.includes('Files');
@@ -53,13 +56,25 @@ function HomeSurface(): React.JSX.Element {
   // Sinopia's «Apri nel CAD» links: `?project=<id>` and `?model=<id>`.
   const entry = useSinopiaEntryLink();
   const { consume } = entry;
+  /* The project of Sinopia's «Apri nel CAD» outlives its address parameter (the strip consumes it): a model started
+     here from the chat belongs to that project, not to a new one. */
+  const [originProjectId, setOriginProjectId] = useState<string>();
+  if (entry.projectId !== undefined && entry.projectId.toLowerCase() !== originProjectId) {
+    setOriginProjectId(entry.projectId.toLowerCase());
+  }
+  // «Fai lo shooting» without a sample photo: the model opens on its photo section.
+  useEffect(() => {
+    if (entry.modelId !== undefined && entry.section === 'foto') {
+      rememberSampleSectionRequest(entry.modelId.toLowerCase());
+    }
+  }, [entry.modelId, entry.section]);
   const spendProjectLink = useCallback((): void => {
     consume('project');
   }, [consume]);
   const spendModelLink = useCallback((): void => {
     consume('model');
   }, [consume]);
-  const { onSubmit, isSubmitting, rememberReferences } = useNewProjectSubmit(false, references);
+  const { onSubmit, isSubmitting, rememberReferences } = useNewProjectSubmit(false, references, originProjectId);
   const {
     model: { model },
     execution: { execution },
@@ -98,6 +113,19 @@ function HomeSurface(): React.JSX.Element {
     void submitHome({ content: draftText.trim() || t('home.dropZone.buildPrompt'), attachments: [] });
   };
   const composerRef = useRef<ChatTextareaHandle>(null);
+  const { setDraftText } = useDraftActions();
+  // The third way in: words. The lane opens and its composer takes focus (a closed lane mounts it with autofocus).
+  const describe = useCallback((): void => {
+    setLaneOpen(true);
+    requestAnimationFrame(() => {
+      composerRef.current?.focus();
+    });
+  }, [setLaneOpen]);
+  // The hero's example is the assistant's own buckle proposal: trying it puts those words in the composer.
+  const tryExample = useCallback((): void => {
+    setDraftText(t('home.agentLane.buckle'));
+    describe();
+  }, [describe, setDraftText, t]);
   const { addImages } = useHomeImageIntake();
   const [isDragging, setIsDragging] = useState(false);
   const dragDepth = useRef(0);
@@ -229,19 +257,25 @@ function HomeSurface(): React.JSX.Element {
           </div>
         )}
         <div className='mx-auto flex w-full max-w-6xl flex-col px-6 pb-6 lg:px-8'>
-          <HomeImageDropZone
-            onChooseSinopia={() => {
-              setSinopiaPickerOpen(true);
-            }}
-            isDragging={isDragging}
-            measure={measure}
-            onMeasureChange={setMeasure}
-            onBuild={build}
-            isSubmitting={isSubmitting}
-            submitError={sendBlockReason === undefined ? undefined : t('home.composer.attachmentsBlocked')}
-            onChooseFiles={(files) => {
-              void takeImages(files);
-            }}
+          <HomeHero
+            intake={
+              <HomeImageDropZone
+                onChooseSinopia={() => {
+                  setSinopiaPickerOpen(true);
+                }}
+                onDescribe={describe}
+                isDragging={isDragging}
+                measure={measure}
+                onMeasureChange={setMeasure}
+                onBuild={build}
+                isSubmitting={isSubmitting}
+                submitError={sendBlockReason === undefined ? undefined : t('home.composer.attachmentsBlocked')}
+                onChooseFiles={(files) => {
+                  void takeImages(files);
+                }}
+              />
+            }
+            example={<HomeHeroExample onTryExample={tryExample} />}
           />
           {isMobile && !isTablet ? (
             <div role='region' aria-label={t('home.intake.messageForAgent')} className='mx-auto mt-6 w-full max-w-3xl'>

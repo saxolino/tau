@@ -994,3 +994,61 @@ Blocchi C1, C2, C5 e D4 del piano di Claude (`PIANO-CLAUDE-2026-10-26.md`), dall
   `services/sinopia-foto.ts`, `services/foto-campione-immagini.ts`, `i18n/messages/foto-campione.ts`).
 - **Consegna.** Il GLB di un modello SMLib porta la topologia B-rep (`services/project-export.ts`): Sinopia considera
   «generato» solo un pezzo che la porta.
+
+## 27 ottobre 2026 — i worker SMLib partono anche nella build di produzione
+
+- **Causa.** `packages/plugins/smlib/package.json` dichiarava `"sideEffects": false`, ma i moduli
+  `src/verifica/verifica.worker.ts` e `src/varianti/varianti.worker.ts` chiamano `expose()` appena importati, e i file
+  di worker dell'interfaccia (`apps/ui/app/workers/verifica-silhouette.worker.ts`, `varianti.worker.ts`) li importano
+  solo per quell'effetto. In sviluppo Vite non scarta nulla; nella build il bundler ha tolto l'import e i due worker
+  uscivano VUOTI (0 byte): nessun «pronto», e dopo 60 s «the worker did not start» (controlli dell'assistente,
+  verifica della sagoma D3).
+- **Correzione.** `sideEffects` elenca i moduli worker del pacchetto (`./src/**/*.worker.ts`,
+  `./dist/**/*.worker.mjs`), che tornano nella build per intero, anche quelli che verranno.
+- **Prova.** `scripts/sinopiacad/prova-worker.mjs` (nuovo) serve la build sotto `/cad/` con le intestazioni di
+  `vercel/vercel.json`, crea in Chromium headless i worker della producibilità, della verifica, delle varianti e della
+  consegna e aspetta il «pronto» di ciascuno (che arriva solo a kernel WebAssembly istanziato); controlla anche che
+  nessun `*.worker-*.js` sia vuoto. `scripts/sinopiacad/build.sh` la lancia dopo ogni build e fallisce se un worker
+  non risponde.
+- **Secondo difetto, stesso sintomo.** Con i worker di nuovo pieni, il primo controllo della fibbia durava 30,5 s
+  («fillet: the probe worker did not start within 30 s») e i controlli dell'assistente finivano nel loro timeout di
+  30 s. smlibwasm avvia il supervisore del suo worker di sonda quando valuta `dist/_guard.js` e conta che succeda
+  prima del `await` di primo livello del kernel; nella build il guardiano era fuso nel chunk `exporters-*`, che importa
+  quello del kernel, e partiva solo dopo: il primo raccordo bloccava il thread (`Atomics.wait`) prima che il
+  supervisore fosse partito. `apps/ui/vite.config.ts` (`uiWorkerRolldownOptions`), `apps/ui/serve/vite.config.ts` e
+  `apps/ui/desktop/vite.config.ts`: nei bundle dei worker il guardiano ha un chunk suo (`smlibwasm-guard-*`), che non
+  aspetta il kernel. Il controllo passa da 30 571 ms a circa 550 ms; la prova chiede al worker delle varianti il
+  controllo vero di una fibbia e fallisce oltre 15 s o con l'avviso del worker di sonda.
+
+## 27 ottobre 2026 — il salvataggio su Sinopia di un progetto con immagini
+
+- **Causa.** Il salvataggio su Sinopia legge l'ultima revisione come istantanea (`snapshot` del worker del file
+  manager, `apps/ui/app/machines/file-manager.worker.revisions.ts`), con ogni file in Base64. `uint8ArrayToBase64` di
+  `uint8array-extras` passa 65 535 byte per chiamata come argomenti (`String.fromCodePoint.apply`): lo stack di un worker
+  del browser è più piccolo di quello della pagina e trabocca già sopra i 30 000 argomenti («Maximum call stack size
+  exceeded»). Un progetto creato dal riconoscimento contiene la foto e la maschera della parte (`riferimenti/`): non si
+  salvava mai; uno creato dalla chat, con soli file piccoli, sì.
+- **Correzione.** `apps/ui/app/utils/base64.utils.ts` (nuovo): `bytesToBase64` usa `Uint8Array.prototype.toBase64`
+  dove c'è, altrimenti blocchi di 6 KiB (multipli di 3 byte), senza ricorsione né liste di argomenti grandi. Il worker
+  lo usa per l'istantanea. Le revisioni locali non cambiano: il salvataggio riparte da solo al prossimo tentativo.
+- **Prove.** `base64.utils.test.ts` codifica 6 MB in un worker con uno stack da 0,5 MB, dove la chiamata da 65 535
+  argomenti trabocca; `file-manager.worker.revisions.test.ts` fa l'istantanea di una revisione con un'immagine di 4 MB.
+
+## 27 ottobre 2026 — la verifica D3 ritrova la vista quando quella dichiarata non spiega la maschera
+
+- **Causa (prove: richiesta e risposta catturate dal worker `verifica-silhouette` sul percorso vero di
+  `/cad/nuovo?prova=fibbia`).** L'immagine della differenza mostrava la fibbia di taglio: il riconoscimento chiama
+  «fronte» (azimuth 4, elevation 8) la foto della faccia, ma la famiglia `fibbia` giace su XY con la faccia a vista
+  +Z, quindi la camera partiva sul fianco del pezzo. I limiti della fase A (±20° di elevation, ±15° di rollo) non
+  arrivavano alla vista dall'alto. Il prompt non dice a quale faccia del telaio della famiglia corrisponde la foto, e
+  lo stesso vale per placca e pendente. Gli assi della maschera e il fattore di ritaglio erano coerenti.
+- **Correzione.** `packages/plugins/smlib/src/verifica/ottimizza.ts`: se dopo gli avvii della vista dichiarata l'IoU
+  resta sotto 0,5, la fase A prova le 24 viste lungo gli assi (sei direzioni, quattro rolli), allineate con i momenti.
+  Le tre migliori fanno la fase A intera e vince l'obiettivo più basso. Costo: circa 0,3 s, solo quando la vista non
+  spiega la maschera.
+- **Prova di sviluppo.** `apps/ui/app/routes/nuovo/prova-fibbia.ts`: la fibbia disegnata non era quella del
+  riconoscimento registrato. Era larga 444 × 386 px a 11,2 px/mm, cioè 39,6 mm, con l'apertura più larga lungo il
+  cinturino che di traverso. Nessuna camera e nessun valore negli intervalli registrati poteva combaciare. Ora è
+  disegnata alle misure registrate: luce 20 mm, apertura 14 mm, sezione 3,4 mm, ardiglione ⌀ 2,2 mm in acciaio.
+- **Test.** `verifica/vista-assi.test.ts`: una fibbia sintetica fotografata di faccia e dichiarata «fronte» supera
+  IoU 0,9 (prima 0,23). Se la vista dichiarata spiega la maschera, resta un avvio solo.

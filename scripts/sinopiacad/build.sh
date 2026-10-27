@@ -14,3 +14,6 @@ export TAU_FRONTEND_URL="$SINOPIACAD_ORIGINE"
 export TAU_WEBSOCKET_URL="wss://${SINOPIACAD_ORIGINE#https://}/ws"
 export TAU_CLOUD_ENABLED=false TAU_ACQUISITION=locked NODE_ENV=production
 corepack pnpm@11.7.0 nx run ui:build:serve --skip-nx-cache
+# Prova dei worker SMLib sulla build appena fatta (servita sotto $SINOPIACAD_BASE con le intestazioni di Vercel, in
+# Chromium headless): un worker vuoto o che non risponde fa fallire la build, prima che arrivi in produzione.
+node scripts/sinopiacad/prova-worker.mjs apps/ui/serve/build/client

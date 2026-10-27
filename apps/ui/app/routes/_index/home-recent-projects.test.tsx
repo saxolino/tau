@@ -198,7 +198,11 @@ describe('HomeRecentProjects', () => {
 
   it.each(['it', 'en'] as const)('should show only known piece counts in %s', (language) => {
     setLanguage(language);
-    state.projects = [project('proj_anello', 'Anello', Date.now()), project('proj_spilla', 'Spilla', Date.now())];
+    // Distinct activity times: equal ones left the card order to the millisecond the two projects were built in.
+    state.projects = [
+      project('proj_anello', 'Anello', Date.now()),
+      project('proj_spilla', 'Spilla', Date.now() - 60_000),
+    ];
     renderSection(new Map([['proj_anello', 9]]));
     const cards = screen.getAllByRole('listitem');
     expect(cards[0]).toHaveTextContent(language === 'it' ? '· 9 pezzi' : '· 9 pieces');

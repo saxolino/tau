@@ -86,12 +86,13 @@ export function NavUser(): React.JSX.Element {
 
   return (
     <ClientOnly>
-      <div className='flex w-full items-center gap-1'>
+      {/* The account card (Sinopia's sidebar foot): avatar, name when there is one, the address under it, help. */}
+      <div data-slot='account-card' className='flex w-full items-center gap-1'>
         <div className='relative min-w-0 flex-1'>
           <UserButton
             variant='ghost'
-            size='sm'
-            className='h-7 w-full justify-start px-2.5 select-none'
+            size='default'
+            className='h-auto w-full justify-start gap-2.5 rounded-md px-1.5 py-1.5 text-left select-none has-[>svg]:px-1.5 [&_[data-slot=avatar]]:size-7 [&_[data-slot=avatar]]:text-xs [&_svg.lucide-chevrons-up-down]:hidden'
             align='start'
             side='top'
             sideOffset={8}
@@ -125,7 +126,7 @@ export function NavUser(): React.JSX.Element {
                 <span
                   role='status'
                   aria-label={t('shell.user.offline')}
-                  className='absolute top-1 left-5 size-1.5 rounded-full border border-sidebar bg-feature'
+                  className='absolute top-1.5 left-7 size-2 rounded-full border border-sidebar bg-feature'
                 />
               </TooltipTrigger>
               <TooltipContent side='top'>{t('shell.user.offlineTooltip')}</TooltipContent>
@@ -138,7 +139,7 @@ export function NavUser(): React.JSX.Element {
               aria-label={t('shell.user.help')}
               variant='ghost'
               size='icon-sm'
-              className='size-7 text-muted-foreground data-[state=open]:bg-accent/50'
+              className='shrink-0 rounded-md text-muted-foreground data-[state=open]:bg-accent/50'
             >
               <CircleHelp />
             </Button>

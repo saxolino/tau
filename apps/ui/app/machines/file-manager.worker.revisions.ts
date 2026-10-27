@@ -1,4 +1,3 @@
-import { uint8ArrayToBase64 } from 'uint8array-extras';
 /**
  * The browser's revision root (architecture A38).
  *
@@ -87,6 +86,7 @@ import { IndexedDbStorageProvider } from '#db/indexeddb-storage.js';
 import { isDesktopTarget } from '#lib/build-target.js';
 import { reportToApi } from '#runtime/observability/report-to-api.js';
 import { fetchGeoSpecCandidates, publishGeoSpecCandidate } from '#lib/geospec-candidate-git.js';
+import { bytesToBase64 } from '#utils/base64.utils.js';
 
 /**
  * The versioned paths one content-change event touches inside this project.
@@ -1517,7 +1517,9 @@ export const createWorkerProjectRevisions = (options: WorkerProjectRevisionsOpti
       if (tree.byteLength > 64 * 1024 * 1024) {
         throw new Error('The revision is too large to preview.');
       }
-      return Object.fromEntries(tree.entries().map(({ path, content }) => [path, uint8ArrayToBase64(content)]));
+      // Not `uint8ArrayToBase64`: its 65 535-argument calls overflow this worker's stack on a file of a few tens of
+      // kilobytes (a picture), and the save to Sinopia failed (`#utils/base64.utils`).
+      return Object.fromEntries(tree.entries().map(({ path, content }) => [path, bytesToBase64(content)]));
     },
     compare: async (revision, path, compareOptions) => {
       /* S38's second half: the right-hand side is the working copy rather than

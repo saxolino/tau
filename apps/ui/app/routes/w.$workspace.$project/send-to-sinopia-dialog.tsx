@@ -29,6 +29,7 @@ import { getSinopiaCadModel } from '#services/sinopia-cad.js';
 import type { SinopiaCadLink } from '#services/sinopia-cad.js';
 import type { PlainMessageKey } from '#i18n/translate.js';
 import type { SinopiaCadLinking } from '#hooks/use-sinopia-cad-sync.js';
+import { useMoveSinopiaCadModel } from '#hooks/use-sinopia-cad-sync.js';
 import { toast } from '#components/ui/sonner.js';
 
 const baseFormats: SinopiaSendFormat[] = ['step', 'glb', 'photo'];
@@ -192,8 +193,13 @@ function SendForm({
   const { recordFiles } = useFileManager();
   const { prepareSinopia, deliveryPieces, deliveryAvailable } = useProjectExport();
   const formats = deliveryAvailable ? deliveryFormats : baseFormats;
-  const [destinationId, setDestinationId] = useState(pending?.projectId ?? link.projectId);
+  // One project per model: versions go to the linked project («cambia» moves the model, it does not send elsewhere).
+  const destinationId = pending?.projectId ?? link.projectId;
   const [isChanging, setIsChanging] = useState(false);
+  const [moveTarget, setMoveTarget] = useState<string>();
+  const [isMoving, setIsMoving] = useState(false);
+  const [hasMoveFailed, setHasMoveFailed] = useState(false);
+  const moveModel = useMoveSinopiaCadModel();
   const [selected, setSelected] = useState<SinopiaSendFormat[]>(pending?.selected ?? formats);
   // The model's own preview stands in for the photo when the photo is not sent (E3a: every version has a thumbnail).
   const remoteModel = useQuery({
@@ -210,9 +216,12 @@ function SendForm({
   const [receipt, setReceipt] = useState<SinopiaSendReceipt>();
   const deliveryId = useRef(pending?.deliveryId ?? randomUuid());
   const dialogLifetime = useRef<AbortController | undefined>(undefined);
+  // The delivery source the current lifetime belongs to: a send never prepares files with another render's source.
+  const lifetimeSource = useRef(prepareSinopia);
   useEffect(() => {
     const controller = new AbortController();
     dialogLifetime.current = controller;
+    lifetimeSource.current = prepareSinopia;
     // oxlint-disable-next-line react/set-state-in-effect -- Release an obsolete render's delivery gesture when its source changes.
     setIsSending(false);
     return () => {
@@ -232,7 +241,24 @@ function SendForm({
     staleTime: 0,
   });
   const destination = projects.data?.find((project) => project.id === destinationId);
-  const isFrozen = isSending || receipt !== undefined || hasPending;
+  const isFrozen = isSending || receipt !== undefined || hasPending || isMoving;
+  const move = async (): Promise<void> => {
+    if (moveTarget === undefined || isFrozen) {
+      return;
+    }
+    setIsMoving(true);
+    setHasMoveFailed(false);
+    try {
+      const moved = await moveModel(link, moveTarget);
+      const name = projects.data?.find((project) => project.id === moved.projectId)?.name ?? '';
+      toast.success(t('sinopiaSend.moved', { name }));
+      // The new link re-keys this dialog: it opens again on the new project.
+    } catch (error) {
+      console.error('[sinopia] the model could not be moved', error);
+      setHasMoveFailed(true);
+      setIsMoving(false);
+    }
+  };
   const problem = error ?? ((projects.error ?? version.error) ? new SinopiaSendError('failed') : undefined);
 
   const submit = async (): Promise<void> => {
@@ -252,7 +278,10 @@ function SendForm({
         }
       }
       if (!sent) {
-        const files = await prepareSinopia(signal, version.data === undefined ? undefined : `v${String(version.data)}`);
+        const files = await lifetimeSource.current(
+          signal,
+          version.data === undefined ? undefined : `v${String(version.data)}`,
+        );
         signal.throwIfAborted();
         setPrepared(files);
         if (!hasPending) {
@@ -371,26 +400,43 @@ function SendForm({
           </div>
         ) : null}
         {isChanging || (!destination && projects.data?.length) ? (
-          <label className='grid gap-2 text-sm'>
-            {t('sinopiaSend.chooseProject')}
-            <select
-              value={destinationId}
-              disabled={isFrozen}
-              className='min-w-0 rounded-md border bg-background p-2'
-              onChange={(event) => {
-                setDestinationId(event.target.value);
-                setIsChanging(false);
-                setError(undefined);
-                setPrepared(undefined);
-              }}
-            >
-              {projects.data?.map((project) => (
-                <option key={project.id} value={project.id}>
-                  {project.name}
-                </option>
-              ))}
-            </select>
-          </label>
+          <div className='grid gap-2 rounded-md border p-3 text-sm'>
+            <label className='grid gap-2'>
+              {t('sinopiaSend.chooseProject')}
+              <select
+                value={moveTarget ?? ''}
+                disabled={isFrozen}
+                className='min-w-0 rounded-md border bg-background p-2'
+                onChange={(event) => {
+                  setMoveTarget(event.target.value === '' ? undefined : event.target.value);
+                  setHasMoveFailed(false);
+                }}
+              >
+                <option value=''>{t('sinopiaSend.choosePlaceholder')}</option>
+                {projects.data
+                  ?.filter((project) => project.id !== link.projectId)
+                  .map((project) => (
+                    <option key={project.id} value={project.id}>
+                      {project.name}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <p className='text-xs text-muted-foreground'>{t('sinopiaSend.moveHint')}</p>
+            <div>
+              <Button
+                size='sm'
+                disabled={moveTarget === undefined || isFrozen}
+                aria-busy={isMoving}
+                onClick={() => {
+                  void move();
+                }}
+              >
+                {isMoving ? t('sinopiaSend.moving') : t('sinopiaSend.move')}
+              </Button>
+            </div>
+            {hasMoveFailed ? <p role='alert'>{t('sinopiaSend.moveFailed')}</p> : null}
+          </div>
         ) : null}
         {projects.data && !destination ? (
           <p role='alert' className='text-sm'>

@@ -122,14 +122,14 @@ describe('Sinopia SettingsDialog', () => {
   it('should use the account theme and language owners and persist cursor preferences', async () => {
     const user = userEvent.setup();
     render(<SettingsTestSurface />);
-    await user.click(screen.getByRole('button', { name: 'Black' }));
+    await user.click(screen.getByRole('radio', { name: 'Black' }));
     expect(setTheme).toHaveBeenCalledWith('black');
     await user.click(screen.getByRole('switch', { name: 'Cursors' }));
     expect(setPointer).toHaveBeenCalledWith(true);
-    await user.click(screen.getByRole('button', { name: 'Italiano' }));
+    await user.click(screen.getByRole('radio', { name: 'Italiano' }));
     expect(screen.getByRole('heading', { name: 'Aspetto' })).toBeInTheDocument();
     expect(screen.getByRole('searchbox', { name: 'Cerca nelle impostazioni' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Segui il Mac' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Segui il Mac' })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Modello' }));
     expect(screen.getByText('mm')).toBeInTheDocument();
     expect(screen.getByText('Tutte le misure del modello sono in millimetri.')).toBeInTheDocument();
@@ -146,7 +146,7 @@ describe('Sinopia SettingsDialog', () => {
     await user.clear(search);
     await user.type(search, 'telemetry');
     expect(screen.getByText('No settings found')).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Back to the model' }));
+    await user.click(screen.getByRole('button', { name: 'Back' }));
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 });

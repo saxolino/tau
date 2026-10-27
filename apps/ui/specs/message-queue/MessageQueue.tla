@@ -22,6 +22,12 @@
 \* stay immediate, and admission, delivery and the queue never read either.
 \* Removing the composer's kernel selector changes only composer controls; submit,
 \* admission and queue delivery keep the same paths.
+\* SinopiaCAD pins the agent in the page: a saved or queued execution that names a
+\* daemon or another agent is read as the catalog's recommended model, and the
+\* recommendation is resolved before admission freezes the execution. The queue's
+\* labels are translated and the composer shows the selected piece. These choose
+\* the command's execution and presentation only; Prepare, Deliver, Acknowledge,
+\* the run barrier and durable cancellation keep the same paths and guards.
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 CONSTANTS Messages, Tabs, Durable, QuietSubmit, StableIdentity,
           ObserveBarrier, TargetedCancel, TerminalBeforeSend,

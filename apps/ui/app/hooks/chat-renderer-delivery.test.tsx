@@ -106,8 +106,11 @@ const { useChatSelector } = await import('#hooks/use-chat.js');
 
 const { ChatMessage } = await import('#routes/w.$workspace.$project/chat-message.js');
 const { TooltipProvider } = await import('@taucad/ui/components/tooltip');
+const { setAgentTechnicalDetails } = await import('#hooks/use-agent-technical-details.js');
 it('should render first held reasoning through production ChatMessage before durable completion', async () => {
   dependencies.sessions = createSessionsActor().start();
+  // The designer's thread hides the agent's reasoning; only the opt-in technical view (command palette) shows it.
+  setAgentTechnicalDetails(true);
   let store: ChatSessionStore | undefined;
   function ProductionTranscript(): React.JSX.Element {
     const groups = useChatSelector((state) => state.turnGroups);
@@ -277,6 +280,7 @@ it('should render first held reasoning through production ChatMessage before dur
     releaseSidebar();
     expect(detach).not.toHaveBeenCalled();
   } finally {
+    setAgentTechnicalDetails(false);
     unadmit();
     mounted.unmount();
     unconnect();

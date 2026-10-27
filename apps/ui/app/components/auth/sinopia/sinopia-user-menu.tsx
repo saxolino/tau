@@ -80,8 +80,16 @@ export function SinopiaUserMenu({
               className={cn('font-normal', size === 'default' && 'h-auto py-2.5', className)}
             >
               <SinopiaAvatar user={user} className={cn(isCompact && 'size-4 text-[10px]')} />
-              <span className='min-w-0 flex-1 truncate text-left text-sm leading-tight'>{name}</span>
-              {isCompact ? null : <ChevronsUpDown className='ml-auto' />}
+              {isCompact ? (
+                <span className='min-w-0 flex-1 truncate text-left text-sm leading-tight'>{name}</span>
+              ) : (
+                /* The card: the address as the name (Sinopia's session carries no name), the account under it. */
+                <span className='grid min-w-0 flex-1 text-left leading-tight'>
+                  <span className='truncate text-sm font-medium text-foreground'>{name}</span>
+                  <span className='truncate text-xs text-muted-foreground'>{accountLabel}</span>
+                </span>
+              )}
+              {isCompact ? null : <ChevronsUpDown className='ml-auto size-3.5 text-muted-foreground' />}
             </Button>
           )}
         </DropdownMenuTrigger>

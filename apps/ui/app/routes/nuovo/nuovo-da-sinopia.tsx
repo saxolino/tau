@@ -84,7 +84,7 @@ export function NuovoDaSinopia(): React.JSX.Element {
     () => leggiParametriNuovo(new URLSearchParams(query), { prove: import.meta.env.DEV }),
     [query],
   );
-  const { fase, scegliFamiglia, riprova, saltaVerifica } = useRiconoscimentoNuovo(
+  const { fase, scegliFamiglia, riprova, saltaVerifica, apriEsistente, rifaiDaCapo } = useRiconoscimentoNuovo(
     lettura,
     language === 'en' ? 'en' : 'it',
   );
@@ -136,6 +136,22 @@ export function NuovoDaSinopia(): React.JSX.Element {
         <div className='space-y-3' aria-live='polite'>
           {fase.fase === 'leggo' ? <Passo testo={t('riconoscimento.reading')} /> : null}
           {fase.fase === 'riconosco' ? <Passo testo={t('riconoscimento.recognizing')} /> : null}
+          {fase.fase === 'esiste' ? (
+            <div role='status' className='space-y-3 rounded-lg border border-border bg-background px-3 py-3'>
+              <p className='text-sm leading-5 font-medium'>{t('riconoscimento.existing.title')}</p>
+              <p className='text-sm leading-5 text-muted-foreground'>
+                {t('riconoscimento.existing.body', { name: fase.modello.name })}
+              </p>
+              <div className='flex flex-wrap gap-2'>
+                <Button size='sm' onClick={apriEsistente}>
+                  {t('riconoscimento.existing.open')}
+                </Button>
+                <Button size='sm' variant='outline' onClick={rifaiDaCapo}>
+                  {t('riconoscimento.existing.redo')}
+                </Button>
+              </div>
+            </div>
+          ) : null}
           {esito &&
           (fase.fase === 'verifico' ||
             fase.fase === 'costruisco' ||

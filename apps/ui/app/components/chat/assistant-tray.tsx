@@ -882,7 +882,8 @@ export function AgentVariantsBlock({ blocco }: Readonly<{ blocco: BloccoVarianti
           revoca(corsa.anteprime);
         }
       } catch (error) {
-        console.error('The assistant’s variants could not be evaluated:', error);
+        // `giro` counts the «Riprova» presses: it is what restarts this check, so the failure names it.
+        console.error('The assistant’s variants could not be evaluated:', error, { giro });
         if (corsa.viva) {
           setStato({ stato: 'errore' });
         }

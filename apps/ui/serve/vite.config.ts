@@ -11,8 +11,15 @@ import { base64Loader } from '@taucad/vite/base64-loader';
  * file to resolve to at config-load time, and a `.ts` specifier needs
  * `allowImportingTsExtensions`.
  */
-// oxlint-disable-next-line eslint/no-restricted-imports, import/extensions -- see above.
-import { createUiReactCompilerPlugin, createUiSourceAliasPlugin, uiResolveAlias, uiSsrOptions } from '../vite.config';
+/* oxlint-disable eslint/no-restricted-imports, import/extensions -- see above. */
+import {
+  createUiReactCompilerPlugin,
+  createUiSourceAliasPlugin,
+  uiResolveAlias,
+  uiSsrOptions,
+  uiWorkerRolldownOptions,
+} from '../vite.config';
+/* oxlint-enable eslint/no-restricted-imports, import/extensions */
 // oxlint-disable-next-line eslint/no-restricted-imports, import/extensions -- config-load seam is outside the app alias root.
 import { resolveTauCloudBuildEnabled } from '../build-environment';
 // oxlint-disable-next-line eslint/no-restricted-imports, import/extensions -- Shared config-load asset gate.
@@ -83,6 +90,8 @@ export default defineConfig({
       createUiSourceAliasPlugin({ emitModuleGraph: true, tauCloudEnabled }),
       createAssetIntegrity({ receipt: false }),
     ],
+    // SMLib's probe-worker guard in a chunk of its own (see `uiWorkerRolldownOptions`).
+    rolldownOptions: uiWorkerRolldownOptions,
   },
   // The same browser stubs as the web and desktop builds (`@resvg/resvg-js`).
   resolve: { alias: [...uiResolveAlias] },

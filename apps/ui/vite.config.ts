@@ -85,6 +85,26 @@ const uiOptimizeDepsOptions = {
 } as const satisfies UserConfig['optimizeDeps'];
 
 /**
+ * Worker bundle options, shared with `serve/vite.config.ts` (the SinopiaCAD build) and `desktop/vite.config.ts`.
+ *
+ * `@classcad/smlibwasm` starts the supervisor of its probe worker (fillets and the other kernel steps that can crash
+ * run in it) when `dist/_guard.js` is evaluated, and counts on that happening before its kernel module's top-level
+ * await: a browser starts a worker only while the creating thread runs its event loop, and the first kernel step blocks
+ * that thread in `Atomics.wait` until the probe answers (see the header of `_guard.ts`). Merged into a shared chunk
+ * that imports the kernel's chunk, the guard ran only after the kernel had loaded, the supervisor was still starting
+ * when the first fillet blocked the thread, and every SMLib worker of the app lost 30 s at its first fillet (the
+ * assistant's checks then ended in their own 30 s timeout). In a chunk of its own, which never waits for the kernel,
+ * the guard runs as soon as the package is imported, as in development.
+ */
+export const uiWorkerRolldownOptions = {
+  output: {
+    codeSplitting: {
+      groups: [{ name: 'smlibwasm-guard', test: /[\\/]@classcad[\\/]smlibwasm[\\/]dist[\\/]_guard\.js$/u }],
+    },
+  },
+} as const satisfies NonNullable<UserConfig['worker']>['rolldownOptions'];
+
+/**
  * Module aliases shared with `desktop/vite.config.ts`.
  *
  * `@resvg/resvg-js`: `@taucad/tscircuit` (composed into the runtime worker)
@@ -515,6 +535,7 @@ export default defineConfig(({ command, mode }) => {
         createUiSourceAliasPlugin({ emitModuleGraph: true, tauCloudEnabled }),
         createAssetIntegrity({ receipt: false }),
       ],
+      rolldownOptions: uiWorkerRolldownOptions,
     },
     // Merged over the shared `define` for the server graph only (see `buildIdDefine`).
     ...(isProductionBuild ? { environments: { ssr: { define: buildIdDefine } } } : {}),
@@ -582,6 +603,14 @@ export default defineConfig(({ command, mode }) => {
         ignoreSourceErrors: true,
       },
       setupFiles: ['./vitest.setup.ts'],
+      /* Files under `@vitest-environment node` have no `window.ENV`: the client environment is read from
+       * `process.env`, and `flag.constants.ts` reads it while the module loads. The same URLs `vitest.setup.ts`
+       * gives jsdom files (and CI exports), so a run outside CI does not depend on the shell's variables. */
+      env: {
+        TAU_API_URL: process.env['TAU_API_URL'] ?? 'http://localhost:4000',
+        TAU_WEBSOCKET_URL: process.env['TAU_WEBSOCKET_URL'] ?? 'ws://localhost:4001',
+        TAU_FRONTEND_URL: process.env['TAU_FRONTEND_URL'] ?? 'http://localhost:3000',
+      },
       reporters: ['verbose'],
       coverage: {
         reportsDirectory: '../../out/reports/coverage/apps/ui',

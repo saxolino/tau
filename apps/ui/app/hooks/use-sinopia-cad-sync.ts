@@ -20,7 +20,11 @@ import {
   writeSinopiaCadLink,
   inferSinopiaCadEngine,
   patchSinopiaCadThumbnail,
+  moveSinopiaCadModel,
+  reconcileSinopiaCadLink,
+  sourceFromRecognition,
 } from '#services/sinopia-cad.js';
+import { leggiRecordRiconoscimento, percorsoRiconoscimento } from '#services/riconoscimento-record.js';
 import type { SinopiaCadEngine, SinopiaCadLink, SinopiaCadRecordFiles } from '#services/sinopia-cad.js';
 import { createSinopiaCadSync } from '#services/sinopia-cad-sync.js';
 import type { SinopiaCadSyncState } from '#services/sinopia-cad-sync.js';
@@ -104,10 +108,62 @@ function useLinkQuery() {
       if (link !== undefined && link.userId !== userId) {
         throw new Error('SINOPIA_OWNER_MISMATCH');
       }
-      return link ?? null;
+      if (link === undefined) {
+        return null;
+      }
+      // A model moved to another project (an interrupted «cambia», another device): the link follows the row. Any
+      // failure of this check (offline, a refused read) keeps the stored link: it must never turn the link itself into a
+      // failure, which would also switch off the conflict protection. The next open checks again.
+      try {
+        return await reconcileSinopiaCadLink(recordFiles, `/projects/${projectId}`, link);
+      } catch {
+        return link;
+      }
     },
     staleTime: Infinity,
   });
+}
+
+/**
+ * «Progetto Sinopia: cambia»: move the open model to another project of the account (`moveSinopiaCadModel`), then
+ * publish the new link so the save status and the send dialog follow it. A piece built from a Sinopia part that goes
+ * back to the project of its recognition gets its origin (image and part) back from the record.
+ */
+export function useMoveSinopiaCadModel(): (link: SinopiaCadLink, targetProjectId: string) => Promise<SinopiaCadLink> {
+  const { projectId } = useProject();
+  const { recordFiles } = useFileManager();
+  const queryClient = useQueryClient();
+  return useCallback(
+    async (link: SinopiaCadLink, targetProjectId: string): Promise<SinopiaCadLink> => {
+      let record: Parameters<typeof sourceFromRecognition>[0]['record'] | undefined;
+      try {
+        const lettura = leggiRecordRiconoscimento(
+          await recordFiles.readFile(`/projects/${projectId}/${percorsoRiconoscimento}`),
+        );
+        record = lettura.stato === 'ok' ? lettura.record : undefined;
+      } catch {
+        record = undefined;
+      }
+      const source =
+        record === undefined
+          ? undefined
+          : await sourceFromRecognition({ record, targetProjectId, userId: link.userId });
+      const moved = await moveSinopiaCadModel({
+        link,
+        targetProjectId,
+        files: recordFiles,
+        localProjectId: projectId,
+        ...(source === undefined ? {} : { source }),
+      });
+      const current = sinopiaSession().getState();
+      if (current.status === 'signed-in' && current.user.id === moved.userId) {
+        queryClient.setQueryData(linkKey(moved.userId, projectId), moved);
+      }
+      void queryClient.invalidateQueries({ queryKey: ['sinopia-send-model', moved.userId, moved.modelId] });
+      return moved;
+    },
+    [projectId, queryClient, recordFiles],
+  );
 }
 
 /** The shared persisted link for the top bar's send gesture; no remote writes or second sync lifecycle. */

@@ -210,7 +210,9 @@ export function ProducibilitaProvider({ children }: Readonly<{ children: React.R
       try {
         const bytes = await leggiFile(parameterFiles, `${root}/${mainEntryPath}`, vita.signal);
         letta = bytes ? famigliaDalMain(decoder.decode(bytes)) : undefined;
-      } catch {
+      } catch (error) {
+        // A file that cannot be read names no family; the evaluation it followed is the failure's context.
+        console.error('Failed to read the family the main file declares:', error, { evaluationId });
         letta = undefined;
       }
       if (!vita.signal.aborted) {
@@ -342,7 +344,8 @@ export function ProducibilitaProvider({ children }: Readonly<{ children: React.R
           await misura();
         } catch (error) {
           if (!fermata()) {
-            console.error('Producibility check failed:', error);
+            // «Riprova» (`tentativo`) is what restarts this check, so a failure names it.
+            console.error('Producibility check failed:', error, { tentativo });
             setStato('errore');
           }
         }
