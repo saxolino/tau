@@ -88,6 +88,8 @@ export function placeCallouts(
         }
       }
     }
+    // Pushed down by the labels above it, a label never goes under the bar: it overlaps the last one instead.
+    top = Math.min(top, lowest);
     placed.push({ id: callout.id, left, top, width: callout.width, height: callout.height });
   }
   return placed.map(({ id, left, top }) => ({ id, left, top }));

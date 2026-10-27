@@ -116,4 +116,17 @@ describe('placeCallouts', () => {
       { id: 'a', left: 692, top: 504 },
     ]);
   });
+
+  it('should keep a label pushed down by the others above the bar, overlapping rather than hiding under it', () => {
+    const placed = placeCallouts(
+      [
+        { id: 'a', x: 400, y: 460, width: 100, height: 40 },
+        { id: 'b', x: 400, y: 460, width: 100, height: 40 },
+        { id: 'c', x: 400, y: 460, width: 100, height: 40 },
+      ],
+      canvas,
+    );
+
+    expect(Math.max(...placed.map((label) => label.top))).toBeLessThanOrEqual(504);
+  });
 });
