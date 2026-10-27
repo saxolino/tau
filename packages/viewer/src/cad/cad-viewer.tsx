@@ -1,5 +1,6 @@
 import type { DirectEditTool } from '#graphics/three/react/direct-edit-tool.js';
 import type { PlanarFaceTool } from '#graphics/three/react/planar-face-tool.js';
+import type { ProducibilityOverlay } from '#graphics/three/react/producibility-overlay.types.js';
 import { memo } from 'react';
 import type { CanvasProps } from '@react-three/fiber';
 import { asKnownArtifact } from '@taucad/runtime';
@@ -22,6 +23,8 @@ type CadViewerProperties = Omit<ThreeViewerProperties, 'graphicsBackend'> &
     readonly artifact?: Artifact;
     readonly planarFaceTool?: PlanarFaceTool;
     readonly directEditTool?: DirectEditTool;
+    /** The producibility veil (E1) over the faces a check points at. */
+    readonly producibilityOverlay?: ProducibilityOverlay;
     readonly artifactHash?: string;
     readonly sourceFile?: string;
     readonly enableSurfaces?: boolean;
@@ -42,6 +45,7 @@ export const CadViewer = memo(
     artifact,
     planarFaceTool,
     directEditTool,
+    producibilityOverlay,
     artifactHash,
     sourceFile,
     enableSurfaces = true,
@@ -68,6 +72,7 @@ export const CadViewer = memo(
           gltfFile={known.content}
           planarFaceTool={planarFaceTool}
           directEditTool={directEditTool}
+          producibilityOverlay={producibilityOverlay}
           sourceFile={sourceFile}
           geometryHash={artifactHash}
           presentationRevision={requestedGltfRevision}

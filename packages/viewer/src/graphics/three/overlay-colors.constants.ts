@@ -143,3 +143,17 @@ export const sectionCapOpenChainColor = 0xdd_00_3f;
 
 /** How many times the ordinary cap outline's width an open chain is drawn, so it stands out from closed cap edges. */
 export const sectionCapOpenChainWidthScale = 2;
+
+/**
+ * Producibility overlay tints (E1), the semantic status tokens rendered in sRGB so the model speaks the inspector's
+ * colours: a face under the block threshold in `--destructive` (`oklch(0.55 0.25 19deg)`, gamut-clipped to `#DE0030`),
+ * a face under the minimum in `--warning` (`oklch(0.55 0.18 70deg)` → `#B15600`), a face whose draft reaches the
+ * minimum in `--success` (`oklch(0.55 0.18 150deg)` → `#008C2F`). One value for both themes: the status tokens keep
+ * their lightness in both modes. Drawn as a translucent veil over the piece's own material.
+ */
+export const producibilityBlockColor = 0xde_00_30;
+export const producibilityWarningColor = 0xb1_56_00;
+export const producibilityOkColor = 0x00_8c_2f;
+
+/** Opacity of the producibility veil: the material underneath stays readable, the status still reads over gold. */
+export const producibilityOverlayOpacity = 0.62;
