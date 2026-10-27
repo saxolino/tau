@@ -4,7 +4,7 @@ import { convert, createQuantity } from '@taucad/units/quantity';
 import { formatQuantity, parseInput } from '@taucad/units/input';
 import { createRafCoalescer } from '#graphics/three/utils/raf-coalescer.js';
 import { ParametersNumberField } from '#parameters/parameters-number-field.jsx';
-import { validateParameterInputValue } from '#parameters/parameter-field.js';
+import { fieldLanguage, inputDiagnosticMessage, validateParameterInputValue } from '#parameters/parameter-field.js';
 import type { ParameterFieldBinding } from '#parameters/parameter-field.js';
 import type { ParameterCommit } from '#parameters/rjsf-context.js';
 
@@ -171,6 +171,7 @@ export const ParametersNumber = React.memo(function ParametersNumber({
   onBlur,
 }: ParametersNumberProps): React.JSX.Element {
   const binding = React.useMemo(() => fieldBinding(fieldProjection), [fieldProjection]);
+  const language = fieldLanguage(locale);
   const { instancePointer } = fieldProjection;
   const displayUnit = binding.representation === 'safe-integer' ? binding.nativeUnit : fieldProjection.displayUnit;
   const authorityValue = typeof value === 'number' ? value : defaultValue;
@@ -352,7 +353,7 @@ export const ParametersNumber = React.memo(function ParametersNumber({
   /** Enter a value from the slider or the stepper; text entry goes through {@link commitText}. */
   const commitValue = (next: number): Promise<boolean> | undefined => {
     const native = toNative(next);
-    const diagnostic = validateParameterInputValue(binding, native);
+    const diagnostic = validateParameterInputValue(binding, native, language);
     if (diagnostic !== undefined) {
       setLocalValue(undefined);
       setInputDiagnostic(diagnostic.message);
@@ -383,14 +384,14 @@ export const ParametersNumber = React.memo(function ParametersNumber({
       ...(binding.reference === undefined ? {} : { reference: binding.reference }),
     });
     if (parsed.status !== 'success') {
-      setInputDiagnostic(parsed.diagnostic.message);
+      setInputDiagnostic(inputDiagnosticMessage(parsed.diagnostic, language));
       return;
     }
     const native = convert({ quantity: parsed.value.quantity, to: binding.nativeUnit ?? '1' });
     if (native.status !== 'success' || typeof native.value.value !== 'number') {
       return;
     }
-    const diagnostic = validateParameterInputValue(binding, native.value.value);
+    const diagnostic = validateParameterInputValue(binding, native.value.value, language);
     if (diagnostic !== undefined) {
       setInputDiagnostic(diagnostic.message);
       return;
@@ -484,7 +485,7 @@ export const ParametersNumber = React.memo(function ParametersNumber({
       onSliderChange={(next) => {
         const native = toNative(next);
         setLocalValue({ value: displayValue(native, binding, displayUnit), authorityValue });
-        if (validateParameterInputValue(binding, native) !== undefined) {
+        if (validateParameterInputValue(binding, native, language) !== undefined) {
           return;
         }
         /* The scrub lane owns coalescing. A source-unit claim travels as the row's unit-bearing
