@@ -6,6 +6,23 @@ export const homeMessages = defineMessages({
     title: 'Dall’immagine al CAD',
     subtitle:
       'Una foto, un disegno o un render dal Creator: l’agente lo scompone in pezzi che poi correggi a mouse o a voce.',
+    hero: {
+      eyebrow: 'SinopiaCAD',
+      facts: {
+        pieces: 'Pezzi con nome',
+        measures: 'Misure in millimetri',
+        delivery: 'STEP, DXF e tavola PDF',
+      },
+      describe: 'Descrivi all’assistente',
+      describeHint: 'Scrivi o detta il pezzo, con le misure che conosci.',
+      lastProject: 'Ultimo progetto',
+      openProject: 'Apri {name}',
+      example: 'Esempio',
+      exampleTitle: 'Fibbia 30 mm',
+      exampleCaption: 'Telaio e ardiglione, due pezzi con nome, misure in millimetri.',
+      tryExample: 'Prova questo esempio',
+      drawingLabel: 'Disegno tecnico di una fibbia: vista frontale e laterale con le quote',
+    },
     dropZone: {
       drop: 'Lascia qui l’immagine',
       dragHere: 'Trascina qui la foto o il disegno',
@@ -49,6 +66,7 @@ export const homeMessages = defineMessages({
     agentLane: {
       label: 'Agente',
       header: 'Agente',
+      starts: 'Per iniziare',
       emptyTitle: 'Dimmi cosa vuoi fare',
       ring: 'Un anello con solitario da 6 mm',
       buckle: 'Una fibbia 30 mm per cinturino',
@@ -78,10 +96,28 @@ export const homeMessages = defineMessages({
       emptyTitle: 'Nessun progetto ancora',
       emptyDescription: 'Il primo nasce da un’immagine.',
       now: 'adesso',
+      untitled: 'Senza nome',
     },
   },
   en: {
     title: 'From image to CAD',
+    hero: {
+      eyebrow: 'SinopiaCAD',
+      facts: {
+        pieces: 'Named pieces',
+        measures: 'Measures in millimetres',
+        delivery: 'STEP, DXF and PDF drawing',
+      },
+      describe: 'Describe it to the assistant',
+      describeHint: 'Write or dictate the piece, with the measures you know.',
+      lastProject: 'Last project',
+      openProject: 'Open {name}',
+      example: 'Example',
+      exampleTitle: '30 mm buckle',
+      exampleCaption: 'Frame and prong, two named pieces, measures in millimetres.',
+      tryExample: 'Try this example',
+      drawingLabel: 'Technical drawing of a buckle: front and side views with dimensions',
+    },
     subtitle:
       'A photo, a drawing or a Creator render: the agent splits it into pieces you then adjust by mouse or by voice.',
     dropZone: {
@@ -127,6 +163,7 @@ export const homeMessages = defineMessages({
     agentLane: {
       label: 'Agent',
       header: 'Agent',
+      starts: 'To begin',
       emptyTitle: 'Tell me what you want to make',
       ring: 'A ring with a 6 mm solitaire',
       buckle: 'A 30 mm belt buckle',
@@ -156,6 +193,7 @@ export const homeMessages = defineMessages({
       emptyTitle: 'No projects yet',
       emptyDescription: 'The first one starts from an image.',
       now: 'now',
+      untitled: 'Untitled',
     },
   },
 });

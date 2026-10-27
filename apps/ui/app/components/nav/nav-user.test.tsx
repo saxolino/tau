@@ -91,7 +91,8 @@ describe('NavUser', () => {
     expect(screen.getByRole('link', { name: 'Files' })).toHaveAttribute('href', '/files');
     expect(within(screen.getByTestId('user-button')).queryByRole('link', { name: 'Documentation' })).toBeNull();
     expect(screen.getByText('Settings')).toBeInTheDocument();
-    expect(screen.getByTestId('user-button')).toHaveAttribute('data-size', 'sm');
+    // The account card: avatar, name and address on two lines, so the full-size view, never the compact one.
+    expect(screen.getByTestId('user-button')).toHaveAttribute('data-size', 'default');
     expect(screen.getByTestId('user-button')).toHaveAttribute('data-side', 'top');
   });
 

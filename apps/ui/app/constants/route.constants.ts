@@ -1,4 +1,4 @@
-import { Hammer, Printer, Import, Plug, Shuffle } from 'lucide-react';
+import { FolderOpen, Printer, Import, Plug, Shuffle } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { FeatureFlagName } from '#flags/flag.constants.js';
 import { PartsIcon } from '#components/icons/parts.js';
@@ -27,7 +27,7 @@ export const navRoutes: {
       title: 'Projects',
       titleKey: 'shell.nav.projects',
       url: '/projects',
-      icon: Hammer,
+      icon: FolderOpen,
       // Items: [
       //   {
       //     title: 'History',

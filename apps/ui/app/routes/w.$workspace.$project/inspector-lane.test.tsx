@@ -43,6 +43,7 @@ const workspace = vi.hoisted(() => ({
   setInspectorSlot: vi.fn(),
   setInspectorHistorySlot: vi.fn(),
   setAssistantExpanded: vi.fn(),
+  setAssistantDock: vi.fn(),
   setChatOpen: vi.fn(),
 }));
 
@@ -56,12 +57,17 @@ vi.mock('#hooks/use-inspector-selection.js', () => ({
   }),
 }));
 vi.mock('#routes/w.$workspace.$project/project-workspace-context.js', () => ({
-  useProjectWorkspace: () => ({ ...workspace, assistantExpanded: state.expanded, scalePiece: state.scalePiece }),
+  useProjectWorkspace: () => ({
+    ...workspace,
+    assistantExpanded: state.expanded,
+    assistantDock: state.expanded ? 'tall' : 'open',
+    scalePiece: state.scalePiece,
+  }),
   useWorkspaceLanes: () => ({ chat: true, workbench: true }),
 }));
 vi.mock('#components/chat/assistant-dock.js', () => ({
-  AssistantDock: ({ isExpanded }: { readonly isExpanded: boolean }) => (
-    <section aria-label='Assistente' data-expanded={isExpanded} />
+  AssistantDock: ({ position }: { readonly position: string }) => (
+    <section aria-label='Assistente' data-expanded={position === 'tall'} />
   ),
 }));
 vi.mock('#routes/w.$workspace.$project/chat-parameters.js', () => ({ useProjectParametersSource: () => ({}) }));

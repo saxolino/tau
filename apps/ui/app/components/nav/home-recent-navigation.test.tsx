@@ -13,8 +13,12 @@ const state = vi.hoisted(() => ({
   isLoading: false,
   error: undefined as Error | undefined,
   retry: vi.fn(),
+  thumbnails: new Map<string, string>(),
 }));
 vi.mock('#hooks/use-projects.js', () => ({ useProjects: () => state }));
+vi.mock('#hooks/use-project-thumbnail.js', () => ({
+  useProjectThumbnail: (id: string) => ({ url: state.thumbnails.get(id) }),
+}));
 
 const renderNavigation = () =>
   render(
@@ -34,6 +38,36 @@ describe('HomeRecentNavigation', () => {
     state.isLoading = false;
     state.error = undefined;
     state.projects = [];
+    state.thumbnails = new Map();
+  });
+
+  it('should show each project’s thumbnail beside its name, and say «Senza nome» for a placeholder', () => {
+    state.projects = [
+      mock<ProjectListItem>({
+        id: 'named',
+        name: 'Cornice fibbia',
+        lastActivityAt: 2,
+        slugs: { workspaceSlug: 'home', projectSlug: 'cornice-fibbia' },
+      }),
+      mock<ProjectListItem>({
+        id: 'placeholder',
+        name: 'New Project',
+        lastActivityAt: 1,
+        slugs: { workspaceSlug: 'home', projectSlug: 'new-project' },
+      }),
+    ];
+    state.thumbnails = new Map([['named', 'blob:thumb-named']]);
+    renderNavigation();
+    const links = within(screen.getByRole('list')).getAllByRole('link');
+    expect(links.map((link) => link.textContent)).toEqual(['Cornice fibbia', 'Untitled']);
+    expect(links[0]?.querySelector('img')).toHaveAttribute('src', 'blob:thumb-named');
+    expect(links[1]?.querySelector('img')).toBeNull();
+    expect(screen.getByRole('heading', { name: 'Recent' })).toBeInTheDocument();
+  });
+
+  it('should leave the section out when there is nothing to list', () => {
+    const { container } = renderNavigation();
+    expect(container.querySelector('[data-slot=sidebar-section]')).toBeNull();
   });
 
   it('should list the eight most recent projects with working destinations', () => {

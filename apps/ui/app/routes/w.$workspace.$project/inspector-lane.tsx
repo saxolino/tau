@@ -301,8 +301,8 @@ function InspectorPieceParameters(): React.JSX.Element | undefined {
 
 /**
  * The project page's right lane, the one work mode (UI-UX-SinopiaCAD §3, Fable 26 ott §2.1): on top the contextual
- * inspector (what is selected, its measures, its tools), under it the assistant, always there as a composer strip
- * that opens into the whole conversation (⌃J). Nothing closes by itself.
+ * inspector (what is selected, its measures, its tools), under it the assistant, always there: a status line over its
+ * composer, the strip with its proposals, or the whole conversation (⌃J). Nothing closes by itself.
  *
  * @param props - Whether the lane is on screen (only then does it host the viewer's tools), and whether it is a sheet.
  * @returns The lane.
@@ -316,7 +316,14 @@ export function InspectorLane({
   readonly isInSheet?: boolean;
 }): React.JSX.Element {
   const { t } = useTranslation();
-  const { setInspectorSlot, setInspectorHistorySlot, assistantExpanded, setAssistantExpanded } = useProjectWorkspace();
+  const {
+    setInspectorSlot,
+    setInspectorHistorySlot,
+    assistantExpanded,
+    setAssistantExpanded,
+    assistantDock,
+    setAssistantDock,
+  } = useProjectWorkspace();
   const slot = useCallback(
     // oxlint-disable-next-line @typescript-eslint/no-restricted-types -- React callback refs receive null on detach.
     (node: HTMLDivElement | null) => {
@@ -366,7 +373,8 @@ export function InspectorLane({
         </div>
       </section>
       <AssistantDock
-        isExpanded={assistantExpanded}
+        position={assistantDock}
+        onPositionChange={setAssistantDock}
         onExpandedChange={setAssistantExpanded}
         keyHint={formatKeyCombination(toggleAssistantKeyCombination)}
       />
