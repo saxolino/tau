@@ -63,7 +63,14 @@ export {
   tolleranzaPerPixel,
 } from '#verifica/silhouette.js';
 export type { MascheraBinaria, MeshPiatta, SilhouetteMorbida } from '#verifica/silhouette.js';
-export { casoSintetico, fotoSintetica, generatore, ingressoSintetico, VISTE_SINTETICHE } from '#verifica/sintetico.js';
+export {
+  casoSintetico,
+  costruibile,
+  fotoSintetica,
+  generatore,
+  ingressoSintetico,
+  VISTE_SINTETICHE,
+} from '#verifica/sintetico.js';
 export type { CasoSintetico, FotoSintetica } from '#verifica/sintetico.js';
 export { creaVerificatore } from '#verifica/verifica-client.js';
 export type { Verificatore } from '#verifica/verifica-client.js';

@@ -42,6 +42,8 @@ export type CasoSintetico = {
   /** Stima di partenza (parametri sensibili perturbati) e vista perturbata. */
   stima: ParametriAnnidati;
   vistaStimata: { azimuth: number; elevation: number; rollo: number };
+  /** Estrazioni fatte (più di 1 se `valida` ha scartato combinazioni che non si costruiscono). */
+  tentativi: number;
 };
 
 export type FotoSintetica = {
@@ -58,7 +60,8 @@ export type FotoSintetica = {
 export const VISTE_SINTETICHE: Readonly<
   Record<string, { az: [number, number]; el: [number, number]; ro: [number, number] }>
 > = {
-  tacco: { az: [50, 75], el: [5, 20], ro: [-8, 8] },
+  // Fianco e tre quarti: le foto di prodotto dei tacchi.
+  tacco: { az: [55, 95], el: [3, 15], ro: [-6, 6] },
   fibbia: { az: [-20, 20], el: [45, 75], ro: [-25, 25] },
   placca: { az: [-20, 20], el: [45, 75], ro: [-25, 25] },
   occhiello: { az: [-30, 30], el: [35, 60], ro: [-10, 10] },
@@ -88,54 +91,89 @@ export function casoSintetico(
     /** Intervalli della vista vera al posto di quelli della famiglia. */
     vista?: { az: [number, number]; el: [number, number]; ro: [number, number] };
   } = {},
+  valida?: (parametri: ParametriAnnidati) => boolean,
 ): CasoSintetico {
   const casuale = generatore(seme);
   const sensibili = parametriSensibili(famiglia);
-  const veri = famiglia.normalizza(famiglia.predefiniti(variante), { variante }) as ParametriAnnidati;
-  // Veri: ogni parametro sensibile entro ±20 % dell'intervallo attorno al predefinito (dentro i limiti e i vincoli).
-  for (const definizione of sensibili) {
-    const valore = Number(leggiParametro(veri, definizione.chiave));
-    const ampiezza = 0.2 * (definizione.max! - definizione.min!);
-    let nuovo = valore + (2 * casuale() - 1) * ampiezza;
-    nuovo = Math.min(definizione.max!, Math.max(definizione.min!, nuovo));
-    scriviParametro(veri, definizione.chiave, definizione.unita === 'n' ? Math.round(nuovo) : nuovo);
-  }
-  const veriNormalizzati = famiglia.normalizza(veri, { variante }) as ParametriAnnidati;
+  const relativa = perturbazione.relativa ?? 0.15;
   const intervalli = perturbazione.vista ??
     VISTE_SINTETICHE[famiglia.id] ?? { az: [-30, 30], el: [20, 50], ro: [-10, 10] };
-  const vista = {
-    azimuth: tra(casuale, intervalli.az),
-    elevation: tra(casuale, intervalli.el),
-    rollo: tra(casuale, intervalli.ro),
-  };
-  // Stima: ogni parametro sensibile spostato fino a ±relativa del suo valore (almeno ±5 % dell'intervallo).
-  const relativa = perturbazione.relativa ?? 0.15;
-  const stima = structuredClone(veriNormalizzati);
-  for (const definizione of sensibili) {
-    const valore = Number(leggiParametro(veriNormalizzati, definizione.chiave));
-    const ampiezza = Math.max(relativa * Math.abs(valore), 0.05 * (definizione.max! - definizione.min!));
-    let nuovo = valore + (2 * casuale() - 1) * ampiezza;
-    nuovo = Math.min(definizione.max!, Math.max(definizione.min!, nuovo));
-    scriviParametro(
-      stima,
-      definizione.chiave,
-      (definizione.unita === 'n' ? Math.round(nuovo) : nuovo) as ValoreParametro,
-    );
+  // Con `valida` si ripesca (stesso generatore) finché veri e stima si costruiscono: alcune combinazioni dentro i
+  // limiti mettono in crisi le ricette (per esempio un kitten di 23 mm con seduta 66 × 53: «cut failed»).
+  for (let tentativo = 1; ; tentativo++) {
+    const veri = famiglia.normalizza(famiglia.predefiniti(variante), { variante }) as ParametriAnnidati;
+    // Veri: ogni parametro sensibile entro ±20 % dell'intervallo attorno al predefinito (dentro i limiti e i vincoli).
+    for (const definizione of sensibili) {
+      const valore = Number(leggiParametro(veri, definizione.chiave));
+      const ampiezza = 0.2 * (definizione.max! - definizione.min!);
+      let nuovo = valore + (2 * casuale() - 1) * ampiezza;
+      nuovo = Math.min(definizione.max!, Math.max(definizione.min!, nuovo));
+      scriviParametro(veri, definizione.chiave, definizione.unita === 'n' ? Math.round(nuovo) : nuovo);
+    }
+    const veriNormalizzati = famiglia.normalizza(veri, { variante }) as ParametriAnnidati;
+    const vista = {
+      azimuth: tra(casuale, intervalli.az),
+      elevation: tra(casuale, intervalli.el),
+      rollo: tra(casuale, intervalli.ro),
+    };
+    // Stima: ogni parametro sensibile spostato fino a ±relativa del suo valore (almeno ±5 % dell'intervallo).
+    const stima = structuredClone(veriNormalizzati);
+    for (const definizione of sensibili) {
+      const valore = Number(leggiParametro(veriNormalizzati, definizione.chiave));
+      const ampiezza = Math.max(relativa * Math.abs(valore), 0.05 * (definizione.max! - definizione.min!));
+      let nuovo = valore + (2 * casuale() - 1) * ampiezza;
+      nuovo = Math.min(definizione.max!, Math.max(definizione.min!, nuovo));
+      scriviParametro(
+        stima,
+        definizione.chiave,
+        (definizione.unita === 'n' ? Math.round(nuovo) : nuovo) as ValoreParametro,
+      );
+    }
+    const vistaStimata = {
+      azimuth: vista.azimuth + (2 * casuale() - 1) * (perturbazione.azimuth ?? 10),
+      elevation: vista.elevation + (2 * casuale() - 1) * (perturbazione.elevation ?? 8),
+      rollo: vista.rollo + (2 * casuale() - 1) * (perturbazione.rollo ?? 5),
+    };
+    const stimaNormalizzata = famiglia.normalizza(stima, { variante }) as ParametriAnnidati;
+    if (valida && tentativo < 20 && !(valida(veriNormalizzati) && valida(stimaNormalizzata))) {
+      continue;
+    }
+    return {
+      id: `${famiglia.id}-${variante}-${seme}`,
+      famiglia: famiglia.id,
+      variante,
+      veri: veriNormalizzati,
+      vista,
+      stima: stimaNormalizzata,
+      vistaStimata,
+      tentativi: tentativo,
+    };
   }
-  const vistaStimata = {
-    azimuth: vista.azimuth + (2 * casuale() - 1) * (perturbazione.azimuth ?? 10),
-    elevation: vista.elevation + (2 * casuale() - 1) * (perturbazione.elevation ?? 8),
-    rollo: vista.rollo + (2 * casuale() - 1) * (perturbazione.rollo ?? 5),
-  };
-  return {
-    id: `${famiglia.id}-${variante}-${seme}`,
-    famiglia: famiglia.id,
-    variante,
-    veri: veriNormalizzati,
-    vista,
-    stima: famiglia.normalizza(stima, { variante }) as ParametriAnnidati,
-    vistaStimata,
-  };
+}
+
+/**
+ * Un validatore per `casoSintetico`: i parametri si costruiscono senza pezzi mancanti né solidi non validi.
+ * @param lib - Libreria SMLib.
+ * @param famiglia - Famiglia.
+ * @param variante - Variante.
+ * @returns Il validatore.
+ */
+export function costruibile(
+  lib: typeof Smlib,
+  famiglia: FamigliaQualsiasi,
+  variante: string,
+): (parametri: ParametriAnnidati) => boolean {
+  return (parametri) =>
+    lib.scope(() => {
+      const prova = structuredClone(parametri);
+      if (leggiParametro(prova, 'costruzione.lato') === 'coppia') {
+        scriviParametro(prova, 'costruzione.lato', 'dx');
+      }
+      const { pezzi, esiti } = famiglia.costruisciConEsiti(lib, prova, { variante });
+      return (
+        pezzi.length > 0 && !esiti.some((esito) => esito.livello === 'blocco' && esito.codice === 'SOLIDO_NON_VALIDO')
+      );
+    });
 }
 
 /**
@@ -209,9 +247,9 @@ export function fotoSintetica(lib: typeof Smlib, caso: CasoSintetico, opzioni: {
 export function ingressoSintetico(
   caso: CasoSintetico,
   foto: FotoSintetica,
-  opzioni: OpzioniOttimizzatore & { confidenzaVista?: number; confidenzaParametri?: number } = {},
+  opzioni: OpzioniOttimizzatore & { confidenzaVista?: number; confidenzaParametri?: number; senzaScala?: boolean } = {},
 ): IngressoVerifica {
-  const { confidenzaVista, confidenzaParametri, ...ottimizzatore } = opzioni;
+  const { confidenzaVista, confidenzaParametri, senzaScala, ...ottimizzatore } = opzioni;
   const famiglia = famiglie[caso.famiglia]!;
   const confidenze = Object.fromEntries(
     parametriSensibili(famiglia).map((definizione) => [definizione.chiave, confidenzaParametri ?? 0.5]),
@@ -221,7 +259,8 @@ export function ingressoSintetico(
     variante: caso.variante,
     stima: { parametri: caso.stima, confidenze },
     vista: { ...caso.vistaStimata, confidenza: confidenzaVista ?? 0.7 },
-    scala: { pxPerMm: foto.maschera.pxPerMm, fonte: 'misura_nota' },
+    // Senza scala la fonte è la stima: pxPerMm diventa una variabile della camera (§2.5).
+    scala: senzaScala ? { pxPerMm: null, fonte: 'stima' } : { pxPerMm: foto.maschera.pxPerMm, fonte: 'misura_nota' },
     maschera: foto.maschera,
     opzioni: ottimizzatore,
   };
