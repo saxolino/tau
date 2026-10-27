@@ -99,7 +99,7 @@ const uuid = z.uuid();
 
 /**
  * Whether the Library can hold CAD files: the `file_path` and `glb_path` columns exist (migration
- * `20261027140000_libreria_file_cad.sql`, applied only with Marko's OK). Fail-closed: any error, a missing column or
+ * `20261027163400_libreria_file_cad.sql`, applied only with Marko's OK). Fail-closed: any error, a missing column or
  * no session hides «Salva in Libreria».
  *
  * @param apri - The admitted session.
@@ -482,10 +482,18 @@ export type AllegatoRete = Readonly<{ path: string; name: string; type: string; 
 
 /**
  * The network reference formats (`network-references` bucket): images and PDF, 10 MB, five per message; the STEP once
- * the inbox admits CAD files (migration `20261027150000_posta_allegati_cad.sql`) and the server has read it.
+ * the inbox admits CAD files (migration `20261027163500_posta_allegati_cad.sql`) and the server has read it.
  */
 const mimeAllegati = new Set(['image/png', 'image/jpeg', 'image/webp', 'application/pdf', 'application/step']);
 const pesoMassimoAllegato = 10_485_760;
+
+/**
+ * Whether a STEP can travel with a message at all: the inbox's 10 MB limit (the server may still refuse it).
+ * @param step - The verified STEP, if any.
+ * @returns True when it is within the limit.
+ */
+export const stepAllegabile = (step: ExportFile | undefined): boolean =>
+  step !== undefined && step.bytes.length > 0 && step.bytes.length <= pesoMassimoAllegato;
 
 /**
  * The calls of «Chiedi preventivo», in order: start (or reopen) the conversation, upload the references in the
@@ -559,7 +567,7 @@ export function chiamatePreventivo(
 }
 
 /**
- * Whether the inbox admits CAD files: the probe of migration `20261027150000_posta_allegati_cad.sql` answers `true`.
+ * Whether the inbox admits CAD files: the probe of migration `20261027163500_posta_allegati_cad.sql` answers `true`.
  * Fail-closed: a missing function, any error or no session means «no».
  *
  * @param apri - The admitted session.

@@ -17,6 +17,7 @@ import type { ProjectExportRows } from '#services/project-export.js';
 import {
   SinopiaConsegnaError,
   allegatiCadAmmessi,
+  stepAllegabile,
   chiediPreventivo,
   fornitoriPerTipo,
   isTipoPezzo,
@@ -256,6 +257,8 @@ function QuotePanel({
     retry: false,
     staleTime: 5 * 60_000,
   });
+  // The STEP is expected to travel only when the inbox admits it and it is within the limit; the server may still refuse.
+  const stepAtteso = cadAttachments.data === true && stepAllegabile(step);
   const measured = rows.step?.status === 'verified' ? rows.step.measured : undefined;
 
   const send = async (): Promise<void> => {
@@ -293,7 +296,7 @@ function QuotePanel({
           stepAllegato,
           lingua: language,
         });
-      const { conversazione: conversation } = await chiediPreventivo({
+      const { conversazione: conversation, stepAllegato } = await chiediPreventivo({
         link,
         fornitoreId: supplier.id,
         testo,
@@ -303,7 +306,13 @@ function QuotePanel({
         signal,
       });
       clientId.current = randomUuid();
-      toast.success(t('consegna.quote.sent', { supplier: supplier.nome }), {
+      // Say what went: the STEP only when it really travelled; a STEP that was expected and stayed behind is named.
+      const inviato = stepAllegato
+        ? t('consegna.quote.sentWithStep', { supplier: supplier.nome })
+        : stepAtteso
+          ? t('consegna.quote.sentWithoutStep', { supplier: supplier.nome })
+          : t('consegna.quote.sent', { supplier: supplier.nome });
+      toast.success(inviato, {
         action: {
           label: t('consegna.quote.openConversation'),
           onClick: () => {
@@ -422,9 +431,7 @@ function QuotePanel({
         </label>
       </div>
       <p className='text-xs text-muted-foreground'>
-        {cadAttachments.data === true && step
-          ? t('consegna.quote.attachmentsWithStep')
-          : t('consegna.quote.attachments')}
+        {stepAtteso ? t('consegna.quote.attachmentsWithStep') : t('consegna.quote.attachments')}
       </p>
       <div className='flex flex-wrap items-center justify-end gap-2'>
         <Button variant='ghost' size='sm' className='pointer-coarse:min-h-11' onClick={onDone}>

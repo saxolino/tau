@@ -11,10 +11,12 @@ import type { PreparedExport } from '#services/project-export.types.js';
 import type { ProjectExportRows } from '#services/project-export.js';
 import type { SinopiaCadLink } from '#services/sinopia-cad.js';
 import { ProjectDeliverySection } from '#routes/w.$workspace.$project/project-delivery-section.js';
+import { toast } from '#components/ui/sonner.js';
 
 const state = vi.hoisted(() => ({
   link: undefined as unknown,
   columns: true,
+  cadInbox: true,
   save: vi.fn(),
   quote: vi.fn(),
   suppliers: vi.fn(),
@@ -34,7 +36,7 @@ vi.mock('#services/sinopia-consegna.js', async (importOriginal) => ({
   salvaInLibreria: state.save,
   chiediPreventivo: state.quote,
   fornitoriPerTipo: state.suppliers,
-  allegatiCadAmmessi: async () => true,
+  allegatiCadAmmessi: async () => state.cadInbox,
 }));
 
 const link: SinopiaCadLink = {
@@ -73,13 +75,13 @@ const pieces: PezzoDellaConsegna[] = [
 ];
 const capture = vi.fn(async (): Promise<PreparedExport> => ({ status: 'ready', files: [photo] }));
 
-const mount = (): void => {
+const mount = (withRows: ProjectExportRows = rows): void => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
       <ProjectDeliverySection
         name='Fibbia Riviera'
-        rows={rows}
+        rows={withRows}
         selectedNames={undefined}
         capture={capture}
         pieces={pieces}
@@ -93,6 +95,7 @@ beforeEach(() => {
   setLanguage('it');
   state.link = link;
   state.columns = true;
+  state.cadInbox = true;
   state.save.mockResolvedValue('70000000-0000-4000-8000-000000000007');
   state.quote.mockResolvedValue({ conversazione: '60000000-0000-4000-8000-000000000006', stepAllegato: true });
   state.suppliers.mockResolvedValue([
@@ -108,6 +111,67 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+});
+
+/** Open the quote panel, pick the supplier and send; returns the toast's text. */
+const sendQuote = async (): Promise<string> => {
+  const t = bindTranslate('it');
+  const user = userEvent.setup();
+  await user.click(screen.getByRole('button', { name: t('consegna.quote.ask') }));
+  await user.click(await screen.findByRole('radio'));
+  await user.click(screen.getByRole('button', { name: t('consegna.quote.send', { supplier: 'Minuterie Brenta' }) }));
+  await waitFor(() => {
+    expect(toast.success).toHaveBeenCalledOnce();
+  });
+  return vi.mocked(toast.success).mock.calls[0]![0] as string;
+};
+
+describe('the STEP promise follows what really travels (revisione 11)', () => {
+  it('should promise the STEP and say it went when the server took it', async () => {
+    const t = bindTranslate('it');
+    mount();
+    await screen.findByText(t('consegna.quote.ask'));
+    const sent = sendQuote();
+    expect(await screen.findByText(t('consegna.quote.attachmentsWithStep'))).toBeInTheDocument();
+    expect(await sent).toBe(t('consegna.quote.sentWithStep', { supplier: 'Minuterie Brenta' }));
+  });
+
+  it('should say the STEP stayed behind when the server refused it', async () => {
+    const t = bindTranslate('it');
+    state.quote.mockResolvedValue({ conversazione: '60000000-0000-4000-8000-000000000006', stepAllegato: false });
+    mount();
+    expect(await sendQuote()).toBe(t('consegna.quote.sentWithoutStep', { supplier: 'Minuterie Brenta' }));
+  });
+
+  it('should not promise a STEP over 10 MB, nor one the inbox does not admit', async () => {
+    const t = bindTranslate('it');
+    const user = userEvent.setup();
+    state.quote.mockResolvedValue({ conversazione: '60000000-0000-4000-8000-000000000006', stepAllegato: false });
+    const big = createExportFile('step', 'model', new Uint8Array(10_485_761));
+    mount({
+      ...rows,
+      step: {
+        status: 'verified',
+        files: [big],
+        measured: rows.step?.status === 'verified' ? rows.step.measured! : undefined!,
+      },
+    });
+    await user.click(screen.getByRole('button', { name: t('consegna.quote.ask') }));
+    expect(await screen.findByText(t('consegna.quote.attachments'))).toBeInTheDocument();
+    expect(screen.queryByText(t('consegna.quote.attachmentsWithStep'))).not.toBeInTheDocument();
+    await user.click(await screen.findByRole('radio'));
+    await user.click(screen.getByRole('button', { name: t('consegna.quote.send', { supplier: 'Minuterie Brenta' }) }));
+    await waitFor(() => {
+      expect(toast.success).toHaveBeenCalledOnce();
+    });
+    expect(vi.mocked(toast.success).mock.calls[0]![0]).toBe(t('consegna.quote.sent', { supplier: 'Minuterie Brenta' }));
+    cleanup();
+    vi.mocked(toast.success).mockClear();
+    state.cadInbox = false;
+    mount();
+    await user.click(screen.getByRole('button', { name: t('consegna.quote.ask') }));
+    expect(await screen.findByText(t('consegna.quote.attachments'))).toBeInTheDocument();
+  });
 });
 
 describe('Consegna inside Esporta (E3a)', () => {

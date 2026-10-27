@@ -60,10 +60,13 @@ export const consegnaMessages = defineMessages({
       note: 'Nota per il fornitore (facoltativa)',
       notePlaceholder: 'es. «finitura galvanica oro, campione entro novembre»',
       attachments: 'Allegati: tavola PDF e foto. STEP e GLB restano nel progetto e li giri quando servono.',
-      attachmentsWithStep: 'Allegati: tavola PDF, foto e STEP verificato. Il GLB resta nel progetto.',
+      attachmentsWithStep:
+        'Allegati: tavola PDF, foto e STEP verificato, se Sinopia lo accetta. Il GLB resta nel progetto.',
       send: 'Invia a {supplier}',
       sending: 'Preparo la tavola e invio…',
       sent: 'Richiesta inviata a {supplier}',
+      sentWithStep: 'Richiesta inviata a {supplier}, con lo STEP',
+      sentWithoutStep: 'Richiesta inviata a {supplier}. Lo STEP non è partito: giralo dal progetto.',
       openConversation: 'Apri la conversazione',
       unlinked: 'Collega prima il modello a un progetto Sinopia con «Invia a Sinopia».',
       types: {
@@ -145,10 +148,13 @@ export const consegnaMessages = defineMessages({
       note: 'Note for the supplier (optional)',
       notePlaceholder: 'e.g. "gold plating, sample by November"',
       attachments: 'Attached: PDF drawing and photo. STEP and GLB stay in the project; forward them when needed.',
-      attachmentsWithStep: 'Attached: PDF drawing, photo and verified STEP. The GLB stays in the project.',
+      attachmentsWithStep:
+        'Attached: PDF drawing, photo and verified STEP, if Sinopia accepts it. The GLB stays in the project.',
       send: 'Send to {supplier}',
       sending: 'Preparing the drawing and sending…',
       sent: 'Request sent to {supplier}',
+      sentWithStep: 'Request sent to {supplier}, with the STEP',
+      sentWithoutStep: 'Request sent to {supplier}. The STEP did not go: forward it from the project.',
       openConversation: 'Open the conversation',
       unlinked: 'First link the model to a Sinopia project with "Send to Sinopia".',
       types: {
