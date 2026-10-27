@@ -33,6 +33,8 @@ const baseConfig: UserConfig = {
     'src/cad/cad-viewer.tsx',
     'src/graphics/three/react/planar-face-tool.ts',
     'src/graphics/three/react/direct-edit-tool.ts',
+    'src/graphics/three/react/sketch-tool.ts',
+    'src/graphics/three/react/sketch-geometry.ts',
     'src/cad/fit-view-control.tsx',
     'src/cad/fullscreen-view-control.tsx',
     'src/cad/grid-control.tsx',

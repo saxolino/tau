@@ -125,7 +125,9 @@
     "./utils/inspect-glb": "./src/utils/inspect-glb.ts",
     "./package.json": "./package.json",
     "./cad/planar-face-tool": "./src/graphics/three/react/planar-face-tool.ts",
-    "./cad/direct-edit-tool": "./src/graphics/three/react/direct-edit-tool.ts"
+    "./cad/direct-edit-tool": "./src/graphics/three/react/direct-edit-tool.ts",
+    "./cad/sketch-tool": "./src/graphics/three/react/sketch-tool.ts",
+    "./cad/sketch-geometry": "./src/graphics/three/react/sketch-geometry.ts"
   },
   "publishConfig": {
     "access": "public",
@@ -580,6 +582,16 @@
         "types": "./dist/graphics/three/react/direct-edit-tool.d.mts",
         "import": "./dist/graphics/three/react/direct-edit-tool.mjs",
         "default": "./dist/graphics/three/react/direct-edit-tool.mjs"
+      },
+      "./cad/sketch-tool": {
+        "types": "./dist/graphics/three/react/sketch-tool.d.mts",
+        "import": "./dist/graphics/three/react/sketch-tool.mjs",
+        "default": "./dist/graphics/three/react/sketch-tool.mjs"
+      },
+      "./cad/sketch-geometry": {
+        "types": "./dist/graphics/three/react/sketch-geometry.d.mts",
+        "import": "./dist/graphics/three/react/sketch-geometry.mjs",
+        "default": "./dist/graphics/three/react/sketch-geometry.mjs"
       }
     },
     "imports": {}

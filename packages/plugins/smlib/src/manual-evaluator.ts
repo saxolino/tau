@@ -1,5 +1,5 @@
 /* oxlint-disable new-cap -- SMLib exposes capitalized shape factory functions. */
-import type { Part, Shell, Sketch, Edge, Face, Wire } from '@classcad/smlibwasm';
+import type { Axis, Part, Shell, Sketch, Edge, Face, Wire } from '@classcad/smlibwasm';
 import { isManualProfileClosed, manualProfileSegments } from '#manual-operations.js';
 import type {
   ManualDocument,
@@ -28,6 +28,43 @@ const placedPlane = (library: SmlibLibrary, plane: ManualProfile['plane'], origi
   return base.at(origin);
 };
 
+/** The plane a profile is drawn on: its sketch frame on a picked face, else its principal plane. */
+const profilePlane = (library: SmlibLibrary, profile: ManualProfile) =>
+  profile.frame
+    ? new library.Plane(profile.origin, profile.frame.xDir, profile.frame.normal)
+    : placedPlane(library, profile.plane, profile.origin);
+
+const local3 = ({ x, y }: { x: number; y: number }): ManualVector => [x, y, 0];
+
+/** One exact native edge of a sketched outline, from the end of the previous one. */
+function pathEdge(
+  library: SmlibLibrary,
+  start: { x: number; y: number },
+  segment: Extract<ManualProfile, { kind: 'path' }>['segments'][number],
+): Edge {
+  switch (segment.kind) {
+    case 'line': {
+      return library.Line(local3(start), local3(segment.to));
+    }
+    case 'arc': {
+      return library.ThreePointArc(local3(start), local3(segment.through), local3(segment.to));
+    }
+    case 'spline': {
+      return library.Spline([start, ...segment.through, segment.to].map((point) => local3(point)));
+    }
+  }
+}
+
+/** Exact native edges of a sketched outline, in its local plane. */
+function pathEdges(library: SmlibLibrary, profile: Extract<ManualProfile, { kind: 'path' }>): Edge[] {
+  let from = profile.start;
+  return profile.segments.map((segment) => {
+    const edge = pathEdge(library, from, segment);
+    from = segment.to;
+    return edge;
+  });
+}
+
 /**
  * Reconstruct an editable planar curve using exact native lines, Béziers or circular arcs.
  * @param library - Initialized SMLib module.
@@ -36,33 +73,45 @@ const placedPlane = (library: SmlibLibrary, plane: ManualProfile['plane'], origi
  */
 export function buildManualProfileWire(library: SmlibLibrary, profile: ManualProfile): Wire {
   let local: Wire;
-  if (profile.kind === 'circle' || profile.kind === 'arc') {
-    local = new library.Wire(
-      library.CenterArc(
-        [profile.center.x, profile.center.y, 0],
-        profile.radius,
-        profile.kind === 'circle' ? 0 : profile.startAngle,
-        profile.kind === 'circle' ? 360 : profile.sweepAngle,
-      ),
-    );
-  } else if (profile.kind === 'polygon') {
-    local = library.Polyline(
-      profile.points.map(({ x, y }): ManualVector => [x, y, 0]),
-      { close: isManualProfileClosed(profile) },
-    );
-  } else {
-    local = new library.Wire(
-      manualProfileSegments(profile).map((segment) =>
-        library.Bezier(
-          [segment.start, segment.control1, segment.control2, segment.end].map(({ x, y }): ManualVector => [x, y, 0]),
+  switch (profile.kind) {
+    case 'circle':
+    case 'arc': {
+      local = new library.Wire(
+        library.CenterArc(
+          [profile.center.x, profile.center.y, 0],
+          profile.radius,
+          profile.kind === 'circle' ? 0 : profile.startAngle,
+          profile.kind === 'circle' ? 360 : profile.sweepAngle,
         ),
-      ),
-    );
+      );
+      break;
+    }
+    case 'path': {
+      local = new library.Wire(pathEdges(library, profile));
+      break;
+    }
+    case 'polygon': {
+      local = library.Polyline(
+        profile.points.map(({ x, y }): ManualVector => [x, y, 0]),
+        { close: isManualProfileClosed(profile) },
+      );
+      break;
+    }
+    case 'spline': {
+      local = new library.Wire(
+        manualProfileSegments(profile).map((segment) =>
+          library.Bezier(
+            [segment.start, segment.control1, segment.control2, segment.end].map(({ x, y }): ManualVector => [x, y, 0]),
+          ),
+        ),
+      );
+      break;
+    }
   }
   if (!Number.isFinite(local.length) || local.length <= 1e-9 || local.isClosed !== isManualProfileClosed(profile)) {
     throw new Error('The profile did not produce the intended nonempty native curve.');
   }
-  return placedPlane(library, profile.plane, profile.origin).mul(local);
+  return profilePlane(library, profile).mul(local);
 }
 
 /**
@@ -79,23 +128,70 @@ export function buildManualProfile(library: SmlibLibrary, profile: ManualProfile
   const local =
     profile.kind === 'circle'
       ? library.Circle(profile.radius).translate([profile.center.x, profile.center.y, 0])
-      : profile.kind === 'polygon'
-        ? library.Polygon(profile.points.map(({ x, y }): ManualVector => [x, y, 0]))
-        : library.makeFace(
-            new library.Wire(
-              manualProfileSegments(profile).map((segment) =>
-                library.Bezier(
-                  [segment.start, segment.control1, segment.control2, segment.end].map(
-                    ({ x, y }): ManualVector => [x, y, 0],
+      : profile.kind === 'path'
+        ? library.makeFace(new library.Wire(pathEdges(library, profile)))
+        : profile.kind === 'polygon'
+          ? library.Polygon(profile.points.map(({ x, y }): ManualVector => [x, y, 0]))
+          : library.makeFace(
+              new library.Wire(
+                manualProfileSegments(profile).map((segment) =>
+                  library.Bezier(
+                    [segment.start, segment.control1, segment.control2, segment.end].map(
+                      ({ x, y }): ManualVector => [x, y, 0],
+                    ),
                   ),
                 ),
               ),
-            ),
-          );
+            );
   if (!Number.isFinite(local.area) || local.area <= 1e-9) {
     throw new Error('The profile must enclose a nonzero area.');
   }
-  return placedPlane(library, profile.plane, profile.origin).mul(local);
+  return profilePlane(library, profile).mul(local);
+}
+
+/**
+ * The world axis of a revolution, given in the profile's own millimetres.
+ * @param library - Initialized SMLib module.
+ * @param profile - The revolved profile, whose plane carries the axis.
+ * @param axis - Two distinct profile-local points.
+ * @returns The native axis in world coordinates.
+ */
+export function manualRevolveAxis(
+  library: SmlibLibrary,
+  profile: ManualProfile,
+  axis: { start: { x: number; y: number }; end: { x: number; y: number } },
+): Axis {
+  const plane = profilePlane(library, profile);
+  const start = plane.fromLocal(local3(axis.start));
+  const end = plane.fromLocal(local3(axis.end));
+  return new library.Axis([start.x, start.y, start.z], [end.x - start.x, end.y - start.y, end.z - start.z]);
+}
+
+/** The solid a closed profile makes on its own: extruded, revolved or swept. */
+function profileSolid(
+  library: SmlibLibrary,
+  entries: NamedInputShape[],
+  operation: Extract<ManualOperation, { type: 'extrude' | 'revolve' | 'sweep' }>,
+): Part {
+  const sketch = buildManualProfile(library, operation.profile);
+  let solid: Part;
+  if (operation.type === 'extrude') {
+    solid =
+      operation.taper === undefined
+        ? sketch.extrude(operation.distance)
+        : sketch.extrude(operation.distance, { taper: operation.taper });
+  } else if (operation.type === 'revolve') {
+    solid = sketch.revolve(manualRevolveAxis(library, operation.profile, operation.axis), operation.angle);
+  } else {
+    const { path } = operation;
+    const rail =
+      path.kind === 'sketch'
+        ? buildManualProfileWire(library, path.profile)
+        : resolveManualEdges(requirePart(library, findTarget(entries, path.piece)), [path.geometry])[0]!;
+    solid = sketch.sweep(rail);
+  }
+  assertValidBody(library, solid);
+  return solid;
 }
 
 /**
@@ -297,7 +393,8 @@ async function applyOperation(
   input: { operation: ManualOperation; replayWitness?: string },
 ): Promise<NamedInputShape[]> {
   const { operation } = input;
-  if (operation.type === 'sketch' || (operation.type === 'extrude' && operation.mode === 'new')) {
+  const isProfileSolid = operation.type === 'extrude' || operation.type === 'revolve' || operation.type === 'sweep';
+  if (operation.type === 'sketch' || (isProfileSolid && operation.mode === 'new')) {
     const name = operation.name!;
     if (entries.some((entry) => entry.name === name || entry.manualTargetName === name)) {
       throw new Error(`A piece named "${name}" already exists. Choose a unique name.`);
@@ -305,7 +402,7 @@ async function applyOperation(
     const shape =
       operation.type === 'sketch'
         ? buildManualProfileWire(library, operation.profile)
-        : buildManualProfile(library, operation.profile).extrude(operation.distance);
+        : profileSolid(library, entries, operation);
     if (shape instanceof library.Part) {
       assertValidBody(library, shape);
     }
@@ -354,9 +451,11 @@ async function applyOperation(
       result = original.mirror(placedPlane(library, operation.plane, operation.origin));
       break;
     }
-    case 'extrude': {
+    case 'extrude':
+    case 'revolve':
+    case 'sweep': {
       const part = requirePart(library, entry);
-      const tool = buildManualProfile(library, operation.profile).extrude(operation.distance);
+      const tool = profileSolid(library, entries, operation);
       result = operation.mode === 'add' ? part.fuse(tool) : part.cut(tool);
       assertBooleanChange(part, result, operation.mode);
       break;

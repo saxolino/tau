@@ -7,8 +7,10 @@ import { useSelector } from '@xstate/react';
 import { useManualEdits } from '#hooks/use-manual-edits.js';
 import { useManualFaceTool } from '#hooks/use-manual-face-tool.js';
 import { useManualDirectTool } from '#hooks/use-manual-direct-tool.js';
+import { useManualSketchTool } from '#hooks/use-manual-sketch-tool.js';
+import { ManualSketchBar } from '#routes/w.$workspace.$project/manual-sketch-bar.js';
 import { matchesManualSidecarRevision } from '#services/manual-face-draft.js';
-import { useTranslation } from '#i18n/translate.js';
+import { formatNumber, useTranslation } from '#i18n/translate.js';
 import { useProjectWorkspace } from '#routes/w.$workspace.$project/project-workspace-context.js';
 import { cn } from '@taucad/ui/utils/cn';
 import { useManualInspectorDraft } from '#routes/w.$workspace.$project/manual-inspector-draft.js';
@@ -530,7 +532,7 @@ const ViewerContent = memo(function ({
   readonly panelApi: ChatViewerProps['panelApi'];
 }): React.JSX.Element {
   const { projectRef, entriesRecord, viewRecords, modelInteractionRef } = useProject();
-  const { t } = useTranslation();
+  const { t, language } = useTranslation();
   const workspace = useProjectWorkspace({ enableNoContext: true });
   const [localManualOpen, setLocalManualOpen] = useState(false);
   const isManualOwner = workspace?.manualViewId === viewId;
@@ -826,6 +828,17 @@ const ViewerContent = memo(function ({
   // selection drops the face or the edges the tools held.
   const sharedPiece = useSelectedPiece(entryPath);
   const sharedPieceId = sharedPiece?.node.id;
+  const sharedPieceName = sharedPiece?.node.extras?.['manualTargetName'];
+  // E4: the sketch on the model; while it is open the face and body tools step aside.
+  const sketch = useManualSketchTool({
+    edits: manualEdits,
+    manifest: manualManifest,
+    ready: faceReady,
+    open: isToolOpen,
+    targets: manualTargets,
+    selectedPiece: typeof sharedPieceName === 'string' ? sharedPieceName : undefined,
+  });
+  const isSketching = sketch.controls.active;
   const selectDirectPiece = directTool.controls.onSelectPiece;
   const clearFace = faceTool.controls.onClear;
   const cancelDirect = directTool.controls.onCancel;
@@ -1056,6 +1069,7 @@ const ViewerContent = memo(function ({
       error={manualEdits.error}
       faceControls={faceTool.controls}
       directControls={directTool.controls}
+      sketchControls={sketch.controls}
       onShowProfiles={
         hasManualDrawing && offeredViewId !== 'drawing'
           ? () => {
@@ -1074,12 +1088,19 @@ const ViewerContent = memo(function ({
       historySlot={isManualOwner ? workspace.inspectorHistorySlot : undefined}
     />
   );
+  const sketchQuota = isSketching ? sketch.controls.liveQuota : undefined;
+  const sketchQuotaText = sketchQuota
+    ? `${sketchQuota.kind === 'radius' ? 'R ' : ''}${sketchQuota.values
+        .map((value) => formatNumber(value, language, { minimumFractionDigits: 2, maximumFractionDigits: 2 }))
+        .join(' × ')} mm`
+    : undefined;
   const gestureQuota =
-    faceTool.controls.isDragging && faceTool.controls.action !== 'hole'
+    sketchQuotaText ??
+    (faceTool.controls.isDragging && faceTool.controls.action !== 'hole'
       ? faceTool.controls.distance
       : directTool.controls.isDragging && directTool.controls.preview
         ? directTool.controls.preview
-        : undefined;
+        : undefined);
   return (
     <div className='@container/manual-viewer relative h-full min-h-0 min-w-0'>
       <div className='flex h-full min-h-0 min-w-0'>
@@ -1139,8 +1160,9 @@ const ViewerContent = memo(function ({
           renderCanvas={({ eventSource, gizmoContainer, onComponentSecondaryPointerCandidate }) =>
             isGeometryUnitClosed ? null : (
               <CadViewer
-                planarFaceTool={faceTool.tool}
-                directEditTool={directTool.tool}
+                planarFaceTool={isSketching ? sketch.planeTool : faceTool.tool}
+                directEditTool={isSketching ? undefined : directTool.tool}
+                sketchTool={sketch.tool}
                 producibilityOverlay={producibilityOverlay}
                 enableZoom
                 enablePan
@@ -1209,7 +1231,12 @@ const ViewerContent = memo(function ({
                           {segment}
                         </>
                       }
-                      aboveControls={list}
+                      aboveControls={
+                        <>
+                          <ManualSketchBar controls={sketch.controls} />
+                          {list}
+                        </>
+                      }
                     />
                   )}
                 </ViewerIssues>
@@ -1220,7 +1247,20 @@ const ViewerContent = memo(function ({
           }
         >
           <SelectedPieceChip entryPath={entryPath} location='viewer' />
-          {gestureQuota === undefined ? null : <GestureQuota value={gestureQuota} />}
+          {gestureQuota === undefined ? null : (
+            <GestureQuota
+              value={gestureQuota}
+              editing={
+                isSketching && sketch.controls.typing && sketchQuota
+                  ? {
+                      label: t(`sketch.quota.${sketchQuota.kind}`),
+                      onSubmit: sketch.controls.onQuotaSubmit,
+                      onCancel: sketch.controls.onQuotaCancel,
+                    }
+                  : undefined
+              }
+            />
+          )}
           {!artifact && !overlayFailureMessage ? <GeometryStatus isEmpty={emptyModel} /> : null}
           {/* Reopen-renderer overlay — shown when the geometry unit was closed */}
           {isGeometryUnitClosed && (

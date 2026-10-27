@@ -24,6 +24,7 @@ import { riconoscimentoMessages } from '#i18n/messages/riconoscimento.js';
 import { assistantMessages } from '#i18n/messages/assistant.js';
 import { producibilitaMessages } from '#i18n/messages/producibilita.js';
 import { fotoCampioneMessages } from '#i18n/messages/foto-campione.js';
+import { sketchMessages } from '#i18n/messages/sketch.js';
 
 /**
  * Every area's messages under its own namespace: `t('project.topBar.versions')`. One area per file in
@@ -56,6 +57,7 @@ export const areas = {
   fotoCampione: fotoCampioneMessages,
   assistant: assistantMessages,
   producibilita: producibilitaMessages,
+  sketch: sketchMessages,
 } as const;
 
 /** The Italian catalog, the source of every key. */

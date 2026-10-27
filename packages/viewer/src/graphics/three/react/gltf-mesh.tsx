@@ -4,6 +4,8 @@ import type { DirectEditTool } from '#graphics/three/react/direct-edit-tool.js';
 import type { ModelPickResult } from '#graphics/three/utils/model-gpu-pick.js';
 import { fromRenderPoint } from '@taucad/spatial';
 import { PlanarFaceControls } from '#graphics/three/react/planar-face-controls.jsx';
+import { SketchControls } from '#graphics/three/react/sketch-controls.jsx';
+import type { SketchTool } from '#graphics/three/react/sketch-tool.js';
 import { ProducibilityOverlayMesh } from '#graphics/three/react/producibility-overlay.jsx';
 import type { ProducibilityOverlay } from '#graphics/three/react/producibility-overlay.types.js';
 import type { PlanarFaceTool } from '#graphics/three/react/planar-face-tool.js';
@@ -343,6 +345,8 @@ export function restoreOriginalMaterials(scene: Group, saved: Map<number, Materi
 type GltfMeshDisplayProperties = {
   readonly planarFaceTool?: PlanarFaceTool;
   readonly directEditTool?: DirectEditTool;
+  /** A sketch on the model (E4): while it is open, clicks draw on its plane instead of selecting. */
+  readonly sketchTool?: SketchTool;
   /** The producibility veil the host asks for (E1): faces of a check, a draft map, a whole piece. */
   readonly producibilityOverlay?: ProducibilityOverlay;
   /**
@@ -2068,6 +2072,7 @@ export function GltfMesh({
   gltfFile,
   planarFaceTool,
   directEditTool,
+  sketchTool,
   producibilityOverlay,
   sourceFile,
   geometryHash,
@@ -2117,12 +2122,14 @@ export function GltfMesh({
   );
   const activePlanarFaceTool = componentManifest?.mechanism ? undefined : planarFaceTool;
   const activeDirectEditTool = componentManifest?.mechanism ? undefined : directEditTool;
+  const activeSketchTool = componentManifest?.mechanism ? undefined : sketchTool;
   const isSubElementSelected =
     activePlanarFaceTool?.selection !== undefined || (activeDirectEditTool?.selection?.edgeIds?.length ?? 0) > 0;
   const needsMeasurementFeatures =
     hasMeasurementDemand ||
     activePlanarFaceTool !== undefined ||
     activeDirectEditTool !== undefined ||
+    activeSketchTool !== undefined ||
     (producibilityOverlay?.pieces.length ?? 0) > 0;
   const measurementDemandRef = useRef(needsMeasurementFeatures);
   useLayoutEffect(() => {
@@ -2677,6 +2684,11 @@ export function GltfMesh({
         event.stopPropagation();
         return;
       }
+      // An open sketch owns the clicks on its plane, the model included: drawing never selects a piece.
+      if (activeSketchTool) {
+        event.stopPropagation();
+        return;
+      }
       const graphicsContext = graphicsActor.getSnapshot().context;
       if (
         activePlanarFaceTool &&
@@ -2778,6 +2790,7 @@ export function GltfMesh({
     [
       activePlanarFaceTool,
       activeDirectEditTool,
+      activeSketchTool,
       graphicsActor,
       presentation,
       renderFrame,
@@ -2871,6 +2884,10 @@ export function GltfMesh({
 
   const handlePointerMissed = useCallback(() => {
     lastHoveredComponentIdRef.current = undefined;
+    // A click beside the model while sketching is a point of the sketch, not a deselection.
+    if (activeSketchTool) {
+      return;
+    }
     if (!modelVisualState.isViewerHoverSuppressed) {
       graphicsActor.send({
         type: 'setHoveredModelComponent',
@@ -2899,7 +2916,7 @@ export function GltfMesh({
       unitId,
       source: 'viewer',
     });
-  }, [graphicsActor, modelVisualState.isViewerHoverSuppressed, unitId]);
+  }, [activeSketchTool, graphicsActor, modelVisualState.isViewerHoverSuppressed, unitId]);
 
   if (!scene) {
     return undefined;
@@ -2910,6 +2927,9 @@ export function GltfMesh({
       <ProducibilityOverlayMesh overlay={producibilityOverlay} artifactKey={presentation.key} scene={scene} />
       {activePlanarFaceTool ? (
         <PlanarFaceControls tool={activePlanarFaceTool} artifactKey={presentation.key} scene={scene} />
+      ) : null}
+      {activeSketchTool ? (
+        <SketchControls tool={activeSketchTool} scene={scene} getMeshes={getModelPickableMeshes} />
       ) : null}
       {/* A tool's handles belong to the piece being worked on: with nothing selected they would float inside the model. */}
       {activeDirectEditTool &&
