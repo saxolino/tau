@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { ChevronUp, MessageCircle } from 'lucide-react';
 import { KeyShortcut } from '@taucad/ui/components/key-shortcut';
 import { PaneButton } from '@taucad/workbench-panes/components/pane-button';
@@ -12,6 +12,15 @@ import {
   AssistantContextChips,
   AssistantStarts,
 } from '#components/chat/assistant-suggestions.js';
+import {
+  AssistantBrief,
+  AssistantNextSteps,
+  AssistantTrayCard,
+  AssistantTrayProvider,
+  useAssistantTray,
+} from '#components/chat/assistant-tray.js';
+import { TurnModelSummary } from '#components/chat/turn-summary-card.js';
+import { senzaVarianti } from '#lib/assistant-variants-marker.js';
 import { useCadChatClient } from '#chat-clients/use-cad-chat-client.js';
 import { useChatContext, useChatSelector } from '#hooks/use-chat.js';
 import { useInspectorSelection } from '#hooks/use-inspector-selection.js';
@@ -30,7 +39,7 @@ const latestAnswer = (
       continue;
     }
     const text = message.parts
-      .flatMap((part) => (part.type === 'text' && typeof part.text === 'string' ? [part.text] : []))
+      .flatMap((part) => (part.type === 'text' && typeof part.text === 'string' ? [senzaVarianti(part.text)] : []))
       .join(' ')
       .replaceAll(/\s+/gu, ' ')
       .trim();
@@ -40,6 +49,54 @@ const latestAnswer = (
   }
   return undefined;
 };
+
+/**
+ * What the strip shows above its composer: an open card (the variants, «Cosa ho cambiato») in place of everything
+ * else; otherwise the last turn's changes, then the selection's suggestions, the next steps of a conversation already
+ * started, the card the assistant opens a model with (D4), or the starts of an empty project.
+ */
+function AssistantStripBody({
+  hasMessages,
+  isWorking,
+}: Readonly<{ hasMessages: boolean; isWorking: boolean }>): React.JSX.Element {
+  const { selection } = useInspectorSelection();
+  const tray = useAssistantTray();
+  const lastTurnId = useChatSelector((state) => state.turnGroups.at(-1)?.messageIds[0]);
+  const [closedTurnId, setClosedTurnId] = useState<string>();
+  const isModel = selection.kind === 'model';
+  const hasCard = tray?.sessione !== undefined || tray?.modifica !== undefined;
+  const hasPieces = (tray?.modello.pieces.length ?? 0) > 0;
+  const showsTurn = !hasCard && hasMessages && !isWorking && lastTurnId !== undefined && lastTurnId !== closedTurnId;
+  const suggestions =
+    !isModel || !tray ? (
+      <div className='px-1'>
+        <AssistantContextChips />
+      </div>
+    ) : hasMessages ? (
+      <AssistantNextSteps className='px-1' />
+    ) : hasPieces ? (
+      <AssistantBrief />
+    ) : (
+      <div className='px-1'>
+        <AssistantStarts variant='row' />
+      </div>
+    );
+  return (
+    <div className='space-y-2 px-3 pt-2 pb-2 empty:hidden'>
+      {hasCard ? <AssistantTrayCard /> : null}
+      {showsTurn ? (
+        <TurnModelSummary
+          turnId={lastTurnId}
+          className='mx-0 my-0'
+          onChiudi={() => {
+            setClosedTurnId(lastTurnId);
+          }}
+        />
+      ) : null}
+      {hasCard ? null : suggestions}
+    </div>
+  );
+}
 
 /**
  * The assistant while the inspector has the lane: its name, what it last said or that it is working, the starts or
@@ -63,7 +120,6 @@ function AssistantStrip({ onExpand, keyHint }: Readonly<{ onExpand: () => void; 
   const status = useChatSelector((state) => state.status);
   const latest = useChatSelector((state) => latestAnswer(state.messages));
   const isWorking = status === 'submitted' || status === 'streaming';
-  const { selection } = useInspectorSelection();
   const onSubmit: ChatTextareaProperties['onSubmit'] = useCallback(
     async ({ content, attachments, references }) => {
       await submitChat({ text: content, attachments, ...(references === undefined ? {} : { references }) });
@@ -115,14 +171,7 @@ function AssistantStrip({ onExpand, keyHint }: Readonly<{ onExpand: () => void; 
                 {latest}
               </button>
             ) : null}
-            <div className='px-4 pt-2 pb-2'>
-              {/* An empty conversation about the whole model starts from somewhere; a selection gets its edits. */}
-              {!hasMessages && selection.kind === 'model' ? (
-                <AssistantStarts variant='row' />
-              ) : (
-                <AssistantContextChips />
-              )}
-            </div>
+            <AssistantStripBody hasMessages={hasMessages} isWorking={isWorking} />
             <div role='region' aria-label={t('project.agent.composer')} className='px-3 pb-3'>
               <ChatTextarea ref={textarea} mode='main' enableAutoFocus={false} onSubmit={onSubmit} />
             </div>
@@ -151,21 +200,25 @@ export function AssistantDock({
   const expand = useCallback(() => {
     onExpandedChange(true);
   }, [onExpandedChange]);
-  return isExpanded ? (
-    <div data-slot='assistant-conversation' className='flex min-h-0 flex-1 flex-col border-t border-border'>
-      <ChatHistoryGate>
-        <ChatHistory
-          variant='dock'
-          isExpanded
-          setIsExpanded={(value) => {
-            onExpandedChange(typeof value === 'function' ? value(true) : value);
-          }}
-        />
-      </ChatHistoryGate>
-    </div>
-  ) : (
-    <ChatHistoryGate>
-      <AssistantStrip onExpand={expand} keyHint={keyHint} />
-    </ChatHistoryGate>
+  return (
+    <AssistantTrayProvider>
+      {isExpanded ? (
+        <div data-slot='assistant-conversation' className='flex min-h-0 flex-1 flex-col border-t border-border'>
+          <ChatHistoryGate>
+            <ChatHistory
+              variant='dock'
+              isExpanded
+              setIsExpanded={(value) => {
+                onExpandedChange(typeof value === 'function' ? value(true) : value);
+              }}
+            />
+          </ChatHistoryGate>
+        </div>
+      ) : (
+        <ChatHistoryGate>
+          <AssistantStrip onExpand={expand} keyHint={keyHint} />
+        </ChatHistoryGate>
+      )}
+    </AssistantTrayProvider>
   );
 }

@@ -8,7 +8,8 @@ import { PaneButton } from '@taucad/workbench-panes/components/pane-button';
 import { ChatMessagePlanning } from '#routes/w.$workspace.$project/chat-message-planning.js';
 import { ChatMessage } from '#routes/w.$workspace.$project/chat-message.js';
 import { TurnModelSummary } from '#components/chat/turn-summary-card.js';
-import { AssistantComposerProvider, AssistantContextChips } from '#components/chat/assistant-suggestions.js';
+import { AssistantComposerProvider } from '#components/chat/assistant-suggestions.js';
+import { AssistantFooter } from '#components/chat/assistant-tray.js';
 import type { TurnGroup as TurnGroupData } from '#routes/w.$workspace.$project/chat-turn-groups.js';
 import { ScrollDownButton } from '#routes/w.$workspace.$project/scroll-down-button.js';
 import {
@@ -343,7 +344,7 @@ const ExpandedChatHistory = memo(function ({
                   onScrollToBottom={scrollToBottom}
                 />
                 <ChatMessagePlanning key={activeChatId} className='mb-3 px-3' />
-                <AssistantContextChips className='mb-2 px-1' />
+                <AssistantFooter className='mb-2 px-1' />
                 <div className='mx-2 -mb-3 flex flex-col rounded-t-2xl border border-b-0 border-border/60 bg-muted/20 pb-3 empty:hidden'>
                   <ChatMessageQueue key={`${activeChatId}:messages`} />
                   <ChatQuestionQueue key={`${activeChatId}:questions`} onDismissFocus={focusComposer} />

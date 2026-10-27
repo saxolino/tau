@@ -6,6 +6,7 @@ export {
   differenzeParametri,
   insiemeAgente,
   mosseFamiglie,
+  normalizzati,
   proponiVarianti,
 } from '#varianti/assi.js';
 export type { AsseVariante, Differenza, OpzioniVarianti, PropostaVariante } from '#varianti/assi.js';

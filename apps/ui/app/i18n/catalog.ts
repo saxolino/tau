@@ -21,6 +21,7 @@ import { libraryMessages } from '#i18n/messages/library.js';
 import { manualEditMessages } from '#i18n/messages/manual-edit.js';
 import { inspectorMessages } from '#i18n/messages/inspector.js';
 import { riconoscimentoMessages } from '#i18n/messages/riconoscimento.js';
+import { assistantMessages } from '#i18n/messages/assistant.js';
 
 /**
  * Every area's messages under its own namespace: `t('project.topBar.versions')`. One area per file in
@@ -50,6 +51,7 @@ export const areas = {
   inspector: inspectorMessages,
   library: libraryMessages,
   riconoscimento: riconoscimentoMessages,
+  assistant: assistantMessages,
 } as const;
 
 /** The Italian catalog, the source of every key. */

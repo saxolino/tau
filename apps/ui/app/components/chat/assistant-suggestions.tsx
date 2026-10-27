@@ -18,6 +18,15 @@ type AssistantComposer = Readonly<{ focusComposer: () => void }>;
 const AssistantComposerContext = createContext<AssistantComposer>({ focusComposer: () => undefined });
 
 /**
+ * The composer a suggestion fills: the dock's or the conversation's.
+ *
+ * @returns How to focus it.
+ */
+export function useAssistantComposer(): AssistantComposer {
+  return useContext(AssistantComposerContext);
+}
+
+/**
  * Provide the composer a suggestion fills.
  *
  * @param props - The composer's focus and the content that offers suggestions.
