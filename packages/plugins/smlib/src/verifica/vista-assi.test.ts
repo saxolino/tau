@@ -3,6 +3,7 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type * as Smlib from '@classcad/smlibwasm';
 import { famiglie } from '#famiglie/registro.js';
 import { verificaSilhouette } from '#verifica/ottimizza.js';
+import { cameraDaVista } from '#verifica/vista-famiglia.js';
 import { casoSintetico, fotoSintetica, ingressoSintetico } from '#verifica/sintetico.js';
 
 /**
@@ -51,5 +52,36 @@ describe('vista dichiarata che non spiega la maschera', () => {
     );
     expect(esito.iou).toBeGreaterThanOrEqual(0.9);
     expect(esito.avvii).toHaveLength(1);
+  });
+
+  it('should start a buckle declared «fronte» already from above, with a high first IoU and no axis search', () => {
+    // La stessa foto della fibbia di faccia, ma la vista del riconoscimento passa dalla faccia dichiarata: «sopra»
+    // (la faccia a vista +Z della fibbia) con gli scarti 4° e 8° dalla vista dritta.
+    const caso = {
+      ...casoSintetico(famiglie.fibbia!, 'rettangolare', 4),
+      vista: { azimuth: 3, elevation: 82, rollo: 1 },
+    };
+    const partenza = cameraDaVista(famiglie.fibbia!.viste, {
+      faccia: 'sopra',
+      nome: 'fronte',
+      azimuth: 4,
+      elevation: 8,
+      rollo: -2,
+    });
+    expect(partenza.origine).toBe('faccia');
+    const esito = verificaSilhouette(
+      lib,
+      ingressoSintetico({ ...caso, vistaStimata: partenza }, fotoSintetica(lib, caso), {
+        budgetMs: 120_000,
+        confidenzaVista: 0.78,
+        sensibilita: false,
+      }),
+    );
+    // Il primo avvio spiega già la maschera (con la vista di prima era 0,05): nessuna delle 24 viste lungo gli assi
+    // serve. L'IoU del primo avvio è limitato solo dalle misure della stima, perturbate del 15 %.
+    expect(esito.avvii).toHaveLength(1);
+    expect(esito.avvii[0]!.iou).toBeGreaterThanOrEqual(0.6);
+    expect(esito.iou).toBeGreaterThanOrEqual(0.9);
+    expect(esito.camera.elevation).toBeGreaterThan(60);
   });
 });

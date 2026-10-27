@@ -30,6 +30,7 @@ import {
   sformoDuePiani,
 } from '#famiglie/verifiche-comuni.js';
 import { misuraPezzo } from '#famiglie/sonda-tempi.js';
+import { facceDiPezzoPiatto, nomiPezzoPiatto } from '#famiglie/viste.js';
 
 /**
  * Famiglia `fibbia` (specifica §1.3): telaio piatto su XY, faccia a vista +Z, il cinturino entra lungo −Y; la
@@ -732,6 +733,17 @@ export const fibbia: Famiglia<ParametriFibbia> = {
   costruisci: (lib, p, opzioni) => costruisciConEsiti(lib, p, opzioni).pezzi,
   costruisciConEsiti,
   verifiche,
+  viste: {
+    principale: 'sopra',
+    facce: facceDiPezzoPiatto({
+      sopra:
+        'the face that shows when worn: frame outline, opening and pin; strap enters from the bottom of the picture',
+      sotto: 'back of the buckle (mirror image)',
+      fianco: 'side edge (shows frame thickness and profile)',
+      dietro: 'strap-entry edge head-on (shows the frame section)',
+    }),
+    nomi: nomiPezzoPiatto,
+  },
   silhouette: { assi: ['z'], simmetrie: ['yz'] },
   materialiAmmessi: ['zama', 'ottone', 'acciaio', 'inox'],
   emettiMain: (p, ipotesi, opzioni) =>

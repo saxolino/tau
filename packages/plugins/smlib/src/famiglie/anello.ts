@@ -18,6 +18,7 @@ import { diametroInterno, intervalliTaglia } from '#famiglie/taglie-anello.js';
 import type { SistemaTaglia } from '#famiglie/taglie-anello.js';
 import { esitiPezzi, esito, esitoMinimo, mm, normalizzaForma } from '#famiglie/verifiche-comuni.js';
 import { misuraPezzo } from '#famiglie/sonda-tempi.js';
+import { faccia as f } from '#famiglie/viste.js';
 
 /**
  * Famiglia `anello` (specifica §1.7): gambo + castone semplice, fusione a cera persa.
@@ -530,6 +531,31 @@ export const anello: Famiglia<ParametriAnello> = {
   costruisci: (lib, p) => costruisciConEsiti(lib, p).pezzi,
   costruisciConEsiti,
   verifiche,
+  viste: {
+    principale: 'tre_quarti_pietra',
+    facce: [
+      f(
+        'tre_quarti_pietra',
+        35,
+        35,
+        'three-quarter view on the stone, from a bit above and to one side: the usual jewellery product photo',
+      ),
+      f(
+        'asse_dito',
+        0,
+        0,
+        'along the finger axis: the ring as a circle, stone at the top (shank thickness, setting height)',
+      ),
+      f('fianco_esterno', 90, 0, 'pure side profile (shank width)'),
+      f('sopra', 0, 90, 'straight above the stone (table, shank width)'),
+    ],
+    nomi: {
+      fronte: { faccia: 'asse_dito', azimuth: 0, elevation: 0 },
+      tre_quarti: { faccia: 'tre_quarti_pietra', azimuth: 0, elevation: 0 },
+      lato: { faccia: 'fianco_esterno', azimuth: 0, elevation: 0 },
+      alto: { faccia: 'sopra', azimuth: 0, elevation: 0 },
+    },
+  },
   silhouette: { assi: ['x', 'y', 'z'], simmetrie: ['yz', 'xz'] },
   materialiAmmessi: [...leghe],
   emettiMain: (p, ipotesi, opzioni) =>

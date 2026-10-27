@@ -14,6 +14,7 @@ import { aspettoMateriale, materiale } from '#famiglie/materiali.js';
 import { normalizzaConParametri, predefinitiDaParametri, schemaDaParametri } from '#famiglie/parametri.js';
 import { sogliaParete, soglieProcessi } from '#famiglie/processi.js';
 import { esitiPezzi, esito, esitoMinimo, normalizzaForma } from '#famiglie/verifiche-comuni.js';
+import { facceDiPezzoPiatto, nomiPezzoPiatto } from '#famiglie/viste.js';
 
 /**
  * Famiglia `pendente` (charm, specifica §1.8): disco, cuore, goccia o placchetta su XY con la faccia a vista +Z,
@@ -314,6 +315,16 @@ export const pendente: Famiglia<ParametriPendente> = {
   costruisci: (lib, p) => costruisciConEsiti(lib, p).pezzi,
   costruisciConEsiti,
   verifiche,
+  viste: {
+    principale: 'sopra',
+    facce: facceDiPezzoPiatto({
+      sopra: 'front face of the charm, jump ring at the top',
+      sotto: 'back of the charm (mirror image)',
+      fianco: 'side edge (shows doming, thickness, jump ring profile)',
+      dietro: 'bottom edge head-on',
+    }),
+    nomi: nomiPezzoPiatto,
+  },
   silhouette: { assi: ['z'], simmetrie: ['yz'] },
   materialiAmmessi: [...leghe],
   emettiMain: (p, ipotesi, opzioni) =>

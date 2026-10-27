@@ -1,6 +1,7 @@
 import type { z } from 'zod';
 import type * as Smlib from '@classcad/smlibwasm';
 import type { NamedInputShape } from '#utils/render-output.js';
+import type { VisteFamiglia } from '#famiglie/viste.js';
 
 /**
  * Contratto delle famiglie parametriche di SinopiaCAD (specifica D1, §1.0).
@@ -168,6 +169,8 @@ export type Famiglia<P extends ParametriAnnidati = ParametriAnnidati> = {
     opzioni?: OpzioniFamiglia,
   ) => Esito[];
   silhouette: SilhouetteFamiglia;
+  /** Facce del pezzo che una foto può mostrare e mappa delle viste per nome (vedi `viste.ts`). */
+  viste: VisteFamiglia;
   /** Chiavi di `materiali.ts`. */
   materialiAmmessi: readonly string[];
   /** Il `main.ts` del progetto (§1.0.1), che importa la famiglia dal modulo `@sinopia/famiglie`. */
