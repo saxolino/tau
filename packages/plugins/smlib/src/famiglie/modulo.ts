@@ -32,6 +32,15 @@ export type FamigliaLegata = {
   ) => Esito[];
 };
 
+/**
+ * Una famiglia legata alla libreria. Costruzioni e verifiche girano dentro `lib.scope`: i corpi intermedi di una
+ * ricetta (operandi delle booleane, schizzi, gusci, mesh di controllo) si liberano appena la ricetta finisce, invece
+ * che quando passa il garbage collector, che fra un turno dell'event loop e l'altro non arriva. Restano vivi solo i
+ * pezzi restituiti.
+ * @param lib - La libreria del kernel.
+ * @param famiglia - La famiglia del registro.
+ * @returns La famiglia legata.
+ */
 const lega = (lib: typeof Smlib, famiglia: FamigliaQualsiasi): FamigliaLegata => ({
   id: famiglia.id,
   versione: famiglia.versione,
@@ -39,10 +48,11 @@ const lega = (lib: typeof Smlib, famiglia: FamigliaQualsiasi): FamigliaLegata =>
   parametri: famiglia.parametri,
   predefiniti: (variante): unknown => famiglia.predefiniti(variante) as unknown,
   normalizza: (p, opzioni): unknown => famiglia.normalizza(p, opzioni) as unknown,
-  costruisci: (p, opzioni) => famiglia.costruisci(lib, famiglia.normalizza(p, opzioni), opzioni),
-  costruisciConEsiti: (p, opzioni) => famiglia.costruisciConEsiti(lib, famiglia.normalizza(p, opzioni), opzioni),
+  costruisci: (p, opzioni) => lib.scope(() => famiglia.costruisci(lib, famiglia.normalizza(p, opzioni), opzioni)),
+  costruisciConEsiti: (p, opzioni) =>
+    lib.scope(() => famiglia.costruisciConEsiti(lib, famiglia.normalizza(p, opzioni), opzioni)),
   verifiche: (pezzi, p, opzioni) =>
-    famiglia.verifiche(lib, pezzi, famiglia.normalizza(p, opzioni), opzioni?.processo, opzioni),
+    lib.scope(() => famiglia.verifiche(lib, pezzi, famiglia.normalizza(p, opzioni), opzioni?.processo, opzioni)),
 });
 
 /**
