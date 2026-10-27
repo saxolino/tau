@@ -48,7 +48,9 @@
     "./famiglie": "./src/famiglie/index.ts",
     "./riconoscimento": "./src/riconoscimento/index.ts",
     "./verifica": "./src/verifica/index.ts",
-    "./verifica/worker": "./src/verifica/verifica.worker.ts"
+    "./verifica/worker": "./src/verifica/verifica.worker.ts",
+    "./producibilita": "./src/producibilita/index.ts",
+    "./producibilita/worker": "./src/producibilita/producibilita.worker.ts"
   },
   "publishConfig": {
     "access": "public",
@@ -93,6 +95,16 @@
         "types": "./dist/verifica/verifica.worker.d.mts",
         "import": "./dist/verifica/verifica.worker.mjs",
         "default": "./dist/verifica/verifica.worker.mjs"
+      },
+      "./producibilita": {
+        "types": "./dist/producibilita/index.d.mts",
+        "import": "./dist/producibilita/index.mjs",
+        "default": "./dist/producibilita/index.mjs"
+      },
+      "./producibilita/worker": {
+        "types": "./dist/producibilita/producibilita.worker.d.mts",
+        "import": "./dist/producibilita/producibilita.worker.mjs",
+        "default": "./dist/producibilita/producibilita.worker.mjs"
       }
     },
     "imports": {}

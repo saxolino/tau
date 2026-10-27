@@ -20,6 +20,7 @@ export type Processo =
   | 'tranciatura_lamiera'
   | 'cnc'
   | 'stampa_3d_resina'
+  | 'stampa_3d_metallo'
   | 'taglio_cuoio';
 
 /**
