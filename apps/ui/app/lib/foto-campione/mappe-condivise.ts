@@ -97,6 +97,7 @@ type GltfAccessor = {
   byteOffset?: number;
   componentType: number;
   count: number;
+  type?: string;
   normalized?: boolean;
   sparse?: unknown;
 };
@@ -235,50 +236,85 @@ export function leggiGlb(contenuto: Uint8Array): { json: GltfJson; bin: Uint8Arr
   return { json, bin };
 }
 
-function leggiFloat(json: GltfJson, bin: Uint8Array, indice: number, componenti: number): Float32Array {
+/** Un accessor convalidato contro il SUO bufferView: dove comincia nel BIN, il passo, quanti elementi. */
+type AccessorLetto = Readonly<{ inizio: number; passo: number; count: number; dimensione: number }>;
+
+const interoNonNegativo = (valore: unknown): valore is number =>
+  typeof valore === 'number' && Number.isSafeInteger(valore) && valore >= 0;
+
+/**
+ * Convalida un accessor prima di allocare qualsiasi cosa: `count` intero sicuro, `byteStride` come vuole glTF (multiplo
+ * di 4, non minore dell'elemento, al massimo 252), l'ultimo elemento dentro il range del suo bufferView e il bufferView
+ * dentro il BIN.
+ */
+function convalidaAccessor(json: GltfJson, bin: Uint8Array, indice: number, tipo: 'VEC3' | 'SCALAR'): AccessorLetto {
   const accessor = json.accessors?.[indice];
-  const vistaBuffer = accessor?.bufferView === undefined ? undefined : json.bufferViews?.[accessor.bufferView];
-  if (!accessor || !vistaBuffer || accessor.componentType !== FLOAT || accessor.normalized || accessor.sparse) {
-    throw new Error('Mappe: si leggono solo accessor float semplici.');
+  if (!accessor || !interoNonNegativo(accessor.count) || (accessor.type !== undefined && accessor.type !== tipo)) {
+    throw new Error('Mappe: accessor non valido.');
   }
-  const passo = vistaBuffer.byteStride ?? componenti * 4;
-  const inizio = (vistaBuffer.byteOffset ?? 0) + (accessor.byteOffset ?? 0);
-  if (accessor.count > 0 && inizio + (accessor.count - 1) * passo + componenti * 4 > bin.byteLength) {
-    throw new Error('Mappe: accessor fuori dal buffer.');
+  const float = tipo === 'VEC3';
+  const byteComponente = float
+    ? accessor.componentType === FLOAT
+      ? 4
+      : undefined
+    : BYTE_COMPONENTE[accessor.componentType];
+  if (byteComponente === undefined || accessor.sparse || (float && accessor.normalized)) {
+    throw new Error(
+      float ? 'Mappe: si leggono solo accessor float semplici.' : 'Mappe: accessor degli indici illeggibile.',
+    );
   }
+  const dimensione = float ? 3 * byteComponente : byteComponente;
+  const vista = interoNonNegativo(accessor.bufferView) ? json.bufferViews?.[accessor.bufferView] : undefined;
+  const inizioVista = vista?.byteOffset ?? 0;
+  const offset = accessor.byteOffset ?? 0;
+  if (
+    !vista ||
+    !interoNonNegativo(inizioVista) ||
+    !interoNonNegativo(vista.byteLength) ||
+    inizioVista + vista.byteLength > bin.byteLength ||
+    !interoNonNegativo(offset)
+  ) {
+    throw new Error('Mappe: bufferView fuori dal buffer.');
+  }
+  const passo = vista.byteStride ?? dimensione;
+  if (
+    vista.byteStride !== undefined &&
+    (!interoNonNegativo(vista.byteStride) ||
+      vista.byteStride % 4 !== 0 ||
+      vista.byteStride < dimensione ||
+      vista.byteStride > 252)
+  ) {
+    throw new Error('Mappe: byteStride non valido.');
+  }
+  if (accessor.count > 0 && offset + (accessor.count - 1) * passo + dimensione > vista.byteLength) {
+    throw new Error('Mappe: accessor fuori dal suo bufferView.');
+  }
+  return { inizio: inizioVista + offset, passo, count: accessor.count, dimensione: byteComponente };
+}
+
+function leggiFloat(bin: Uint8Array, letto: AccessorLetto): Float32Array {
   const dati = new DataView(bin.buffer, bin.byteOffset, bin.byteLength);
-  const uscita = new Float32Array(accessor.count * componenti);
-  for (let elemento = 0; elemento < accessor.count; elemento++) {
-    for (let componente = 0; componente < componenti; componente++) {
-      uscita[elemento * componenti + componente] = dati.getFloat32(inizio + elemento * passo + componente * 4, true);
+  const uscita = new Float32Array(letto.count * 3);
+  for (let elemento = 0; elemento < letto.count; elemento++) {
+    for (let componente = 0; componente < 3; componente++) {
+      uscita[elemento * 3 + componente] = dati.getFloat32(letto.inizio + elemento * letto.passo + componente * 4, true);
     }
   }
   return uscita;
 }
 
-function leggiIndici(json: GltfJson, bin: Uint8Array, indice: number | undefined, conteggio: number): Uint32Array {
-  if (indice === undefined) {
+function leggiIndici(bin: Uint8Array, letto: AccessorLetto | undefined, conteggio: number): Uint32Array {
+  if (letto === undefined) {
     return Uint32Array.from({ length: conteggio }, (_, elemento) => elemento);
   }
-  const accessor = json.accessors?.[indice];
-  const vistaBuffer = accessor?.bufferView === undefined ? undefined : json.bufferViews?.[accessor.bufferView];
-  const dimensione = accessor ? BYTE_COMPONENTE[accessor.componentType] : undefined;
-  if (!accessor || !vistaBuffer || dimensione === undefined || accessor.sparse) {
-    throw new Error('Mappe: accessor degli indici illeggibile.');
-  }
-  const passo = vistaBuffer.byteStride ?? dimensione;
-  const inizio = (vistaBuffer.byteOffset ?? 0) + (accessor.byteOffset ?? 0);
-  if (accessor.count > 0 && inizio + (accessor.count - 1) * passo + dimensione > bin.byteLength) {
-    throw new Error('Mappe: indici fuori dal buffer.');
-  }
   const dati = new DataView(bin.buffer, bin.byteOffset, bin.byteLength);
-  const uscita = new Uint32Array(accessor.count);
-  for (let elemento = 0; elemento < accessor.count; elemento++) {
-    const posizione = inizio + elemento * passo;
+  const uscita = new Uint32Array(letto.count);
+  for (let elemento = 0; elemento < letto.count; elemento++) {
+    const posizione = letto.inizio + elemento * letto.passo;
     const valore =
-      dimensione === 1
+      letto.dimensione === 1
         ? dati.getUint8(posizione)
-        : dimensione === 2
+        : letto.dimensione === 2
           ? dati.getUint16(posizione, true)
           : dati.getUint32(posizione, true);
     if (valore >= conteggio) {
@@ -339,26 +375,39 @@ export function meshDaGlb(contenuto: Uint8Array): MeshFoto {
       if (indicePosizioni === undefined || (modo !== MODO_TRIANGOLI && modo !== MODO_LINEE)) {
         continue;
       }
-      vertici += json.accessors?.[indicePosizioni]?.count ?? 0;
+      // Prima di allocare: accessor convalidati e conteggi DICHIARATI sommati ai tetti.
+      const accessorPosizioni = convalidaAccessor(json, bin, indicePosizioni, 'VEC3');
+      const indiceNormali = modo === MODO_TRIANGOLI ? primitiva.attributes['NORMAL'] : undefined;
+      const accessorNormali =
+        indiceNormali === undefined ? undefined : convalidaAccessor(json, bin, indiceNormali, 'VEC3');
+      if (accessorNormali && accessorNormali.count !== accessorPosizioni.count) {
+        throw new Error('Mappe: normali e posizioni di lunghezza diversa.');
+      }
+      const accessorIndici =
+        primitiva.indices === undefined ? undefined : convalidaAccessor(json, bin, primitiva.indices, 'SCALAR');
+      vertici += accessorPosizioni.count + (accessorNormali?.count ?? 0);
       if (vertici > TETTI_GLB.vertici) {
         throw new Error('Mappe: troppi vertici per una foto.');
       }
-      const posizioni = leggiFloat(json, bin, indicePosizioni, 3);
-      const indici = leggiIndici(json, bin, primitiva.indices, posizioni.length / 3);
+      const elementi = accessorIndici?.count ?? accessorPosizioni.count;
+      if (
+        modo === MODO_LINEE
+          ? segmenti.length / 6 + Math.floor(elementi / 2) > TETTI_GLB.segmenti
+          : triangoli.length / 9 + Math.floor(elementi / 3) > TETTI_GLB.triangoli
+      ) {
+        throw new Error(
+          modo === MODO_LINEE ? 'Mappe: troppi spigoli per una foto.' : 'Mappe: troppi triangoli per una foto.',
+        );
+      }
+      const posizioni = leggiFloat(bin, accessorPosizioni);
+      const indici = leggiIndici(bin, accessorIndici, accessorPosizioni.count);
       if (modo === MODO_LINEE) {
-        if (segmenti.length / 6 + indici.length / 2 > TETTI_GLB.segmenti) {
-          throw new Error('Mappe: troppi spigoli per una foto.');
-        }
         for (let elemento = 0; elemento + 1 < indici.length; elemento += 2) {
           segmenti.push(...punto(posizioni, indici[elemento]!), ...punto(posizioni, indici[elemento + 1]!));
         }
         continue;
       }
-      if (triangoli.length / 9 + indici.length / 3 > TETTI_GLB.triangoli) {
-        throw new Error('Mappe: troppi triangoli per una foto.');
-      }
-      const indiceNormali = primitiva.attributes['NORMAL'];
-      const normaliSorgente = indiceNormali === undefined ? undefined : leggiFloat(json, bin, indiceNormali, 3);
+      const normaliSorgente = accessorNormali === undefined ? undefined : leggiFloat(bin, accessorNormali);
       for (let elemento = 0; elemento + 2 < indici.length; elemento += 3) {
         const angoli = [indici[elemento]!, indici[elemento + 1]!, indici[elemento + 2]!];
         const p = angoli.map((vertice) => punto(posizioni, vertice));

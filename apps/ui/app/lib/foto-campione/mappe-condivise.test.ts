@@ -10,7 +10,7 @@ import { codificaPngFoto, rendiMappe, sha256Foto } from '#lib/foto-campione/mapp
  * `supabase/functions/sinopiacad/photo.test.ts`. If you change the file, copy it to
  * `supabase/functions/sinopiacad/foto/mappe-condivise.ts` and update the fingerprint in BOTH tests.
  */
-const improntaGemella = '3d0c875d9cdc3eb8b0ce4a2e6699cd0e5abae2c11ed68ffc5b9d2703693f1c52';
+const improntaGemella = 'd237c22f09d2a7ee62595fa80665474e477017978f4272b0d249fc44071215a2';
 
 describe('twin maps module (CAD ↔ Sinopia)', () => {
   it('should be the byte-for-byte copy Sinopia renders the photo maps with', async () => {

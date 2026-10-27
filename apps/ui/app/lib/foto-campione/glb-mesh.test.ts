@@ -6,6 +6,7 @@ import { meshDaGlb, rendiMappe, TETTI_GLB } from '#lib/foto-campione/mappe-condi
 function glbDa(
   json: Record<string, unknown>,
   pezzi: ReadonlyArray<Float32Array | Uint16Array>,
+  viste: ReadonlyArray<Record<string, unknown> | undefined> = [],
 ): Uint8Array<ArrayBuffer> {
   const lunghezze = pezzi.map((pezzo) => pezzo.byteLength);
   const offset = lunghezze.map((_, i) => lunghezze.slice(0, i).reduce((a, b) => a + b, 0));
@@ -13,7 +14,7 @@ function glbDa(
   let testo = JSON.stringify({
     asset: { version: '2.0' },
     ...json,
-    bufferViews: pezzi.map((_, i) => ({ buffer: 0, byteOffset: offset[i], byteLength: lunghezze[i] })),
+    bufferViews: pezzi.map((_, i) => ({ buffer: 0, byteOffset: offset[i], byteLength: lunghezze[i], ...viste[i] })),
     buffers: [{ byteLength: binLength }],
   });
   while (testo.length % 4 !== 0) {
@@ -148,5 +149,49 @@ describe('GLB → mesh of the sample photo', () => {
     const mesh = meshDaGlb(glb());
     const molti = { ...mesh, segmenti: new Float32Array(6 * 20_000).map((_, i) => (i % 6 < 3 ? -20 : 20)) };
     expect(rendiMappe(molti, 'fronte', 64).lato).toBe(64);
+  });
+
+  it('should refuse hostile accessors before allocating: huge or fractional count, bad stride, offset out of its view, odd normals', () => {
+    const triangolo = (
+      accessors: Array<Record<string, unknown>>,
+      viste: Array<Record<string, unknown> | undefined> = [],
+      normali = false,
+    ): Uint8Array<ArrayBuffer> =>
+      glbDa(
+        {
+          scenes: [{ nodes: [0] }],
+          nodes: [{ mesh: 0 }],
+          meshes: [{ primitives: [{ attributes: { POSITION: 0, ...(normali ? { NORMAL: 1 } : {}) }, mode: 4 }] }],
+          accessors,
+        },
+        // Two views: 3 vertices (36 bytes) and 3 normals followed by 12 spare bytes (48 bytes).
+        [new Float32Array([0, 0, 0, 0.01, 0, 0, 0, 0.02, 0]), new Float32Array(12)],
+        viste,
+      );
+    const posizioni = (sovrascrivi: Record<string, unknown> = {}) => ({
+      bufferView: 0,
+      componentType: 5126,
+      count: 3,
+      type: 'VEC3',
+      ...sovrascrivi,
+    });
+    // The honest one reads.
+    expect(meshDaGlb(triangolo([posizioni()])).triangoli.length).toBe(9);
+    // Count: enormous, fractional, negative.
+    expect(() => meshDaGlb(triangolo([posizioni({ count: 1e12 })]))).toThrow(/fuori dal suo bufferView/u);
+    expect(() => meshDaGlb(triangolo([posizioni({ count: 2.5 })]))).toThrow(/accessor non valido/u);
+    expect(() => meshDaGlb(triangolo([posizioni({ count: -3 })]))).toThrow(/accessor non valido/u);
+    // Stride: not a multiple of 4, shorter than the element, beyond 252.
+    for (const byteStride of [14, 8, 256]) {
+      expect(() => meshDaGlb(triangolo([posizioni({ count: 1 })], [{ byteStride }]))).toThrow(/byteStride/u);
+    }
+    // The accessor fits the whole BIN (84 bytes) but not ITS view (36 bytes).
+    expect(() => meshDaGlb(triangolo([posizioni({ byteOffset: 12 })]))).toThrow(/fuori dal suo bufferView/u);
+    // A view that claims more than the BIN.
+    expect(() => meshDaGlb(triangolo([posizioni()], [{ byteLength: 4096 }]))).toThrow(/fuori dal buffer/u);
+    // Normals of another length than the positions.
+    const normali = { bufferView: 1, componentType: 5126, count: 4, type: 'VEC3' };
+    expect(() => meshDaGlb(triangolo([posizioni(), normali], [], true))).toThrow(/lunghezza diversa/u);
+    expect(meshDaGlb(triangolo([posizioni(), { ...normali, count: 3 }], [], true)).normali.length).toBe(9);
   });
 });
