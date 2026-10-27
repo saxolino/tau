@@ -40,6 +40,8 @@ describe('@taucad/smlib', () => {
     [`/** @typedef {import('@classcad/smlibwasm').Part} Part */`, true],
     [`import { Box } from '@classcad/smlibwasm-extra';`, false],
     [`import { makeBox } from 'replicad';`, false],
+    [`import { tacco } from '@sinopia/famiglie';`, true],
+    [`import { tacco } from '@sinopia/famiglie-extra';`, false],
   ])('detects %s as SMLib: %s', (source, expected) => {
     expect(smlibDetectPattern.test(source)).toBe(expected);
   });
