@@ -30,16 +30,22 @@ const coperturaForo = 200;
 /** Oltre questo spessore nessuna soglia di parete guarda (la più alta è il legno, 6 mm): non serve la prova dello spigolo. */
 const spessoreRilevante = 10;
 /**
- * Altezza (mm, lungo la direzione di sformo) sotto la quale una faccia quasi verticale è un fianco di rilievo, non di
- * parete: il bordo in rilievo di una placca (0,3 mm), le lettere, il logo, un filo su un anello. Di questi fianchi si
- * misura la larghezza come per ogni altra faccia, ma la guarda `TRATTO_MIN` (tratto minimo del processo), non
- * `PARETE_MIN`: un filo largo 0,8 mm e alto 0,3 mm sopra una lastra di 1,5 mm non è una parete di 0,8 mm. I fianchi alti
- * almeno 0,5 mm restano pareti. Per il sottosquadro invece non si guardano: a quell'altezza il campione, a 0,01 mm dal
- * fianco, cade quasi sempre sotto il piano superiore del rilievo stesso (prova: sul logo triangolare il raggio verso
- * l'alto colpiva la faccia superiore del logo a 0,165 mm dalla partenza) e dà un sottosquadro falso; lo sformo mancante
- * lo dice `SFORMO`. Una faccia orizzontale non è mai uno scalino.
+ * Rilievo massimo (mm, lungo la direzione di sformo) dei fianchi di rilievo: il massimo delle famiglie (`testo.profondita`
+ * e `logo.profondita` fino a 1,5 mm, bordo fino a 1 mm). Un fianco quasi verticale non più alto di così che poggia su
+ * materiale (sotto il suo bordo basso c'è ancora solido: sta su una lastra, o è la parete di un incavo) è un fianco di
+ * rilievo: si misura la sua larghezza come per ogni faccia, ma la guarda `TRATTO_MIN` (tratto minimo del processo), non
+ * `PARETE_MIN`: un filo largo 0,8 mm e alto 0,3 o 1 mm sopra una lastra non è una parete di 0,8 mm. Un fianco più alto,
+ * o che non poggia su solido (una lamina libera, il bordo di una lastra sottile), resta parete. Per il sottosquadro i
+ * fianchi esattamente verticali non si guardano: a quell'altezza il campione, a 0,01 mm dal fianco, cade quasi sempre
+ * sotto il piano superiore del rilievo stesso (prova: sul logo triangolare il raggio verso l'alto colpiva la faccia
+ * superiore del logo a 0,165 mm dalla partenza) e dà un sottosquadro falso; lo sformo mancante lo dice `SFORMO`. Un
+ * fianco inclinato (un dente a scatto) si guarda invece come ogni faccia. Una faccia orizzontale non è mai uno scalino.
  */
-const altezzaScalino = 0.5;
+const rilievoMassimo = 1.5;
+/** Quanto sotto il bordo basso di un fianco si cerca il solido su cui poggia (mm). */
+const appoggio = 0.05;
+/** Distanza dalle estremità di un fianco di rilievo entro cui i campioni non contano (mm): le punte acute dei contorni. */
+const margineVertici = 0.2;
 /** Raggio massimo di una griffa (mm): oltre è un gambo o una colonna. */
 const raggioMassimoGriffa = 1;
 
@@ -306,19 +312,26 @@ function colpoVero(colpo: Smlib.Hit<Smlib.Face>, { punto, da }: Readonly<{ punto
   }
 }
 
-/** Una faccia quasi verticale (rispetto a `d`) più bassa di `altezzaScalino`. */
-function èScalino(faccia: Smlib.Face, d: Punto): boolean {
+/** Una faccia quasi verticale (rispetto a `d`), non più alta di `rilievoMassimo`, che poggia su solido. */
+function èScalino(forma: Smlib.Part, faccia: Smlib.Face, d: Punto): boolean {
   try {
     const { min, max } = faccia.bbox();
     const angoli = [min.x, max.x].flatMap((x) =>
       [min.y, max.y].flatMap((y) => [min.z, max.z].map((z) => scalare([x, y, z], d))),
     );
-    const altezza = Math.max(...angoli) - Math.min(...angoli);
-    if (altezza > altezzaScalino) {
+    const [basso, alto] = [Math.min(...angoli), Math.max(...angoli)];
+    if (alto - basso > rilievoMassimo) {
       return false;
     }
-    const punto = faccia.interiorPoint();
-    return Math.abs(scalare(faccia.normalAt(punto).toArray(), d)) < 0.3;
+    const punto = faccia.interiorPoint().toArray();
+    const normale = faccia.normalAt(faccia.interiorPoint()).toArray();
+    if (Math.abs(scalare(normale, d)) >= 0.3) {
+      return false;
+    }
+    // Poggia su solido: un punto dentro il materiale, sotto il bordo basso del fianco, è ancora solido.
+    const dentro = differenza(punto, per(normale, scostamento));
+    const sotto = differenza(dentro, per(d, scalare(punto, d) - basso + appoggio));
+    return forma.contains(sotto);
   } catch {
     return false;
   }
@@ -344,10 +357,15 @@ function raggi(
   const origini: Punto[] = [];
   const direzioni: Punto[] = [];
   /** Per raggio: faccia, tipo (spessore, uscita), e per i quasi verticali il gemello dell'altro verso. */
-  const legami: Array<{ faccia: number; tipo: 'spessore' | 'uscita' | 'uscita_doppia'; punto: Punto; da: Smlib.Face }> =
-    [];
+  const legami: Array<{
+    faccia: number;
+    tipo: 'spessore' | 'uscita' | 'uscita_doppia';
+    punto: Punto;
+    da: Smlib.Face;
+    normale?: Punto;
+  }> = [];
   for (const [indice, faccia] of facce.entries()) {
-    const scalino = èScalino(faccia.faccia, d);
+    const scalino = èScalino(forma, faccia.faccia, d);
     if (scalino) {
       scalini.add(indice);
     }
@@ -355,12 +373,12 @@ function raggi(
       origini.push(differenza(punto, per(normale, scostamento)));
       direzioni.push(per(normale, -1));
       const da = faccia.faccia;
-      legami.push({ faccia: indice, tipo: 'spessore', punto, da });
-      if (scalino) {
+      legami.push({ faccia: indice, tipo: 'spessore', punto, da, normale });
+      const verso = scalare(normale, d);
+      if (scalino && Math.abs(verso) < quasiVerticale) {
         continue;
       }
       const fuori = somma(punto, per(normale, scostamento));
-      const verso = scalare(normale, d);
       if (Math.abs(verso) < quasiVerticale) {
         origini.push(fuori, fuori);
         direzioni.push(d, per(d, -1));
@@ -381,7 +399,7 @@ function raggi(
   let dove: Punto | undefined;
   let tratto = Number.POSITIVE_INFINITY;
   let doveTratto: Punto | undefined;
-  const campioniTratto = new Map<number, Array<{ spessore: number; punto: Punto }>>();
+  const campioniTratto = new Map<number, Array<{ spessore: number; punto: Punto; lungo: number }>>();
   if (origini.length === 0) {
     return { spessori, minimo, tratto, scalini: [], intrappolate: [], campioni: 0 };
   }
@@ -400,10 +418,11 @@ function raggi(
         (spessore >= spessoreRilevante || colpoVero(colpo, legame))
       ) {
         if (scalini.has(legame.faccia)) {
-          // Di un fianco di rilievo vale la mediana dei campioni: alle punte acute dei contorni (lettere, logo) lo
-          // spessore tende a zero senza che il tratto sia sottile; il valore del fianco è quello tipico.
+          // Di un fianco di rilievo si tengono i campioni con la loro posizione lungo il fianco (per scartare le
+          // estremità, dove le punte acute dei contorni dànno spessori che tendono a zero).
           const campioniFaccia = campioniTratto.get(legame.faccia) ?? [];
-          campioniFaccia.push({ spessore, punto: origini[indice]! });
+          const tangente = vettoriale(d, legame.normale ?? d);
+          campioniFaccia.push({ spessore, punto: origini[indice]!, lungo: scalare(legame.punto, tangente) });
           campioniTratto.set(legame.faccia, campioniFaccia);
           continue;
         }
@@ -431,12 +450,17 @@ function raggi(
     }
   }
   for (const [faccia, campioni] of campioniTratto) {
-    const ordinati = campioni.toSorted((a, b) => a.spessore - b.spessore);
-    const tipico = ordinati[Math.floor((ordinati.length - 1) / 2)]!;
-    spessori[faccia] = tipico.spessore;
-    if (tipico.spessore < tratto) {
-      tratto = tipico.spessore;
-      doveTratto = tipico.punto;
+    // Fuori le estremità del fianco (entro `margineVertici`), poi il 25° percentile: un tratto che si assottiglia su
+    // un quarto della lunghezza si vede, tre campioni su otto alle punte no.
+    const lunghezze = campioni.map(({ lungo }) => lungo);
+    const [da, a] = [Math.min(...lunghezze), Math.max(...lunghezze)];
+    const interni = campioni.filter(({ lungo }) => lungo - da >= margineVertici && a - lungo >= margineVertici);
+    const ordinati = (interni.length > 0 ? interni : campioni).toSorted((x, y) => x.spessore - y.spessore);
+    const scelto = ordinati[Math.floor((ordinati.length - 1) * 0.25)]!;
+    spessori[faccia] = scelto.spessore;
+    if (scelto.spessore < tratto) {
+      tratto = scelto.spessore;
+      doveTratto = scelto.punto;
     }
   }
   return {

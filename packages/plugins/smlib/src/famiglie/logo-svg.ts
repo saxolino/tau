@@ -56,6 +56,8 @@ export class ErroreLogo extends Error {
 
 /** Segmenti con cui si approssima una curva di Bézier o un arco. */
 const passiCurva = 16;
+/** Tetto ai punti di tutti i contorni dopo aver spezzato le curve: i controlli di semplicità sono O(n²). */
+export const puntiMassimiLogo = 4000;
 /** Due punti più vicini di questo (unità SVG, relativo all'ingombro) sono lo stesso punto. */
 const tolleranzaChiusura = 1e-3;
 
@@ -351,17 +353,63 @@ export function leggiLogoSvg(svg: string): LogoLetto {
   }
   const avvisi: string[] = [];
   const grezzi: Sottopercorso[] = [];
-  const tag = svg.match(/<(path|rect|circle|ellipse|polygon|polyline)\b[^>]*>/gi) ?? [];
-  if (/\btransform\s*=/i.test(svg)) {
+  // Fuori i commenti e ciò che non si disegna da sé: definizioni, ritagli, maschere, motivi, simboli, marcatori. Un
+  // `<clipPath><rect/></clipPath>` di Illustrator non è una forma del logo.
+  const pulito = ['defs', 'clipPath', 'mask', 'pattern', 'symbol', 'marker'].reduce(
+    (testo, nome) =>
+      testo
+        .replaceAll(new RegExp(String.raw`<${nome}\b[^>]*?/>`, 'gi'), '')
+        .replaceAll(new RegExp(String.raw`<${nome}\b[^>]*>[\s\S]*?</${nome}\s*>`, 'gi'), ''),
+    svg.replaceAll(/<!--[\s\S]*?-->/g, ''),
+  );
+  // Classi di `<style>` con `fill:none` (gli export di Illustrator le usano al posto dell'attributo).
+  const classiSenzaRiempimento = new Set<string>();
+  for (const [, regole = ''] of pulito.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style\s*>/gi)) {
+    for (const [, selettori = '', corpo = ''] of regole.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
+      if (/fill\s*:\s*none/i.test(corpo)) {
+        for (const [, nomeClasse = ''] of selettori.matchAll(/\.([\w-]+)/g)) {
+          classiSenzaRiempimento.add(nomeClasse);
+        }
+      }
+    }
+  }
+  if (/\btransform\s*=/i.test(pulito)) {
     avvisi.push(
       'Le trasformazioni (transform) dell’SVG non si applicano: esporta l’SVG con i tracciati già convertiti.',
     );
   }
-  for (const elemento of tag) {
+  // I gruppi `<g>` passano il riempimento ai figli che non ne hanno uno proprio.
+  const pila: boolean[] = [];
+  const elementi: Array<{ tag: string; senzaRiempimentoDelGruppo: boolean }> = [];
+  for (const [elemento] of pulito.matchAll(/<\/?(?:g|path|rect|circle|ellipse|polygon|polyline)\b[^>]*>/gi)) {
+    const nome = /^<\/?(\w+)/.exec(elemento)![1]!.toLowerCase();
+    if (nome === 'g') {
+      if (elemento.startsWith('</')) {
+        pila.pop();
+      } else if (!elemento.endsWith('/>')) {
+        const proprio = attributo(elemento, 'fill')?.trim().toLowerCase();
+        const stileGruppo = attributo(elemento, 'style')?.toLowerCase().replaceAll(/\s/g, '') ?? '';
+        const daClasse = (attributo(elemento, 'class') ?? '').split(/\s+/).some((c) => classiSenzaRiempimento.has(c));
+        pila.push(
+          proprio === undefined
+            ? (pila.at(-1) ?? false) || stileGruppo.includes('fill:none') || daClasse
+            : proprio === 'none',
+        );
+      }
+      continue;
+    }
+    elementi.push({ tag: elemento, senzaRiempimentoDelGruppo: pila.at(-1) ?? false });
+  }
+  for (const { tag: elemento, senzaRiempimentoDelGruppo } of elementi) {
     const nome = /^<(\w+)/.exec(elemento)![1]!.toLowerCase();
     const riempimento = attributo(elemento, 'fill')?.trim().toLowerCase();
     const stile = attributo(elemento, 'style')?.toLowerCase().replaceAll(/\s/g, '') ?? '';
-    if (riempimento === 'none' || stile.includes('fill:none')) {
+    const daClasse = (attributo(elemento, 'class') ?? '').split(/\s+/).some((c) => classiSenzaRiempimento.has(c));
+    const senzaRiempimento =
+      riempimento === undefined
+        ? stile.includes('fill:none') || daClasse || (!stile.includes('fill:') && senzaRiempimentoDelGruppo)
+        : riempimento === 'none';
+    if (senzaRiempimento) {
       avvisi.push(`Un elemento <${nome}> senza riempimento è ignorato: servono contorni pieni, non solo tratti.`);
       continue;
     }
@@ -413,6 +461,9 @@ export function leggiLogoSvg(svg: string): LogoLetto {
   }
   if (grezzi.length === 0) {
     throw new ErroreLogo('SVG_VUOTO', 'L’SVG non ha contorni pieni (path, rect, circle, ellipse, polygon).');
+  }
+  if (grezzi.reduce((somma, { punti }) => somma + punti.length, 0) > puntiMassimiLogo) {
+    throw new ErroreLogo('SVG_NON_VALIDO', `Il logo ha più di ${puntiMassimiLogo} punti: semplifica i tracciati.`);
   }
   const tutti = grezzi.flatMap(({ punti }) => punti);
   const [x0, x1] = [Math.min(...tutti.map(([x]) => x)), Math.max(...tutti.map(([x]) => x))];

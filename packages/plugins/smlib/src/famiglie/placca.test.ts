@@ -269,3 +269,32 @@ describe('logo da SVG sulla placca', () => {
     expect(codice(fuori, 'LOGO_FUORI')?.livello).toBe('avviso');
   });
 });
+
+describe('fissaggio dentro la sagoma', () => {
+  const avviso = (parametri: unknown) =>
+    valutaFamiglia(lib, placca, { parametri, verifiche: false }).esiti.find(({ codice: c }) => c === 'FISSAGGIO_FUORI');
+
+  it('should leave the default plate alone and warn when pins or holes fall outside the outline', () => {
+    expect(avviso({})).toBeUndefined();
+    // Lunghezza 6: interasse 3,6, perni da 3 mm ai punti ±1,8 → escono dai lati.
+    const piccola = { piastra: { lunghezza: 6, larghezza: 4 }, fissaggio: { perno: { diametro: 3 } } };
+    expect(avviso(piccola)?.livello).toBe('avviso');
+    expect(avviso({ ...piccola, fissaggio: { tipo: 'fori', perno: { diametro: 3 } } })?.livello).toBe('avviso');
+  });
+
+  it('should warn on a concave free outline whose notch swallows a pin', () => {
+    // Una tacca nel bordo alto (x da 3 a 9, scende a y = 4): il perno di sinistra (x = −9 dal centro, y = 0) cade nel vuoto.
+    const contorno: Array<[number, number]> = [
+      [0, 0],
+      [30, 0],
+      [30, 12],
+      [9, 12],
+      [9, 4],
+      [3, 4],
+      [3, 12],
+      [0, 12],
+    ];
+    const concava = { piastra: { forma: 'contorno', contorno, lunghezza: 30, larghezza: 12 }, bordo: { rilievo: 0 } };
+    expect(avviso(concava)?.livello).toBe('avviso');
+  });
+});

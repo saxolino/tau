@@ -47,11 +47,11 @@ export async function leggiFileLogo(file: Pick<File, 'name' | 'size' | 'type' | 
   if (!/\.svg$/iu.test(file.name) && file.type !== 'image/svg+xml') {
     return { ok: false, errore: 'notSvg' };
   }
-  const testo = await file.text();
-  if (testo.length > dimensioneMassimaLogo || testo.includes('\u0000')) {
-    return { ok: false, errore: 'notSvg' };
-  }
   try {
+    const testo = await file.text();
+    if (testo.length > dimensioneMassimaLogo || testo.includes('\u0000')) {
+      return { ok: false, errore: 'notSvg' };
+    }
     const logo = leggiLogoSvg(testo);
     const svg = svgDaLogo(logo);
     // What is saved is what is previewed: the clean rewrite, read again.
@@ -141,6 +141,7 @@ function Numero({
  */
 export function LogoSectionView({
   logo,
+  hasSvg = logo !== undefined,
   isLocked,
   valori,
   esiti,
@@ -150,6 +151,8 @@ export function LogoSectionView({
   onValori,
 }: Readonly<{
   logo: LogoLetto | undefined;
+  /** Un `logo.svg` c'è anche se non si legge: «Rimuovi» serve comunque. */
+  hasSvg?: boolean;
   isLocked: boolean;
   valori: Valori;
   esiti: readonly Esito[];
@@ -207,15 +210,15 @@ export function LogoSectionView({
             <Button
               type='button'
               size='xs'
-              variant={logo ? 'outline' : 'default'}
+              variant={hasSvg ? 'outline' : 'default'}
               onClick={() => {
                 input.current?.click();
               }}
             >
               <ImageUp aria-hidden className='size-3.5' />
-              {logo ? t('serie.logo.replace') : t('serie.logo.upload')}
+              {hasSvg ? t('serie.logo.replace') : t('serie.logo.upload')}
             </Button>
-            {logo ? (
+            {hasSvg ? (
               <Button type='button' size='xs' variant='outline' onClick={onRimuovi}>
                 <Trash2 aria-hidden className='size-3.5' />
                 {t('serie.logo.remove')}
@@ -250,13 +253,13 @@ export function LogoSectionView({
             {t('serie.logo.mode')}
             <Select
               size='sm'
-              value={valori.modo === 'inciso' ? 'inciso' : 'rilievo'}
+              value={valori.modo === 'nessuno' ? '' : valori.modo}
               onValueChange={(modo) => {
                 onValori({ modo: modo as Valori['modo'] });
               }}
             >
               <SelectTrigger className='w-full text-xs' aria-label={t('serie.logo.mode')}>
-                <SelectValue />
+                <SelectValue placeholder='—' />
               </SelectTrigger>
               <SelectContent position='popper'>
                 <SelectItem value='rilievo'>{t('serie.logo.modes.rilievo')}</SelectItem>
@@ -403,6 +406,7 @@ export function InspectorLogo(): React.JSX.Element | undefined {
   return (
     <LogoSectionView
       logo={logo}
+      hasSvg={svg.trim() !== ''}
       isLocked={modello.bloccati.includes('logo.svg')}
       valori={parametri.logo}
       esiti={esiti}

@@ -694,6 +694,26 @@ function costruisciPlacca(lib: Lib, p: ParametriPlacca, esiti: Esito[]): Smlib.P
     [-interasse / 2, 0],
     [interasse / 2, 0],
   ];
+  if (fissaggio.tipo !== 'nessuno') {
+    // Perni e fori stanno dentro la sagoma: l'area dell'intersezione del cerchio con la sagoma è quella del cerchio.
+    const r = fissaggio.perno.diametro / 2;
+    const fuori = posizioni.filter(([x, y]) => {
+      try {
+        return base.intersect(lib.Pos(x, y).mul(lib.Circle(r))).area < Math.PI * r * r * (1 - 1e-3);
+      } catch {
+        return true;
+      }
+    });
+    if (fuori.length > 0) {
+      esiti.push(
+        esito('avviso', 'FISSAGGIO_FUORI', {
+          messaggio: `${fuori.length === 1 ? 'Un perno o foro esce' : `${fuori.length} perni o fori escono`} dalla sagoma della placca: accorcia l’interasse (lunghezza) o riduci il diametro.`,
+          valore: fuori.length,
+          pezzo: 'Placca',
+        }),
+      );
+    }
+  }
   if (fissaggio.tipo === 'perni') {
     const r = fissaggio.perno.diametro / 2;
     const { lunghezza } = fissaggio.perno;
