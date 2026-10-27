@@ -178,3 +178,94 @@ describe('famiglia placca', () => {
     expect(rileggiStep(lib, pezzi, 'placca').esito.livello).toBe('ok');
   });
 });
+
+describe('logo da SVG sulla placca', () => {
+  // Cornice 40 × 30 con un foro 20 × 10: area 1000 unità² (a 10 mm di larghezza: 0,25 mm per unità → 62,5 mm²).
+  const cornice = '<svg viewBox="0 0 40 30"><path d="M0 0H40V30H0Z M10 10V20H30V10Z"/></svg>';
+  const piana = placca.normalizza({ fissaggio: { tipo: 'nessuno' }, bordo: { rilievo: 0 } });
+  const con = (logo: Partial<(typeof piana)['logo']>) =>
+    placca.normalizza({ ...piana, logo: { ...piana.logo, ...logo } });
+
+  it('should raise the logo by its depth over the plate: volume of the SVG area times depth', () => {
+    const senza = forma(valutaFamiglia(lib, placca, { parametri: piana, verifiche: false }));
+    const valutazione = valutaFamiglia(lib, placca, {
+      parametri: con({ svg: cornice, modo: 'rilievo', larghezza: 10, profondita: 0.3 }),
+    });
+    const marcata = forma(valutazione);
+    expect(marcata.isValid()).toBe(true);
+    expect(marcata.solids()).toHaveLength(1);
+    expect(marcata.volume - senza.volume).toBeCloseTo(62.5 * 0.3, 1);
+    expect(marcata.bbox().max.z).toBeCloseTo(piana.piastra.spessore + 0.3, 3);
+    expect(codice(valutazione, 'SFORMO_LOGO')?.livello).toBe('avviso');
+    expect(codice(valutazione, 'TRATTO_MIN_LOGO')).toMatchObject({ livello: 'ok', soglia: 0.4 });
+    // Il tratto della cornice: 10 unità = 2,5 mm.
+    expect(codice(valutazione, 'TRATTO_MIN_LOGO')?.valore).toBeCloseTo(2.5, 1);
+  });
+
+  it('should engrave the logo: the volume goes down by area times depth, and the wall under it is checked', () => {
+    const senza = forma(valutaFamiglia(lib, placca, { parametri: piana, verifiche: false }));
+    const valutazione = valutaFamiglia(lib, placca, {
+      parametri: con({ svg: cornice, modo: 'inciso', larghezza: 10, profondita: 0.4 }),
+    });
+    const incisa = forma(valutazione);
+    expect(incisa.isValid()).toBe(true);
+    expect(senza.volume - incisa.volume).toBeCloseTo(62.5 * 0.4, 1);
+    expect(codice(valutazione, 'PARETE_MIN')).toMatchObject({ valore: piana.piastra.spessore - 0.4 });
+  });
+
+  it('should move the logo and scale it with the width', () => {
+    const marcata = forma(
+      valutaFamiglia(lib, placca, {
+        parametri: con({ svg: cornice, larghezza: 8, x: 6, y: -1 }),
+        verifiche: false,
+      }),
+    );
+    // Il logo da 8 × 6 mm centrato in (6, −1) sporge sopra la lastra: la cima parte dal suo riquadro.
+    const cima = marcata.bbox();
+    expect(cima.max.z).toBeCloseTo(piana.piastra.spessore + 0.3, 3);
+    expect(marcata.contains([6 - 3.9, -1, piana.piastra.spessore + 0.1])).toBe(true);
+    expect(marcata.contains([-6, -1, piana.piastra.spessore + 0.1])).toBe(false);
+  });
+
+  it('should flag a stroke thinner than the process minimum', () => {
+    // Barra di 100 × 1 unità a 20 mm di larghezza: 0,2 mm di tratto, sotto lo 0,4 della pressofusione.
+    const sottile = '<svg viewBox="0 0 100 10"><rect x="0" y="0" width="100" height="1"/></svg>';
+    const valutazione = valutaFamiglia(lib, placca, { parametri: con({ svg: sottile, larghezza: 20 }) });
+    const tratto = codice(valutazione, 'TRATTO_MIN_LOGO');
+    expect(tratto?.livello).toBe('blocco');
+    expect(tratto?.valore).toBeCloseTo(0.2, 2);
+    // Un processo meno esigente (tranciatura: 0,3) lo vede ancora sotto.
+    const tranciata = valutaFamiglia(lib, placca, {
+      parametri: con({ svg: sottile, larghezza: 20 }),
+      processo: 'tranciatura_lamiera',
+    });
+    expect(codice(tranciata, 'TRATTO_MIN_LOGO')).toMatchObject({ soglia: 0.3 });
+  });
+
+  it('should refuse an open or self-intersecting SVG without breaking the plate', () => {
+    const aperto = '<svg viewBox="0 0 40 30"><path d="M0 0 L40 0 L40 30"/></svg>';
+    const cravatta = '<svg viewBox="0 0 40 30"><path d="M0 0 L40 30 L40 0 L0 30 Z"/></svg>';
+    for (const [svg, atteso] of [
+      [aperto, 'SVG_APERTO'],
+      [cravatta, 'SVG_AUTOINTERSECANTE'],
+    ] as const) {
+      const valutazione = valutaFamiglia(lib, placca, { parametri: con({ svg }) });
+      expect(codice(valutazione, atteso)?.livello).toBe('avviso');
+      expect(codice(valutazione, 'TRATTO_MIN_LOGO')).toBeUndefined();
+      expect(forma(valutazione).isValid()).toBe(true);
+    }
+  });
+
+  it('should shrink a logo that does not fit and drop one outside the plate', () => {
+    const ridotto = valutaFamiglia(lib, placca, {
+      parametri: con({ svg: cornice, larghezza: 40, x: 0 }),
+      verifiche: false,
+    });
+    expect(codice(ridotto, 'LOGO_RIDOTTO')?.livello).toBe('avviso');
+    const fuori = valutaFamiglia(lib, placca, {
+      parametri: con({ svg: cornice, larghezza: 10, x: 29 }),
+      verifiche: false,
+    });
+    expect(codice(fuori, 'LOGO_FUORI')?.livello).toBe('avviso');
+  });
+});

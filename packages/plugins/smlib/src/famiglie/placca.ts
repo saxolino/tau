@@ -13,9 +13,12 @@ import type {
 import { emettiMainFamiglia } from '#famiglie/emetti-main.js';
 import { estrudiSformato, ovale } from '#famiglie/profili.js';
 import { poligonoSemplice } from '#famiglie/fondo-pianta-canonica.js';
+import { schizzoLogo } from '#famiglie/logo.js';
+import { ErroreLogo, leggiLogoSvg, trattoMinimoLogo } from '#famiglie/logo-svg.js';
+import type { LogoLetto } from '#famiglie/logo-svg.js';
 import { aspettoMateriale } from '#famiglie/materiali.js';
 import { normalizzaConParametri, predefinitiDaParametri, radianti, schemaDaParametri } from '#famiglie/parametri.js';
-import { sogliaParete, sogliaSformo } from '#famiglie/processi.js';
+import { sogliaParete, sogliaSformo, sogliaTratto } from '#famiglie/processi.js';
 import {
   esitiPezzi,
   esitiSformo,
@@ -65,6 +68,14 @@ export type ParametriPlacca = {
     modo: 'rilievo' | 'inciso' | 'nessuno';
     profondita: number;
     font: 'lato' | 'sinopia';
+  };
+  logo: {
+    svg: string;
+    modo: 'rilievo' | 'inciso' | 'nessuno';
+    larghezza: number;
+    profondita: number;
+    x: number;
+    y: number;
   };
   fissaggio: { tipo: 'nessuno' | 'perni' | 'fori' | 'ribattini'; perno: { diametro: number; lunghezza: number } };
   costruzione: {
@@ -211,6 +222,58 @@ const parametri: readonly DefinizioneParametro[] = [
     descrizione: 'Carattere',
   },
   {
+    chiave: 'logo.svg',
+    unita: 'testo',
+    lunghezzaMassima: 6000,
+    default: '',
+    fonteDefault: 'scelta_nostra',
+    descrizione: 'Logo: testo SVG con contorni pieni e chiusi (path, rect, circle, polygon)',
+  },
+  {
+    chiave: 'logo.modo',
+    unita: 'enum',
+    valori: ['rilievo', 'inciso', 'nessuno'],
+    default: 'rilievo',
+    fonteDefault: 'scelta_nostra',
+    descrizione: 'Logo in rilievo o inciso',
+  },
+  {
+    chiave: 'logo.larghezza',
+    unita: 'mm',
+    min: 2,
+    max: 80,
+    default: 10,
+    fonteDefault: 'scelta_nostra',
+    descrizione: 'Larghezza del logo sulla faccia (la scala)',
+  },
+  {
+    chiave: 'logo.profondita',
+    unita: 'mm',
+    min: 0.2,
+    max: 1.5,
+    default: 0.3,
+    fonteDefault: 'mestiere',
+    descrizione: 'Rilievo o profondità del logo',
+  },
+  {
+    chiave: 'logo.x',
+    unita: 'mm',
+    min: -60,
+    max: 60,
+    default: 0,
+    fonteDefault: 'scelta_nostra',
+    descrizione: 'Posizione del logo: sposta lungo la lunghezza dal centro',
+  },
+  {
+    chiave: 'logo.y',
+    unita: 'mm',
+    min: -30,
+    max: 30,
+    default: 0,
+    fonteDefault: 'scelta_nostra',
+    descrizione: 'Posizione del logo: sposta lungo la larghezza dal centro',
+  },
+  {
     chiave: 'fissaggio.tipo',
     unita: 'enum',
     valori: ['nessuno', 'perni', 'fori', 'ribattini'],
@@ -293,6 +356,9 @@ const vincoli = (p: ParametriPlacca): Array<{ chiave: string; messaggio: string 
   if (p.testo.modo === 'inciso' && p.testo.profondita > p.piastra.spessore * 0.6) {
     violati.push({ chiave: 'testo.profondita', messaggio: 'L’incisione supera il 60 % dello spessore.' });
   }
+  if (p.logo.modo === 'inciso' && p.logo.profondita > p.piastra.spessore * 0.6) {
+    violati.push({ chiave: 'logo.profondita', messaggio: 'L’incisione del logo supera il 60 % dello spessore.' });
+  }
   if (p.bordo.larghezza * 2 >= Math.min(p.piastra.lunghezza, p.piastra.larghezza)) {
     violati.push({ chiave: 'bordo.larghezza', messaggio: 'Il bordo chiude la placca.' });
   }
@@ -314,6 +380,10 @@ const normalizza = (grezzi: unknown, opzioni?: OpzioniFamiglia): ParametriPlacca
   }
   p.testo.profondita =
     p.testo.modo === 'inciso' ? Math.min(p.testo.profondita, p.piastra.spessore * 0.6) : p.testo.profondita;
+  p.logo.profondita =
+    p.logo.modo === 'inciso' ? Math.min(p.logo.profondita, p.piastra.spessore * 0.6) : p.logo.profondita;
+  // L'SVG su una riga sola: finisce nel `main.ts` come un letterale e nell'impronta dei parametri.
+  p.logo.svg = p.logo.svg.replaceAll(/\s+/g, ' ').trim();
   p.bordo.larghezza = Math.min(p.bordo.larghezza, Math.min(p.piastra.lunghezza, p.piastra.larghezza) / 2 - 0.5);
   return p;
 };
@@ -446,6 +516,87 @@ function testoChesta(
 /** Pezzo e altezza effettiva del testo (per le verifiche). */
 const altezzeTesto = new WeakMap<WeakKey, number>();
 
+/** Il logo letto dai parametri: undefined se non c'è; un SVG illeggibile dà un avviso e nessun logo. */
+function logoLetto(p: ParametriPlacca, esiti: Esito[]): LogoLetto | undefined {
+  if (p.logo.modo === 'nessuno' || p.logo.svg.trim().length === 0) {
+    return undefined;
+  }
+  try {
+    return leggiLogoSvg(p.logo.svg);
+  } catch (error) {
+    if (error instanceof ErroreLogo) {
+      esiti.push(esito('avviso', error.codice, { messaggio: `Logo non inserito: ${error.message}`, pezzo: 'Placca' }));
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+/** Il logo ridotto (passi del 10 %) finché sta nello spazio dentro il bordo, alla sua posizione. */
+function logoChesta(
+  lib: Lib,
+  p: ParametriPlacca,
+  contesto: {
+    spazio: Smlib.Sketch;
+    ingombroTesto: { min: { x: number; y: number }; max: { x: number; y: number } } | undefined;
+  },
+  esiti: Esito[],
+): { schizzo: Smlib.Sketch; dati: DatiLogo } | undefined {
+  const logo = logoLetto(p, esiti);
+  if (!logo) {
+    return undefined;
+  }
+  for (const avviso of logo.avvisi) {
+    esiti.push(esito('info', 'LOGO_SVG', { messaggio: avviso, pezzo: 'Placca' }));
+  }
+  const proporzione = logo.altezza / logo.larghezza;
+  let larghezza = p.logo.larghezza;
+  for (let tentativo = 0; tentativo < 14; tentativo++) {
+    const riquadro = lib.Pos(p.logo.x, p.logo.y).mul(lib.Rectangle(larghezza, larghezza * proporzione));
+    if (contesto.spazio.intersect(riquadro).area >= riquadro.area * (1 - 1e-6)) {
+      if (larghezza < p.logo.larghezza - 1e-9) {
+        esiti.push(
+          esito('avviso', 'LOGO_RIDOTTO', {
+            messaggio: `Logo ridotto a ${mm(larghezza, 1)} di larghezza perché stia nella piastra.`,
+            valore: larghezza,
+            soglia: p.logo.larghezza,
+            pezzo: 'Placca',
+          }),
+        );
+      }
+      const { ingombroTesto } = contesto;
+      if (
+        ingombroTesto &&
+        Math.abs(p.logo.x) < (ingombroTesto.max.x - ingombroTesto.min.x + larghezza) / 2 &&
+        Math.abs(p.logo.y) < (ingombroTesto.max.y - ingombroTesto.min.y + larghezza * proporzione) / 2
+      ) {
+        esiti.push(
+          esito('avviso', 'LOGO_SU_TESTO', {
+            messaggio: 'Il logo si sovrappone al testo: spostalo o riduci uno dei due.',
+            pezzo: 'Placca',
+          }),
+        );
+      }
+      return {
+        schizzo: schizzoLogo(lib, logo, { larghezza, x: p.logo.x, y: p.logo.y }),
+        dati: { logo, scala: larghezza / logo.larghezza, larghezza },
+      };
+    }
+    larghezza *= 0.9;
+  }
+  esiti.push(
+    esito('avviso', 'LOGO_FUORI', {
+      messaggio: 'Il logo, alla posizione data, non sta dentro la placca: nessun logo.',
+      pezzo: 'Placca',
+    }),
+  );
+  return undefined;
+}
+
+/** Il logo come è stato costruito: contorni e scala, per le verifiche. */
+type DatiLogo = { logo: LogoLetto; scala: number; larghezza: number };
+const datiLogo = new WeakMap<WeakKey, DatiLogo>();
+
 function costruisciPlacca(lib: Lib, p: ParametriPlacca, esiti: Esito[]): Smlib.Part {
   const { piastra, bordo, testo, fissaggio, costruzione } = p;
   const zama = costruzione.processo === 'pressofusione_zama';
@@ -490,7 +641,29 @@ function costruisciPlacca(lib: Lib, p: ParametriPlacca, esiti: Esito[]): Smlib.P
     distanza: ritiroCima + (bordo.rilievo > 0 ? bordo.larghezza + 0.5 : 0.5),
   });
   const scritta = testoChesta(lib, p, spazio);
-  let inciso: Smlib.Part | undefined;
+  const incisi: Smlib.Part[] = [];
+  /** Un segno (testo, logo) sulla faccia a vista: in rilievo sulla cima, o inciso sotto di essa. */
+  const segno = (schizzo: Smlib.Sketch, modo: 'rilievo' | 'inciso', profondita: number): void => {
+    if (modo === 'rilievo') {
+      let solido = lib
+        .Pos(0, 0, piastra.spessore - 0.05)
+        .mul(schizzo)
+        .extrude(profondita + 0.05 + (bombata ? piastra.bombatura + 0.1 : 0));
+      if (bombata) {
+        solido = solido.intersect(calotta(profondita));
+      }
+      rilievi.push(solido);
+    } else {
+      let solido = lib
+        .Pos(0, 0, piastra.spessore - profondita - (bombata ? 0.5 : 0))
+        .mul(schizzo)
+        .extrude(profondita + 0.05 + (bombata ? piastra.bombatura + 1.5 : 0));
+      if (bombata) {
+        solido = solido.cut(calotta(-profondita));
+      }
+      incisi.push(solido);
+    }
+  };
   if (scritta) {
     if (scritta.altezza < testo.altezza - 1e-9) {
       esiti.push(
@@ -504,24 +677,11 @@ function costruisciPlacca(lib: Lib, p: ParametriPlacca, esiti: Esito[]): Smlib.P
     if (testo.font === 'sinopia') {
       esiti.push(esito('avviso', 'FONT', 'Il carattere Sinopia non è ancora nel CAD: testo in Lato.'));
     }
-    if (testo.modo === 'rilievo') {
-      let solido = lib
-        .Pos(0, 0, piastra.spessore - 0.05)
-        .mul(scritta.testo)
-        .extrude(testo.profondita + 0.05 + (bombata ? piastra.bombatura + 0.1 : 0));
-      if (bombata) {
-        solido = solido.intersect(calotta(testo.profondita));
-      }
-      rilievi.push(solido);
-    } else {
-      inciso = lib
-        .Pos(0, 0, piastra.spessore - testo.profondita - (bombata ? 0.5 : 0))
-        .mul(scritta.testo)
-        .extrude(testo.profondita + 0.05 + (bombata ? piastra.bombatura + 1.5 : 0));
-      if (bombata) {
-        inciso = inciso.cut(calotta(-testo.profondita));
-      }
-    }
+    segno(scritta.testo, testo.modo === 'inciso' ? 'inciso' : 'rilievo', testo.profondita);
+  }
+  const marchio = logoChesta(lib, p, { spazio, ingombroTesto: scritta?.testo.bbox() }, esiti);
+  if (marchio) {
+    segno(marchio.schizzo, p.logo.modo === 'inciso' ? 'inciso' : 'rilievo', p.logo.profondita);
   }
   const interasse = 0.6 * piastra.lunghezza;
   const posizioni: Array<[number, number]> = [
@@ -543,7 +703,7 @@ function costruisciPlacca(lib: Lib, p: ParametriPlacca, esiti: Esito[]): Smlib.P
   if (rilievi.length > 0) {
     corpo = corpo.fuse(...rilievi);
   }
-  const fori: Smlib.Part[] = inciso ? [inciso] : [];
+  const fori: Smlib.Part[] = [...incisi];
   if (fissaggio.tipo === 'fori' || fissaggio.tipo === 'ribattini') {
     for (const [x, y] of posizioni) {
       fori.push(
@@ -566,6 +726,9 @@ function costruisciPlacca(lib: Lib, p: ParametriPlacca, esiti: Esito[]): Smlib.P
   const normalizzata = normalizzaForma(lib, corpo);
   if (scritta) {
     altezzeTesto.set(normalizzata, scritta.altezza);
+  }
+  if (marchio) {
+    datiLogo.set(normalizzata, marchio.dati);
   }
   if (!normalizzata.isValid()) {
     esiti.push(
@@ -614,12 +777,24 @@ function verifiche(
   const { piastra, testo, bordo } = p;
   const altezza = placca ? altezzeTesto.get(placca.shape) : undefined;
   if (altezza !== undefined) {
-    const sogliaTratto = processo === 'pressofusione_zama' ? 0.4 : 0.3;
+    const sogliaDelTratto = sogliaTratto(processo);
     esiti.push(
       esitoMinimo('TRATTO_MIN', {
         valore: trattoLato * altezza,
-        soglia: sogliaTratto,
+        soglia: sogliaDelTratto,
         cosa: `Tratto più sottile del testo (${mm(altezza, 1)} di altezza)`,
+        pezzo: 'Placca',
+      }),
+    );
+  }
+  const marchio = placca ? datiLogo.get(placca.shape) : undefined;
+  if (marchio) {
+    const soglia = sogliaTratto(processo);
+    esiti.push(
+      esitoMinimo('TRATTO_MIN_LOGO', {
+        valore: trattoMinimoLogo(marchio.logo, marchio.scala, soglia),
+        soglia,
+        cosa: `Tratto più sottile del logo (${mm(marchio.larghezza, 1)} di larghezza)`,
         pezzo: 'Placca',
       }),
     );
@@ -630,13 +805,16 @@ function verifiche(
       : processo === 'tranciatura_lamiera'
         ? 0.6
         : sogliaParete(processo, p.costruzione.materiale);
-  const parete =
-    testo.modo === 'inciso' && altezza !== undefined ? piastra.spessore - testo.profondita : piastra.spessore;
+  const incisioni = [
+    ...(testo.modo === 'inciso' && altezza !== undefined ? [testo.profondita] : []),
+    ...(p.logo.modo === 'inciso' && marchio ? [p.logo.profondita] : []),
+  ];
+  const parete = piastra.spessore - Math.max(0, ...incisioni);
   esiti.push(
     esitoMinimo('PARETE_MIN', {
       valore: parete,
       soglia: sogliaPiastra,
-      cosa: testo.modo === 'inciso' ? 'Spessore sotto l’incisione' : 'Spessore della placca',
+      cosa: incisioni.length > 0 ? 'Spessore sotto l’incisione' : 'Spessore della placca',
       pezzo: 'Placca',
     }),
   );
@@ -658,6 +836,16 @@ function verifiche(
         dove: 'Placca (divisione sul retro)',
       }),
     );
+    if (marchio) {
+      esiti.push(
+        esito('avviso', 'SFORMO_LOGO', {
+          messaggio: 'Fianchi del logo a 0°: il kernel non sforma il profilo; lo sformo di 1° va dato sullo stampo.',
+          pezzo: 'Placca',
+          valore: 0,
+          soglia: minimoSformo,
+        }),
+      );
+    }
     if (altezza !== undefined) {
       esiti.push(
         esito('avviso', 'SFORMO_TESTO', {

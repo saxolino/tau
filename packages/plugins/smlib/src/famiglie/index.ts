@@ -23,8 +23,16 @@ export { borchia, raggioCalotta } from '#famiglie/borchia.js';
 export type { ParametriBorchia, VarianteBorchia } from '#famiglie/borchia.js';
 export { anello } from '#famiglie/anello.js';
 export type { ParametriAnello, VarianteAnello } from '#famiglie/anello.js';
-export { diametroInterno, intervalliTaglia, tagliaDaDiametro } from '#famiglie/taglie-anello.js';
-export type { SistemaTaglia } from '#famiglie/taglie-anello.js';
+export {
+  diametroInterno,
+  intervalliTaglia,
+  nomeSistemaTaglia,
+  passoTaglia,
+  rigaTaglia,
+  tabellaTaglie,
+  tagliaDaDiametro,
+} from '#famiglie/taglie-anello.js';
+export type { RigaTaglia, SistemaTaglia } from '#famiglie/taglie-anello.js';
 export type { ParametriTacco, VarianteTacco } from '#famiglie/tacco.js';
 export { fondoSemplice } from '#famiglie/fondo-semplice.js';
 export type { ParametriFondo, VarianteFondo } from '#famiglie/fondo-semplice.js';
