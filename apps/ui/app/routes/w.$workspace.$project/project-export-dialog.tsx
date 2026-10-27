@@ -11,6 +11,14 @@ import { useProducibilita } from '#routes/w.$workspace.$project/producibilita-co
 import { ProducibilityExportGate } from '#routes/w.$workspace.$project/producibility-export-gate.js';
 import type { SceltaEsportazione } from '#services/producibilita-record.js';
 import type { ControlloProducibilita } from '@taucad/smlib/producibilita';
+import { ProjectDeliverySection } from '#routes/w.$workspace.$project/project-delivery-section.js';
+import { projectExportFormats } from '#services/project-export.types.js';
+import type { ProjectExportFormat } from '#services/project-export.types.js';
+
+/** Models of other kernels: no IGES, DXF or PDF sheet, which the delivery writes from SMLib models only. */
+const meshFormats: readonly ProjectExportFormat[] = projectExportFormats.filter(
+  (format) => format !== 'iges' && format !== 'dxf' && format !== 'pdf',
+);
 
 /** Write the choice made in front of the soft block to the project's register, without holding the dialog. */
 const registra = (
@@ -39,7 +47,7 @@ export function ProjectExportDialog({
   const name = useSelector(projectRef, (state) => state.context.project?.name) ?? '';
   const store = useChatSessionStore();
   const { t } = useTranslation();
-  const { pieces, sketches, prepare, capturePhoto } = useProjectExport();
+  const { pieces, sketches, prepare, capturePhoto, deliveryAvailable, deliveryPieces, partType } = useProjectExport();
   const askAgent = useCallback(
     (message: string): void => {
       const chatId = editorRef.getSnapshot().context.focusedChatId;
@@ -108,6 +116,21 @@ export function ProjectExportDialog({
       capture={capturePhoto}
       onAskAgent={askAgent}
       onOpenChange={onOpenChange}
+      formats={deliveryAvailable ? projectExportFormats : meshFormats}
+      delivery={
+        deliveryAvailable
+          ? ({ rows, selectedNames }) => (
+              <ProjectDeliverySection
+                name={name}
+                rows={rows}
+                selectedNames={selectedNames}
+                capture={capturePhoto}
+                pieces={deliveryPieces}
+                partType={partType}
+              />
+            )
+          : undefined
+      }
     />
   );
 }

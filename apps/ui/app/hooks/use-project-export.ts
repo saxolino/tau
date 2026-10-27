@@ -19,6 +19,9 @@ import {
 import type { ProjectExportSource } from '#services/project-export.js';
 import type { PreparedExport, ProjectExportFormat, ProjectExportSketches } from '#services/project-export.types.js';
 import { verifyStepInBrowser } from '#workers/project-export.client.js';
+import { useProjectDelivery } from '#hooks/use-project-delivery.js';
+import type { PezzoDellaConsegna } from '#lib/consegna.js';
+import type { TipoPezzo } from '#services/sinopia-consegna.js';
 
 /** Bind the reusable file preparation to the current project and its render owner. */
 export function useProjectExport(): {
@@ -30,7 +33,16 @@ export function useProjectExport(): {
     signal: AbortSignal,
   ) => Promise<PreparedExport>;
   capturePhoto: (signal: AbortSignal) => Promise<PreparedExport>;
-  prepareSinopia: (signal: AbortSignal) => Promise<Awaited<ReturnType<typeof prepareSinopiaFiles>>>;
+  prepareSinopia: (
+    signal: AbortSignal,
+    versionLabel?: string,
+  ) => Promise<Awaited<ReturnType<typeof prepareSinopiaFiles>>>;
+  /** Material, process and weight of each piece (E3a). */
+  deliveryPieces: readonly PezzoDellaConsegna[];
+  /** The part type the model's family declares, for «Chiedi preventivo». */
+  partType: TipoPezzo | undefined;
+  /** Whether the model is an SMLib one, whose IGES, DXF and PDF sheet the delivery writes. */
+  deliveryAvailable: boolean;
 } {
   const { projectRef, geometryUnits, mainEntryPath, entriesRecord } = useProject();
   const cadRef = geometryUnits.get(mainEntryPath);
@@ -54,6 +66,8 @@ export function useProjectExport(): {
       return [];
     }
   }, [rendering, outcome]);
+
+  const { delivery, pezzi: deliveryPieces, partType } = useProjectDelivery(pieces);
 
   const sketches = useMemo(
     () => (outcome === 'success' ? projectExportSketches({ kernelId, evaluation, rendering }) : undefined),
@@ -136,6 +150,7 @@ export function useProjectExport(): {
             return capture.files;
           },
           verifyStep: verifyStepInBrowser,
+          delivery,
         });
       } catch {
         return unavailable('prepare');
@@ -143,7 +158,18 @@ export function useProjectExport(): {
         projectRef.send({ type: 'releaseGeometryUnit', claimId });
       }
     },
-    [cadRef, entriesRecord, evaluation, graphicsRef, imageService, mainEntryPath, pieces, projectRef, rendering],
+    [
+      cadRef,
+      delivery,
+      entriesRecord,
+      evaluation,
+      graphicsRef,
+      imageService,
+      mainEntryPath,
+      pieces,
+      projectRef,
+      rendering,
+    ],
   );
   const prepare = useCallback(
     async (format: ProjectExportFormat, selectedNames: string[] | undefined, signal: AbortSignal) =>
@@ -164,17 +190,27 @@ export function useProjectExport(): {
     [withSource],
   );
   const prepareSinopia = useCallback(
-    async (signal: AbortSignal) => {
+    async (signal: AbortSignal, versionLabel?: string) => {
       return withSource(
         signal,
-        async (source) => prepareSinopiaFiles({ source, signal }),
+        async (source) =>
+          prepareSinopiaFiles({ source, signal, ...(versionLabel === undefined ? {} : { versionLabel }) }),
         (problem) => {
           const unavailable: PreparedExport = { status: 'needsFix', problem };
-          return { step: unavailable, glb: unavailable, photo: unavailable };
+          return { step: unavailable, glb: unavailable, photo: unavailable, pdf: unavailable };
         },
       );
     },
     [withSource],
   );
-  return { pieces, sketches, prepare, capturePhoto, prepareSinopia };
+  return {
+    pieces,
+    sketches,
+    prepare,
+    capturePhoto,
+    prepareSinopia,
+    deliveryPieces,
+    partType,
+    deliveryAvailable: kernelId === 'smlib',
+  };
 }

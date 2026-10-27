@@ -19,8 +19,12 @@ afterEach(() => {
 const file = createExportFile('stl', 'Anellino', new Uint8Array([1]));
 const photo = createExportFile('png', 'view', new Uint8Array([137, 80, 78, 71]));
 const pieces = [{ name: 'Anellino' }, { name: 'Rametto' }];
+const sheet = { name: 'Collana.pdf', bytes: new Uint8Array([37, 80, 68, 70]), mimeType: 'application/pdf' };
 const results: Record<ProjectExportFormat, PreparedExport> = {
   step: { status: 'verified', files: [file] },
+  iges: { status: 'verified', files: [createExportFile('iges', 'model', new Uint8Array([1]))] },
+  dxf: { status: 'needsFix', problem: 'volume', pieces: ['Rametto'] },
+  pdf: { status: 'ready', files: [sheet] },
   stl: { status: 'needsFix', problem: 'invalid', pieces: ['Anellino'], files: [file] },
   glb: { status: 'ready', files: [file] },
   // The photo check only says a snapshot can be taken; the PNG is taken at the click.
@@ -68,7 +72,7 @@ describe.each<Language>(['it', 'en'])('export dialog in %s', (language) => {
       />,
     );
     await waitFor(() => {
-      expect(prepare).toHaveBeenCalledTimes(4);
+      expect(prepare).toHaveBeenCalledTimes(7);
     });
     for (const format of ['STEP', 'STL', 'GLB']) {
       const row = within(screen.getByRole('region', { name: format }));
@@ -97,7 +101,7 @@ describe.each<Language>(['it', 'en'])('export dialog in %s', (language) => {
     );
     expect(screen.getByRole('dialog', { name: t('export.title', { name: 'Collana' }) })).toBeInTheDocument();
     await waitFor(() => {
-      expect(prepare).toHaveBeenCalledTimes(4);
+      expect(prepare).toHaveBeenCalledTimes(7);
     });
     expect(within(screen.getByRole('region', { name: 'STEP' })).getByRole('status')).toHaveTextContent(
       t('export.verified'),
@@ -192,6 +196,60 @@ describe.each<Language>(['it', 'en'])('export dialog in %s', (language) => {
     expect(await row.findByText(t('export.differentNames', { names: 'Pietrina più, assembly' }))).toBeInTheDocument();
     expect(row.queryByRole('button', { name: t('export.ask') })).not.toBeInTheDocument();
     expect(row.getByRole('button', { name: t('export.download', { format: 'STEP' }) })).toBeDisabled();
+  });
+});
+
+describe('delivery rows (E3a)', () => {
+  it('should offer IGES, DXF and the PDF sheet, name pieces whose volume differs and hand the rows to the delivery', async () => {
+    setLanguage('it');
+    const t = bindTranslate('it');
+    const user = userEvent.setup();
+    const delivery = vi.fn(() => <p>Consegna qui</p>);
+    render(
+      <ExportDialogView
+        name='Collana'
+        pieces={pieces}
+        prepare={async (format) => results[format]}
+        capture={capture}
+        onAskAgent={vi.fn()}
+        onOpenChange={vi.fn()}
+        delivery={delivery}
+      />,
+    );
+    expect(
+      await within(screen.getByRole('region', { name: 'IGES' })).findByText(t('export.verified')),
+    ).toBeInTheDocument();
+    const dxf = within(screen.getByRole('region', { name: 'DXF' }));
+    expect(await dxf.findByText(t('export.volumePieces', { names: 'Rametto' }))).toBeInTheDocument();
+    expect(dxf.getByRole('button', { name: t('export.download', { format: 'DXF' }) })).toBeDisabled();
+    const pdf = within(screen.getByRole('region', { name: t('export.sheet') }));
+    expect(await pdf.findByText(t('export.ready'))).toBeInTheDocument();
+    await user.click(pdf.getByRole('button', { name: t('export.download', { format: 'PDF' }) }));
+    expect(download).toHaveBeenCalledWith([sheet], { singleFileName: 'Collana.pdf', archiveName: 'Collana-pdf.zip' });
+    expect(screen.getByText('Consegna qui')).toBeInTheDocument();
+    expect(delivery).toHaveBeenLastCalledWith(
+      expect.objectContaining({ selectedNames: undefined, rows: expect.objectContaining({ pdf: results.pdf }) }),
+    );
+  });
+  it('should offer only the rows it is given for models the delivery cannot write', async () => {
+    setLanguage('en');
+    const prepare = vi.fn(async (format: ProjectExportFormat) => results[format]);
+    render(
+      <ExportDialogView
+        name='Collana'
+        pieces={pieces}
+        prepare={prepare}
+        capture={capture}
+        onAskAgent={vi.fn()}
+        onOpenChange={vi.fn()}
+        formats={['step', 'stl', 'glb', 'png']}
+      />,
+    );
+    await waitFor(() => {
+      expect(prepare).toHaveBeenCalledTimes(4);
+    });
+    expect(screen.queryByRole('region', { name: 'IGES' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'PDF drawing' })).not.toBeInTheDocument();
   });
 });
 

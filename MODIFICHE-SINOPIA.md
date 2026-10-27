@@ -898,3 +898,28 @@ Blocchi C1, C2, C5 e D4 del piano di Claude (`PIANO-CLAUDE-2026-10-26.md`), dall
   `apps/ui/app/routes/w.$workspace.$project/{inspector-recognition,inspector-lane}.tsx`); testi in
   `apps/ui/app/i18n/messages/{riconoscimento,measures}.ts` e `catalog.ts`; la skill dell'agente conosce
   `@sinopia/famiglie` e il marcatore esteso (`apps/ui/app/lib/sinopia-immagine-cad-skill.ts`).
+
+## 27 ottobre 2026 — consegna (E3a): STEP, IGES, DXF, GLB con i materiali, tavola PDF, Libreria e preventivo
+
+- **Consegna con SMLib, senza OpenCASCADE.** Modulo nuovo `packages/plugins/smlib/src/consegna/` (esportato come
+  `@taucad/smlib/consegna` e `@taucad/smlib/consegna/worker`, `package.json`, `tsdown.config.ts`): worker SMLib suo
+  (`consegna.worker.ts`, `client.ts`), STEP riscritto con un prodotto per pezzo (pezzo e materiale nel nome, colore
+  del materiale) e riletto con confronto di nomi, solidi, validità stretta e volume contro le Misure (`funzioni.ts`),
+  rilettura dell'IGES, DXF (contorno in vera grandezza dei pezzi piani, altrimenti tre viste con le nascoste),
+  disegni della tavola (`drawingViews` di smlibwasm 0.5) e percorsi alleggeriti (`percorsi.ts`). Nel kernel
+  (`smlib.kernel.ts`) i nomi STEP passano così come sono: smlibwasm 0.5 li codifica da sé.
+- **OpenCASCADE: cosa resta.** Solo la conversione STEP → IGES (smlibwasm 0.5 legge l'IGES ma non lo scrive), nello
+  stesso worker usa e getta di prima (`apps/ui/app/services/project-export-iges.ts`,
+  `apps/ui/app/workers/project-export.{worker,client}.ts`); l'IGES si consegna solo dopo la rilettura SMLib. Il
+  controllo OCCT dello STEP (`project-export-step.ts`) resta per i kernel diversi da SMLib (replicad, opencascade).
+  Il controllo indipendente di un secondo motore lato server (DESIGN §4.7, Fable §4e) non è in questo blocco.
+- **Esporta.** Righe compatte STEP, IGES, DXF, STL, GLB, Foto, Tavola PDF e sezione «Consegna»
+  (`apps/ui/app/routes/w.$workspace.$project/project-export-dialog{,-view}.tsx`, `project-delivery-section.tsx`),
+  preparazione in `apps/ui/app/services/project-export{,.types,-glb}.ts`, legame col progetto in
+  `apps/ui/app/hooks/use-project-{export,delivery}.ts` e `apps/ui/app/lib/consegna.ts`, worker
+  `apps/ui/app/workers/consegna.worker.ts`; tavola A4 in `apps/ui/app/services/tavola-pdf.ts` con **pdf-lib** 1.17.1
+  (MIT, la stessa versione di Sinopia; `pnpm-workspace.yaml`, `apps/ui/package.json`).
+- **Verso Sinopia.** «Invia a Sinopia» porta la tavola PDF, materiale/processo/peso di ogni pezzo
+  (`metadata.pezzi`) e la miniatura del modello quando la foto non si invia (`apps/ui/app/services/sinopia-send.ts`,
+  `send-to-sinopia-dialog.tsx`); «Salva in Libreria» e «Chiedi preventivo» in
+  `apps/ui/app/services/sinopia-consegna.ts`. Testi in `apps/ui/app/i18n/messages/{consegna,export,sinopia-send}.ts`.

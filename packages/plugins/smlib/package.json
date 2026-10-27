@@ -52,7 +52,9 @@
     "./varianti": "./src/varianti/index.ts",
     "./varianti/worker": "./src/varianti/varianti.worker.ts",
     "./producibilita": "./src/producibilita/index.ts",
-    "./producibilita/worker": "./src/producibilita/producibilita.worker.ts"
+    "./producibilita/worker": "./src/producibilita/producibilita.worker.ts",
+    "./consegna": "./src/consegna/index.ts",
+    "./consegna/worker": "./src/consegna/consegna.worker.ts"
   },
   "publishConfig": {
     "access": "public",
@@ -117,6 +119,16 @@
         "types": "./dist/producibilita/producibilita.worker.d.mts",
         "import": "./dist/producibilita/producibilita.worker.mjs",
         "default": "./dist/producibilita/producibilita.worker.mjs"
+      },
+      "./consegna": {
+        "types": "./dist/consegna/index.d.mts",
+        "import": "./dist/consegna/index.mjs",
+        "default": "./dist/consegna/index.mjs"
+      },
+      "./consegna/worker": {
+        "types": "./dist/consegna/consegna.worker.d.mts",
+        "import": "./dist/consegna/consegna.worker.mjs",
+        "default": "./dist/consegna/consegna.worker.mjs"
       }
     },
     "imports": {}
