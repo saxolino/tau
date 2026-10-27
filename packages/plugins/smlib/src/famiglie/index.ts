@@ -26,3 +26,13 @@ export type { ParametriAnello, VarianteAnello } from '#famiglie/anello.js';
 export { diametroInterno, intervalliTaglia, tagliaDaDiametro } from '#famiglie/taglie-anello.js';
 export type { SistemaTaglia } from '#famiglie/taglie-anello.js';
 export type { ParametriTacco, VarianteTacco } from '#famiglie/tacco.js';
+export { fondoSemplice } from '#famiglie/fondo-semplice.js';
+export type { ParametriFondo, VarianteFondo } from '#famiglie/fondo-semplice.js';
+export {
+  lunghezzaDaTaglia,
+  piantaCanonica,
+  piantaDaMisure,
+  piantaDaTaglia,
+  poligonoSemplice,
+} from '#famiglie/fondo-pianta-canonica.js';
+export type { Pianta } from '#famiglie/fondo-pianta-canonica.js';
