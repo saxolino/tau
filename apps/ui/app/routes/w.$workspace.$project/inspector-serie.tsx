@@ -43,6 +43,10 @@ const colonneTabella: Readonly<Partial<Record<IdFamiglia, readonly string[]>>> =
 const numero = (valore: number, language: Language, cifre = 2): string =>
   formatNumber(valore, language, { maximumFractionDigits: cifre });
 
+/** A table figure with two decimals, so columns line up. */
+const fisso = (valore: number, language: Language): string =>
+  formatNumber(valore, language, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
 /** The value a size select holds: sizes have halves, so the number goes through a string. */
 const comeTesto = (valore: number): string => String(Math.round(valore * 100) / 100);
 
@@ -113,7 +117,7 @@ function TagliaAnello({
               {righe.map((voce) => (
                 <SelectItem key={voce.valore} value={comeTesto(voce.valore)} className='font-mono text-xs tabular-nums'>
                   {t('serie.sizeOption', {
-                    size: `${t(`serie.systemsShort.${sistema}`)} ${numero(voce.valore, language, 1)}`,
+                    size: numero(voce.valore, language, 1),
                     diameter: numero(voce.diametro, language, 1),
                   })}
                 </SelectItem>
@@ -183,7 +187,7 @@ export function TabellaSerie({
   const intestazioni = riepilogo.righe[0]?.misure.filter(({ id }) => colonne.includes(id)) ?? [];
   const cella = (riga: RigaSerie, id: string): string => {
     const misura = riga.misure.find((m) => m.id === id);
-    return misura ? numero(misura.valore, language, 2) : '';
+    return misura ? fisso(misura.valore, language) : '';
   };
   return (
     <div className='-mx-1 overflow-x-auto'>
@@ -234,7 +238,7 @@ export function TabellaSerie({
                         )}
                       />
                     ) : null}
-                    {numero(riga.pesoGrammi, language, 2)} g
+                    {fisso(riga.pesoGrammi, language)} g
                   </span>
                 ) : (
                   t('serie.notBuilt')
