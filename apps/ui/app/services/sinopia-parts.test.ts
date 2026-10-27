@@ -142,6 +142,29 @@ describe('«/cad/nuovo» address', () => {
     });
   });
 
+  it('should read a Library or supplier piece when no project part is given, the Library first', () => {
+    const libreria = '2a5c7e90-1b3d-4f5a-8c7e-9d0b1a2c3d4e';
+    const fornitore = '3b6d8fa1-2c4e-4a6b-9d8f-0e1c2b3d4e5f';
+    expect(
+      leggiParametriNuovo(new URLSearchParams(`library=${libreria.toUpperCase()}&measure=20`), { prove: false }),
+    ).toStrictEqual({
+      stato: 'pezzo',
+      parametri: { origine: 'libreria', id: libreria, misura: { valoreMm: 20, cosa: 'lato lungo' } },
+    });
+    expect(leggiParametriNuovo(new URLSearchParams(`supplier=${fornitore}`), { prove: false })).toStrictEqual({
+      stato: 'pezzo',
+      parametri: { origine: 'fornitore', id: fornitore },
+    });
+    expect(
+      leggiParametriNuovo(new URLSearchParams(`supplier=${fornitore}&library=${libreria}`), { prove: false }),
+    ).toMatchObject({ parametri: { origine: 'libreria', id: libreria } });
+    expect(leggiParametriNuovo(new URLSearchParams('library=nope&supplier=x'), { prove: false })).toStrictEqual({
+      stato: 'incompleto',
+    });
+    // A complete project part keeps winning, with the Library id only as the declared type's source.
+    expect(leggiParametriNuovo(indirizzo(`&library=${libreria}`), { prove: false })).toMatchObject({ stato: 'parte' });
+  });
+
   it('should structure a known measure in both writings', () => {
     expect(leggiMisura('20:larghezza')).toStrictEqual({ valoreMm: 20, cosa: 'larghezza' });
     expect(leggiMisura('20,5 mm: altezza tacco')).toStrictEqual({ valoreMm: 20.5, cosa: 'altezza tacco' });

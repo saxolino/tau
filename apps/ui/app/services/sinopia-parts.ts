@@ -28,9 +28,20 @@ export type ParametriNuovo = Readonly<{
   misura?: Readonly<{ valoreMm: number; cosa: string }>;
 }>;
 
-/** What the address asks for: a part to read, the development trial, or not enough to start. */
+/**
+ * A piece that has no project, asset or part: a Library component (`?library=<uuid>`) or a supplier-catalogue
+ * product (`?supplier=<uuid>`). Only its card is read: picture, type and, for the Library, the declared size.
+ */
+export type ParametriPezzo = Readonly<{
+  origine: 'libreria' | 'fornitore';
+  id: string;
+  misura?: Readonly<{ valoreMm: number; cosa: string }>;
+}>;
+
+/** What the address asks for: a part to read, a catalogue piece, the development trial, or not enough to start. */
 export type LetturaNuovo =
   | Readonly<{ stato: 'parte'; parametri: ParametriNuovo }>
+  | Readonly<{ stato: 'pezzo'; parametri: ParametriPezzo }>
   | Readonly<{ stato: 'prova'; famigliaIncerta: boolean }>
   | Readonly<{ stato: 'incompleto' }>;
 
@@ -77,7 +88,18 @@ export function leggiParametriNuovo(parametri: URLSearchParams, opzioni: Readonl
   const asset = parametri.get(searchParameterName.sinopiaAsset) ?? '';
   const parte = parametri.get(searchParameterName.sinopiaPart) ?? '';
   if (!uuidPattern.test(progetto) || !uuidPattern.test(asset) || !partIdPattern.test(parte)) {
-    return { stato: 'incompleto' };
+    // No part of a project: the piece of a Library or supplier card (the Library wins when both are given).
+    const pezzoLibreria = parametri.get(searchParameterName.sinopiaLibrary) ?? '';
+    const pezzoFornitore = parametri.get(searchParameterName.sinopiaSupplier) ?? '';
+    const misuraPezzo = leggiMisura(parametri.get(searchParameterName.sinopiaMeasure) ?? undefined);
+    const origine = uuidPattern.test(pezzoLibreria)
+      ? ({ origine: 'libreria', id: pezzoLibreria.toLowerCase() } as const)
+      : uuidPattern.test(pezzoFornitore)
+        ? ({ origine: 'fornitore', id: pezzoFornitore.toLowerCase() } as const)
+        : undefined;
+    return origine
+      ? { stato: 'pezzo', parametri: { ...origine, ...(misuraPezzo ? { misura: misuraPezzo } : {}) } }
+      : { stato: 'incompleto' };
   }
   const maschera = parametri.get(searchParameterName.sinopiaMask) ?? undefined;
   const partType = parametri.get(searchParameterName.sinopiaPartType) ?? undefined;
@@ -309,6 +331,8 @@ export type StrumentiParti = Readonly<{
   codificaMaschera: (maschera: MascheraBinaria) => Promise<Blob>;
   /** Sinopia's `segment-part` (SAM-3), when neither a saved mask nor an outline exist. */
   segmenta?: (immagine: Blob, query: string) => Promise<Blob | undefined>;
+  /** The picture's pixels (RGBA), for the plain background cut-out of a catalogue photo. */
+  pixel?: (immagine: Blob) => Promise<Readonly<{ larghezza: number; altezza: number; rgba: Uint8ClampedArray }>>;
 }>;
 
 /** A part ready for the recognition. */
@@ -317,11 +341,19 @@ export type ParteCaricata = Readonly<{
   immagine: Blob;
   maschera: MascheraBinaria;
   mascheraPng: Blob;
+  /** The mask is a plain cut-out from the background (catalogue photo), not SAM: the page says it is approximate. */
+  scontornoDaSfondo?: boolean;
 }>;
 
 /** Why a part could not be read; the page says it in words. */
 export class ErroreParte extends Error {
-  public readonly codice: 'progettoAssente' | 'immagineAssente' | 'partiAssenti' | 'parteAssente' | 'mascheraAssente';
+  public readonly codice:
+    | 'progettoAssente'
+    | 'immagineAssente'
+    | 'partiAssenti'
+    | 'parteAssente'
+    | 'mascheraAssente'
+    | 'pezzoAssente';
 
   public constructor(codice: ErroreParte['codice']) {
     super(codice);

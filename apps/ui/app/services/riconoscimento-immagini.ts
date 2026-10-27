@@ -103,6 +103,15 @@ export const strumentiBrowser: StrumentiParti = {
     context.putImageData(immagine, 0, 0);
     return inBlob(canvas, 'image/png');
   },
+  pixel: async (immagine) => {
+    const bitmap = await createImageBitmap(immagine);
+    const canvas = tela(bitmap.width, bitmap.height);
+    const context = contesto2d(canvas);
+    context.drawImage(bitmap, 0, 0);
+    const { width, height } = bitmap;
+    bitmap.close();
+    return { larghezza: width, altezza: height, rgba: context.getImageData(0, 0, width, height).data };
+  },
   segmenta: async (immagine, query) => {
     // S-04: Sinopia's `segment-part` (SAM-3) with the shared session; same JWT, same storage rules as in the Studio.
     const config = readSinopiaConfig();
