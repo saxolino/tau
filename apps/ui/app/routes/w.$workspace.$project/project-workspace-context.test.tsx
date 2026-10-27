@@ -42,7 +42,7 @@ vi.mock('#routes/w.$workspace.$project/project-export-dialog.js', () => ({
 }));
 
 vi.mock('#hooks/use-project.js', () => ({
-  useProject: () => ({ editorRef, mainEntryPath: 'main.ts' }),
+  useProject: () => ({ editorRef, mainEntryPath: 'main.ts', projectId: 'project-1' }),
 }));
 vi.mock('#hooks/use-cad-viewport.js', () => ({
   useCadViewport: () => (state.isMobile ? 'phone' : state.isTablet ? 'tablet' : 'desktop'),
@@ -120,6 +120,34 @@ describe('ProjectWorkspaceProvider', () => {
     });
     expect(workspace.assistantExpanded).toBe(true);
     expect(workspace.inspectorSlot).toBe(slot);
+  });
+
+  it('should remember the assistant’s height per project and come back from the conversation to it', () => {
+    globalThis.localStorage.clear();
+    render(
+      <ProjectWorkspaceProvider>
+        <Probe />
+      </ProjectWorkspaceProvider>,
+    );
+    expect(workspace.assistantDock).toBe('open');
+    act(() => {
+      workspace.setAssistantDock('line');
+    });
+    expect(workspace.assistantDock).toBe('line');
+    expect(workspace.assistantExpanded).toBe(false);
+    expect(globalThis.localStorage.getItem('sinopiacad.assistant-dock.project-1')).toBe('line');
+    act(() => {
+      workspace.setAssistantExpanded(true);
+    });
+    expect(workspace.assistantDock).toBe('tall');
+    expect(workspace.assistantExpanded).toBe(true);
+    act(() => {
+      workspace.setAssistantExpanded(false);
+    });
+    // Closing the conversation goes back to the line, the strip's height before, not to the default.
+    expect(workspace.assistantDock).toBe('line');
+    expect(globalThis.localStorage.getItem('sinopiacad.assistant-dock.project-1')).toBe('line');
+    globalThis.localStorage.clear();
   });
 
   it('should publish the face or edges the tools picked, and a proportional scaler, until they are withdrawn', async () => {

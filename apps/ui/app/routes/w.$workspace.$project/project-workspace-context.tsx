@@ -11,6 +11,8 @@ import {
   Suspense,
 } from 'react';
 import { useProject } from '#hooks/use-project.js';
+import { readAssistantDockPosition, writeAssistantDockPosition } from '#lib/assistant-dock-position.js';
+import type { AssistantDockPosition } from '#lib/assistant-dock-position.js';
 import { useCadViewport } from '#hooks/use-cad-viewport.js';
 import type { MobilePanelId } from '#constants/editor.constants.js';
 import type { PanelState } from '#types/editor.types.js';
@@ -76,9 +78,14 @@ type ProjectWorkspaceContextValue = {
   setChatOpen: (open: boolean) => void;
   /** The right lane (inspector and assistant) opens with the project until a lane is toggled. */
   assistantEntryOpen: boolean;
-  /** The assistant shows the whole conversation; otherwise it is the composer strip under the inspector. */
+  /** The assistant shows the whole conversation (`assistantDock === 'tall'`); otherwise it is the strip under the inspector. */
   assistantExpanded: boolean;
+  /** Opens the conversation, or returns to the strip at the height it had before. */
   setAssistantExpanded: (expanded: boolean) => void;
+  /** The assistant's height under the inspector: the line and the composer, the strip, or the conversation. */
+  assistantDock: AssistantDockPosition;
+  /** Choose a height; the project remembers it. */
+  setAssistantDock: (position: AssistantDockPosition) => void;
   /** Where the active viewer mounts its manual tools: the inspector, while it is on screen. */
   inspectorSlot: HTMLElement | undefined;
   setInspectorSlot: (slot: HTMLElement | undefined) => void;
@@ -210,10 +217,37 @@ export function ProjectWorkspaceProvider({
   readonly workbenchMode?: 'responsive' | 'pane';
   readonly onWorkbenchOpen?: () => void;
 }): React.JSX.Element {
-  const { editorRef, mainEntryPath } = useProject();
+  const { editorRef, mainEntryPath, projectId } = useProject();
   const [exportOpen, setExportOpen] = useState(false);
   const [assistantEntryOpen, setAssistantEntryOpen] = useState(true);
-  const [assistantExpanded, setAssistantExpanded] = useState(false);
+  // The assistant's height is the project's own choice: read once per project, written on every change.
+  const [assistantDock, setAssistantDockState] = useState<AssistantDockPosition>(() =>
+    readAssistantDockPosition(projectId),
+  );
+  const [dockProjectId, setDockProjectId] = useState(projectId);
+  if (dockProjectId !== projectId) {
+    setDockProjectId(projectId);
+    setAssistantDockState(readAssistantDockPosition(projectId));
+  }
+  // The strip's height before the conversation took the lane, so closing it goes back there.
+  const lowDockRef = useRef<AssistantDockPosition>(assistantDock === 'tall' ? 'open' : assistantDock);
+  const setAssistantDock = useCallback(
+    (position: AssistantDockPosition) => {
+      if (position !== 'tall') {
+        lowDockRef.current = position;
+      }
+      setAssistantDockState(position);
+      writeAssistantDockPosition(projectId, position);
+    },
+    [projectId],
+  );
+  const assistantExpanded = assistantDock === 'tall';
+  const setAssistantExpanded = useCallback(
+    (expanded: boolean) => {
+      setAssistantDock(expanded ? 'tall' : lowDockRef.current);
+    },
+    [setAssistantDock],
+  );
   const [inspectorSlot, setInspectorSlot] = useState<HTMLElement>();
   const [inspectorHistorySlot, setInspectorHistorySlot] = useState<HTMLElement>();
   const [inspectorSubSelection, setInspectorSubSelection] = useState<InspectorSubSelection>();
@@ -587,6 +621,8 @@ export function ProjectWorkspaceProvider({
       assistantEntryOpen,
       assistantExpanded,
       setAssistantExpanded,
+      assistantDock,
+      setAssistantDock,
       inspectorSlot,
       setInspectorSlot,
       inspectorHistorySlot,
@@ -612,6 +648,9 @@ export function ProjectWorkspaceProvider({
       setChatOpen,
       assistantEntryOpen,
       assistantExpanded,
+      setAssistantExpanded,
+      assistantDock,
+      setAssistantDock,
       inspectorSlot,
       inspectorHistorySlot,
       inspectorSubSelection,

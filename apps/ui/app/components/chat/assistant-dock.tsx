@@ -1,7 +1,8 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
-import { ChevronUp, MessageCircle } from 'lucide-react';
+import { useCallback, useId, useMemo, useRef, useState } from 'react';
+import { ChevronDown, ChevronUp, ChevronsUp } from 'lucide-react';
 import { KeyShortcut } from '@taucad/ui/components/key-shortcut';
 import { PaneButton } from '@taucad/workbench-panes/components/pane-button';
+import { cn } from '@taucad/ui/utils/cn';
 import { Eyebrow } from '#components/ui/eyebrow.js';
 import { ChatTextarea } from '#components/chat/chat-textarea.js';
 import type { ChatTextareaHandle, ChatTextareaProperties } from '#components/chat/chat-textarea-types.js';
@@ -21,6 +22,8 @@ import {
 } from '#components/chat/assistant-tray.js';
 import { TurnModelSummary } from '#components/chat/turn-summary-card.js';
 import { senzaVarianti } from '#lib/assistant-variants-marker.js';
+import { assistantDockDragDirection, stepAssistantDockPosition } from '#lib/assistant-dock-position.js';
+import type { AssistantDockPosition } from '#lib/assistant-dock-position.js';
 import { useCadChatClient } from '#chat-clients/use-cad-chat-client.js';
 import { useChatContext, useChatSelector } from '#hooks/use-chat.js';
 import { useInspectorSelection } from '#hooks/use-inspector-selection.js';
@@ -48,6 +51,60 @@ const latestAnswer = (
     }
   }
   return undefined;
+};
+
+/** What the line says the assistant is doing. */
+type LineState = 'idle' | 'working' | 'answered' | 'proposal' | 'change';
+
+/** What the strip had shown the last time its body was on screen, so the line can say what is new. */
+type Seen = Readonly<{ answer: string | undefined; sessione: number | undefined; modifica: number | undefined }>;
+
+const sameSeen = (left: Seen, right: Seen): boolean =>
+  left.answer === right.answer && left.sessione === right.sessione && left.modifica === right.modifica;
+
+/**
+ * What the line says: the assistant at work first; at the line, what arrived since the body was last seen (a change
+ * it made, a proposal, an answer); otherwise nothing.
+ */
+const lineStateOf = (strip: Readonly<{ isWorking: boolean; isOpen: boolean }>, now: Seen, seen: Seen): LineState => {
+  if (strip.isWorking) {
+    return 'working';
+  }
+  if (strip.isOpen) {
+    return 'idle';
+  }
+  if (now.modifica !== undefined && now.modifica !== seen.modifica) {
+    return 'change';
+  }
+  if (now.sessione !== undefined && now.sessione !== seen.sessione) {
+    return 'proposal';
+  }
+  if (now.answer !== undefined && now.answer !== seen.answer) {
+    return 'answered';
+  }
+  return 'idle';
+};
+
+/** The line's words for its state; at rest on the line, the last answer or «Pronto». */
+const useLineText = (state: LineState, isOpen: boolean, latest: string | undefined): string => {
+  const { t } = useTranslation();
+  switch (state) {
+    case 'working': {
+      return `${t('inspector.assistant.working')}…`;
+    }
+    case 'answered': {
+      return `${t('inspector.assistant.answered')} · ${latest ?? ''}`;
+    }
+    case 'proposal': {
+      return t('inspector.assistant.newProposal');
+    }
+    case 'change': {
+      return t('inspector.assistant.newChange');
+    }
+    default: {
+      return isOpen ? '' : (latest ?? t('inspector.assistant.idle'));
+    }
+  }
 };
 
 /**
@@ -82,7 +139,7 @@ function AssistantStripBody({
       </div>
     );
   return (
-    <div className='space-y-2 px-3 pt-2 pb-2 empty:hidden'>
+    <div className='space-y-2 px-3 pt-1 pb-2 empty:hidden'>
       {hasCard ? <AssistantTrayCard /> : null}
       {showsTurn ? (
         <TurnModelSummary
@@ -99,10 +156,33 @@ function AssistantStripBody({
 }
 
 /**
- * The assistant while the inspector has the lane: its name, what it last said or that it is working, the starts or
- * the selection's suggestions, and the composer. Sending opens the conversation, so the answer is seen arriving.
+ * The line's mark: still while nothing happens, Sinopia's titanium while the assistant works (the only thing that
+ * moves) or has something new to show, sage once it has answered.
  */
-function AssistantStrip({ onExpand, keyHint }: Readonly<{ onExpand: () => void; keyHint: string }>): React.JSX.Element {
+const dotClass: Record<LineState, string> = {
+  idle: 'border border-muted-foreground/50',
+  working: 'bg-titanium motion-safe:animate-pulse',
+  answered: 'bg-success',
+  proposal: 'bg-titanium',
+  change: 'bg-titanium',
+};
+
+/**
+ * The assistant while the inspector has the lane, at one of two heights. At `line` it is one thin row — the live
+ * status — over the composer, and the inspector has everything else; at `open` the body (the model's card, the
+ * proposals, the last answer) sits between them. The line toggles the body with a click or Enter, grows or shrinks
+ * the assistant when dragged, and the composer never leaves. Sending opens the conversation, so the answer is seen
+ * arriving.
+ */
+function AssistantStrip({
+  position,
+  onPositionChange,
+  keyHint,
+}: Readonly<{
+  position: Exclude<AssistantDockPosition, 'tall'>;
+  onPositionChange: (position: AssistantDockPosition) => void;
+  keyHint: string;
+}>): React.JSX.Element {
   const { t } = useTranslation();
   const { projectId } = useProject();
   const { activeChatId } = useChatContext();
@@ -110,6 +190,7 @@ function AssistantStrip({ onExpand, keyHint }: Readonly<{ onExpand: () => void; 
     () => chatAttachmentDirectories(projectId, activeChatId),
     [activeChatId, projectId],
   );
+  const bodyId = useId();
   const textarea = useRef<ChatTextareaHandle>(null);
   const focusComposer = useCallback(() => {
     textarea.current?.focus();
@@ -119,13 +200,80 @@ function AssistantStrip({ onExpand, keyHint }: Readonly<{ onExpand: () => void; 
   const hasMessages = useChatSelector((state) => state.messageOrder.length > 0);
   const status = useChatSelector((state) => state.status);
   const latest = useChatSelector((state) => latestAnswer(state.messages));
+  const tray = useAssistantTray();
+  const sessioneId = tray?.sessione?.stato === 'pronto' ? tray.sessione.id : undefined;
+  const modificaId = tray?.modifica?.id;
   const isWorking = status === 'submitted' || status === 'streaming';
+  const isOpen = position === 'open';
+
+  // While the body is on screen, everything in it counts as seen; the line then only announces what came after.
+  const now: Seen = { answer: latest, sessione: sessioneId, modifica: modificaId };
+  const [seen, setSeen] = useState<Seen>(now);
+  if (isOpen && !sameSeen(seen, now)) {
+    setSeen(now);
+  }
+  const lineState = lineStateOf({ isWorking, isOpen }, now, seen);
+  const lineText = useLineText(lineState, isOpen, latest);
+
+  const expand = useCallback(() => {
+    onPositionChange('tall');
+  }, [onPositionChange]);
+  const toggleBody = useCallback(() => {
+    onPositionChange(isOpen ? 'line' : 'open');
+  }, [isOpen, onPositionChange]);
+
+  // Dragging the line: up grows the assistant (open, then the conversation), down shrinks it (the line).
+  const drag = useRef<{ pointerId: number; startY: number; moved: boolean } | undefined>(undefined);
+  // The handlers sit on the line's own button, which captures the pointer: a capturing ancestor would retarget the
+  // pointer-up and the click would land beside the button instead of on it.
+  const onPointerDown = (event: React.PointerEvent<HTMLButtonElement>): void => {
+    if (event.button !== 0) {
+      return;
+    }
+    drag.current = { pointerId: event.pointerId, startY: event.clientY, moved: false };
+    // Pointer capture keeps the gesture when the pointer leaves the line; a runtime without it still drags.
+    if (typeof event.currentTarget.setPointerCapture === 'function') {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    }
+  };
+  const onPointerMove = (event: React.PointerEvent<HTMLButtonElement>): void => {
+    const { current } = drag;
+    if (!current || current.pointerId !== event.pointerId || current.moved) {
+      return;
+    }
+    const direction = assistantDockDragDirection(event.clientY - current.startY);
+    if (direction === undefined) {
+      return;
+    }
+    current.moved = true;
+    onPositionChange(stepAssistantDockPosition(position, direction));
+  };
+  const onPointerEnd = (event: React.PointerEvent<HTMLButtonElement>): void => {
+    if (
+      drag.current?.pointerId === event.pointerId &&
+      typeof event.currentTarget.hasPointerCapture === 'function' &&
+      event.currentTarget.hasPointerCapture(event.pointerId)
+    ) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+  const onLineClick = (event: React.MouseEvent<HTMLButtonElement>): void => {
+    // A drag that already changed the height is not a click.
+    if (drag.current?.moved) {
+      drag.current = undefined;
+      event.preventDefault();
+      return;
+    }
+    drag.current = undefined;
+    toggleBody();
+  };
+
   const onSubmit: ChatTextareaProperties['onSubmit'] = useCallback(
     async ({ content, attachments, references }) => {
       await submitChat({ text: content, attachments, ...(references === undefined ? {} : { references }) });
-      onExpand();
+      expand();
     },
-    [submitChat, onExpand],
+    [submitChat, expand],
   );
   return (
     <ChatAttachmentDirectoriesContext.Provider value={attachmentDirectories}>
@@ -134,19 +282,48 @@ function AssistantStrip({ onExpand, keyHint }: Readonly<{ onExpand: () => void; 
           <section
             aria-label={t('inspector.assistant.label')}
             data-slot='assistant-strip'
+            data-position={position}
             className='ph-no-capture shrink-0 border-t border-border bg-sidebar'
           >
-            <div className='flex items-center gap-2 pt-2 pr-2 pl-4'>
-              <MessageCircle aria-hidden className='size-3.5 text-titanium-foreground' />
-              <Eyebrow>{t('inspector.assistant.label')}</Eyebrow>
-              {isWorking ? (
-                <span role='status' className='flex items-center gap-1.5 text-xs text-muted-foreground'>
-                  <span aria-hidden className='size-1.5 animate-pulse rounded-full bg-titanium' />
-                  {t('inspector.assistant.working')}
+            <div data-slot='assistant-line' className='flex h-8 items-center gap-1 pr-1.5 pl-3 select-none'>
+              <button
+                type='button'
+                aria-expanded={isOpen}
+                aria-controls={bodyId}
+                aria-label={t(isOpen ? 'inspector.assistant.hideBody' : 'inspector.assistant.showBody')}
+                title={t('inspector.assistant.dragHint')}
+                className='flex h-full min-w-0 flex-1 cursor-ns-resize touch-none items-center gap-2 rounded-md text-left outline-hidden focus-visible:focus-outline'
+                onClick={onLineClick}
+                onPointerDown={onPointerDown}
+                onPointerMove={onPointerMove}
+                onPointerUp={onPointerEnd}
+                onPointerCancel={onPointerEnd}
+              >
+                <span
+                  aria-hidden
+                  data-slot='assistant-dot'
+                  data-state={lineState}
+                  className={cn('size-1.5 shrink-0 rounded-full', dotClass[lineState])}
+                />
+                <Eyebrow className='shrink-0 text-titanium-foreground'>{t('inspector.assistant.label')}</Eyebrow>
+                <span
+                  role='status'
+                  aria-live='polite'
+                  data-slot='assistant-line-status'
+                  className={cn(
+                    'min-w-0 flex-1 truncate text-xs',
+                    lineState === 'idle' ? 'text-muted-foreground' : 'text-foreground',
+                  )}
+                >
+                  {lineText}
                 </span>
-              ) : null}
+                {isOpen ? (
+                  <ChevronDown aria-hidden className='size-3.5 shrink-0 text-muted-foreground' />
+                ) : (
+                  <ChevronUp aria-hidden className='size-3.5 shrink-0 text-muted-foreground' />
+                )}
+              </button>
               <PaneButton
-                className='ml-auto'
                 aria-label={t('inspector.assistant.expand')}
                 aria-keyshortcuts='Control+J'
                 tooltip={
@@ -156,22 +333,26 @@ function AssistantStrip({ onExpand, keyHint }: Readonly<{ onExpand: () => void; 
                   </span>
                 }
                 tooltipSide='left'
-                onClick={onExpand}
+                onClick={expand}
               >
-                <ChevronUp aria-hidden className='size-3.5' />
+                <ChevronsUp aria-hidden className='size-3.5' />
               </PaneButton>
             </div>
-            {hasMessages && latest ? (
-              <button
-                type='button'
-                className='mx-4 mt-1 line-clamp-2 block text-left text-xs leading-snug text-muted-foreground hover:text-foreground focus-visible:focus-outline'
-                title={t('inspector.assistant.latest')}
-                onClick={onExpand}
-              >
-                {latest}
-              </button>
+            {isOpen ? (
+              <div id={bodyId} data-slot='assistant-body'>
+                {hasMessages && latest ? (
+                  <button
+                    type='button'
+                    className='mx-4 mb-1 line-clamp-2 block text-left text-xs leading-snug text-muted-foreground hover:text-foreground focus-visible:focus-outline'
+                    title={t('inspector.assistant.latest')}
+                    onClick={expand}
+                  >
+                    {latest}
+                  </button>
+                ) : null}
+                <AssistantStripBody hasMessages={hasMessages} isWorking={isWorking} />
+              </div>
             ) : null}
-            <AssistantStripBody hasMessages={hasMessages} isWorking={isWorking} />
             <div role='region' aria-label={t('project.agent.composer')} className='px-3 pb-3'>
               <ChatTextarea ref={textarea} mode='main' enableAutoFocus={false} onSubmit={onSubmit} />
             </div>
@@ -183,26 +364,27 @@ function AssistantStrip({ onExpand, keyHint }: Readonly<{ onExpand: () => void; 
 }
 
 /**
- * The assistant, always present under the inspector: a strip with the composer, or the whole conversation (⌃J).
+ * The assistant, always present under the inspector, at one of three heights: the line over its composer, the strip
+ * with its body, or the whole conversation (⌃J). The project remembers the height.
  *
- * @param props - Whether the conversation is open, how to change it and the key that does.
+ * @param props - The height, how to change it, and the key that opens the conversation.
  * @returns The dock.
  */
 export function AssistantDock({
-  isExpanded,
+  position,
+  onPositionChange,
   onExpandedChange,
   keyHint,
 }: Readonly<{
-  isExpanded: boolean;
+  position: AssistantDockPosition;
+  onPositionChange: (position: AssistantDockPosition) => void;
+  /** Open the conversation, or go back to the strip at the height it had before. */
   onExpandedChange: (isExpanded: boolean) => void;
   keyHint: string;
 }>): React.JSX.Element {
-  const expand = useCallback(() => {
-    onExpandedChange(true);
-  }, [onExpandedChange]);
   return (
     <AssistantTrayProvider>
-      {isExpanded ? (
+      {position === 'tall' ? (
         <div data-slot='assistant-conversation' className='flex min-h-0 flex-1 flex-col border-t border-border'>
           <ChatHistoryGate>
             <ChatHistory
@@ -216,7 +398,7 @@ export function AssistantDock({
         </div>
       ) : (
         <ChatHistoryGate>
-          <AssistantStrip onExpand={expand} keyHint={keyHint} />
+          <AssistantStrip position={position} onPositionChange={onPositionChange} keyHint={keyHint} />
         </ChatHistoryGate>
       )}
     </AssistantTrayProvider>
