@@ -51,6 +51,7 @@ const createCommitWorker = async () => {
   const counts = { dependencies: 0, parameters: 0 };
   const operationIds: Array<[string, number | undefined]> = [];
   const geometryParameters: Array<Record<string, unknown>> = [];
+  const renderInteractions: Array<'continuous' | undefined> = [];
   const kernel = defineKernel({
     id: 'commit-kernel',
     extensions: ['ts'],
@@ -77,8 +78,11 @@ const createCommitWorker = async () => {
       geometryParameters.push(input.parameters);
       return { handle: { width: input.parameters['width'] } };
     },
-    async render({ handle }) {
-      return { content: `<svg xmlns="http://www.w3.org/2000/svg"><text>${String(handle.width)}</text></svg>` };
+    async render({ handle, interaction }) {
+      renderInteractions.push(interaction);
+      return {
+        content: `<svg xmlns="http://www.w3.org/2000/svg"><text>${String(handle.width)}${interaction === 'continuous' ? '~' : ''}</text></svg>`,
+      };
     },
   })();
   // Stands in for the parameter-file resolver: the record feeds geometry, never parameters.
@@ -134,7 +138,15 @@ const createCommitWorker = async () => {
     expect(evaluated.at(-1)).toMatchObject({ success: true, transient: false });
   };
 
-  return { worker, counts, operationIds, geometryParameters, selectionReads, stageAndEvaluate };
+  return {
+    worker,
+    counts,
+    operationIds,
+    geometryParameters,
+    renderInteractions,
+    selectionReads,
+    stageAndEvaluate,
+  };
 };
 
 describe('KernelWorker committed parameter edits', () => {
@@ -223,6 +235,53 @@ describe('KernelWorker committed parameter edits', () => {
           content: '<svg xmlns="http://www.w3.org/2000/svg"><text>2</text></svg>',
         },
       });
+    } finally {
+      await worker.cleanup();
+    }
+  });
+  it('should render an interactive transient sample as a continuous interaction, apart from the same values at rest', async () => {
+    const { worker, renderInteractions, stageAndEvaluate } = await createCommitWorker();
+    try {
+      await stageAndEvaluate({});
+      const rendered: Array<Parameters<NonNullable<KernelRuntimeWorker['onRendered']>>[0]> = [];
+      worker.onRendered = (event) => {
+        rendered.push(event);
+      };
+      worker.handleOpenView({ documentId: 'doc', subscriptionId: 'view', requestId: 'initial', view: 'display' });
+      await vi.waitFor(() => {
+        expect(rendered).toHaveLength(1);
+      });
+
+      worker.handleUpdateDocument({
+        documentId: 'doc',
+        intent: 1,
+        parameters: { width: 9 },
+        transient: true,
+        interactive: true,
+      });
+      await vi.waitFor(() => {
+        expect(rendered).toHaveLength(2);
+      });
+      // The same values at rest: still transient, no longer interactive.
+      worker.handleUpdateDocument({ documentId: 'doc', intent: 2, parameters: { width: 9 }, transient: true });
+      await vi.waitFor(() => {
+        expect(rendered).toHaveLength(3);
+      });
+
+      expect(renderInteractions).toEqual([undefined, 'continuous', undefined]);
+      const [, interactive, rest] = rendered;
+      expect(interactive).toMatchObject({
+        success: true,
+        transient: true,
+        artifact: { content: '<svg xmlns="http://www.w3.org/2000/svg"><text>9~</text></svg>' },
+      });
+      expect(rest).toMatchObject({
+        success: true,
+        transient: true,
+        artifact: { content: '<svg xmlns="http://www.w3.org/2000/svg"><text>9</text></svg>' },
+      });
+      // A coarse projection never answers for the values at rest: their projection hashes differ.
+      expect(interactive?.success && rest?.success && interactive.hash !== rest.hash).toBe(true);
     } finally {
       await worker.cleanup();
     }

@@ -97,4 +97,13 @@ describe('recognition record', () => {
     });
     expect(leggiRecordRiconoscimento(undefined)).toStrictEqual({ stato: 'assente' });
   });
+
+  it('should still read a record written before the sheet named the face', () => {
+    const { record } = progetto();
+    const { faccia: _faccia, ...vistaVecchia } = record.scheda.vista;
+    const vecchio = { ...record, scheda: { ...record.scheda, vista: vistaVecchia } };
+    const letto = leggiRecordRiconoscimento(JSON.stringify(vecchio));
+    expect(letto).toMatchObject({ stato: 'ok', record: { scheda: { vista: { nome: record.scheda.vista.nome } } } });
+    expect(letto.stato === 'ok' && letto.record.scheda.vista.faccia).toBe('sopra');
+  });
 });

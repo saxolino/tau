@@ -44,6 +44,18 @@ describe('client of /v1/recognize', () => {
     });
   });
 
+  it('should accept an answer of the function not yet updated (version 1, no face), completing the face', async () => {
+    const { faccia: _faccia, ...vista } = schedaRiconoscimentoDiProva.vista;
+    const vecchia = { ...riconoscimentoRegistrato(), versione: 1, scheda: { ...schedaRiconoscimentoDiProva, vista } };
+    const fetch = vi.fn(async () => Response.json(vecchia)) as unknown as typeof globalThis.fetch;
+    const esito = await riconosciParte(
+      { schedaParte: schedaParteDiProva, immagini, lingua: 'it' },
+      { fetch, progettoCad: 'proj_1', prezzo: async () => 2, requestId: '55555555-5555-4555-8555-555555555555' },
+    );
+    expect(esito.versione).toBe(1);
+    expect(esito.scheda.vista).toMatchObject({ nome: vista.nome, faccia: 'sopra' });
+  });
+
   it('should send the second round as `immagini.differenza`, the field the function reads', async () => {
     let corpo: unknown;
     const fetch = vi.fn(async (_url: string, init?: RequestInit) => {

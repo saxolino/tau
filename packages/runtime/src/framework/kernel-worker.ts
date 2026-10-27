@@ -215,6 +215,8 @@ type DocumentEvaluation = {
   readonly id: string;
   readonly intent: number;
   readonly transient: boolean;
+  /** One sample of a continuous interaction (`DocumentUpdate.interactive`): its views render as interactive. */
+  readonly interactive?: true;
   readonly result: Evaluation;
   readonly artifact?: MaterializedRender;
   /** The latest projection of each offered view, instance and content, whatever options rendered it. */
@@ -231,6 +233,15 @@ type ViewRecord = {
   content?: RuntimeContentInput;
   readonly operations: Set<AbortController>;
 };
+
+/**
+ * A render request marked as one sample of a continuous interaction, or left as it is at rest.
+ * @param request - The selected view and its options.
+ * @param interaction - `'continuous'` for an interactive sample.
+ * @returns The request the render pipeline runs.
+ */
+const withRenderInteraction = (request: RenderRequest, interaction: RenderRequest['interaction']): RenderRequest =>
+  interaction === undefined ? request : { ...request, interaction };
 
 /** Preserve a missing optional dependency as a wire revision token. @internal */
 export const sourceRevisionFileDigest = (contentHash: string, path: string): ContentDigest | 'missing' =>
@@ -1056,7 +1067,13 @@ export abstract class KernelWorker<Options extends Record<string, unknown> = Rec
       record.committedParameters = { ...record.parameters };
       record.committedEvaluateOptions = { ...record.evaluateOptions };
     }
-    this.scheduleDocumentEvaluation(record, input.intent, input.transient ?? false, input.stage);
+    this.scheduleDocumentEvaluation(
+      record,
+      input.intent,
+      input.transient ?? false,
+      input.stage,
+      input.transient === true && input.interactive === true,
+    );
   }
 
   /** Close one document and its subscriptions before any queued result can publish. */
@@ -1428,13 +1445,15 @@ export abstract class KernelWorker<Options extends Record<string, unknown> = Rec
     ]);
   }
 
-  // oxlint-disable-next-line max-params -- A document admission carries its intent, transient flag and optional staged files.
+  // oxlint-disable-next-line max-params -- A document admission carries its intent, transient and interactive flags and optional staged files.
   private scheduleDocumentEvaluation(
     document: DocumentRecord,
     intent: number,
     transient: boolean,
     stage?: Readonly<Record<string, Uint8Array<ArrayBuffer>>>,
+    interactive = false,
   ): void {
+    const interaction = interactive ? ({ interactive: true } as const) : {};
     // Preserve an export-pinned committed admission, but stop any superseded
     // unpinned native build before the next evaluation enters the serial lane.
     if (document.pendingCommitted?.pins === 0 || document.pendingCommitted === undefined) {
@@ -1562,6 +1581,7 @@ export abstract class KernelWorker<Options extends Record<string, unknown> = Rec
             id: evaluationId,
             intent,
             transient,
+            ...interaction,
             result: {
               success: false,
               id: evaluationId,
@@ -1590,6 +1610,7 @@ export abstract class KernelWorker<Options extends Record<string, unknown> = Rec
                 id: evaluationId,
                 intent,
                 transient,
+                ...interaction,
                 artifact,
                 result: {
                   success: true,
@@ -1605,6 +1626,7 @@ export abstract class KernelWorker<Options extends Record<string, unknown> = Rec
                 id: evaluationId,
                 intent,
                 transient,
+                ...interaction,
                 result: {
                   success: false,
                   id: evaluationId,
@@ -1699,6 +1721,7 @@ export abstract class KernelWorker<Options extends Record<string, unknown> = Rec
           id: evaluationId,
           intent,
           transient,
+          ...interaction,
           result,
         };
         if (
@@ -1847,7 +1870,13 @@ export abstract class KernelWorker<Options extends Record<string, unknown> = Rec
         );
         if (selected.success) {
           const { selection } = selected;
-          const key = canonicalJson([selection, view.options, view.content]);
+          // An interactive sample's projection is its own: a coarse mesh never answers for the values at rest.
+          const interaction: RenderRequest['interaction'] = evaluation.interactive ? 'continuous' : undefined;
+          const key = canonicalJson(
+            interaction === undefined
+              ? [selection, view.options, view.content]
+              : [selection, view.options, view.content, interaction],
+          );
           const meshMiddleware = this.getMeshExecutionList(artifact.owner, view.content ?? {});
           const dependencies = await this.computeDependencies({
             operations: ['evaluate', 'render'],
@@ -1915,6 +1944,7 @@ export abstract class KernelWorker<Options extends Record<string, unknown> = Rec
                 owner: artifact.owner,
                 identity,
                 selection,
+                ...(interaction === undefined ? {} : { interaction }),
                 renderOptions: view.options,
                 requestedContent: view.content,
                 resolvedMiddleware: meshMiddleware,
@@ -4436,6 +4466,8 @@ export abstract class KernelWorker<Options extends Record<string, unknown> = Rec
     owner: OperationOwner;
     identity: RenderIdentity;
     selection: { view: string; mimeType: MediaType; instance?: string } | undefined;
+    /** Set while the render projects a sample of a continuous interaction. */
+    interaction?: 'continuous';
     renderOptions: Record<string, unknown>;
     requestedContent?: RuntimeContentInput;
     resolvedMiddleware: ResolvedMiddleware[];
@@ -4446,6 +4478,7 @@ export abstract class KernelWorker<Options extends Record<string, unknown> = Rec
       owner,
       identity,
       selection,
+      interaction,
       renderOptions,
       requestedContent,
       resolvedMiddleware,
@@ -4603,10 +4636,7 @@ export abstract class KernelWorker<Options extends Record<string, unknown> = Rec
       const selectedOptions = Object.fromEntries(
         Object.entries(renderOptions).filter(([key]) => !evaluateKeys.includes(key)),
       );
-      const meshResult = await chain({
-        ...selection,
-        options: selectedOptions,
-      });
+      const meshResult = await chain(withRenderInteraction({ ...selection, options: selectedOptions }, interaction));
       if (!meshResult.success) {
         return meshResult;
       }

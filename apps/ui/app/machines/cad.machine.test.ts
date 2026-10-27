@@ -262,7 +262,16 @@ describe('cadMachine watched document', () => {
     const f = await opened(fixture());
     f.actor.send({ type: 'scrubParameters', parameters: { width: 20 } });
     await vi.waitFor(() => {
-      expect(f.runtime.document.update).toHaveBeenCalledWith({ parameters: { width: 20 }, transient: true });
+      expect(f.runtime.document.update).toHaveBeenCalledWith({
+        parameters: { width: 20 },
+        transient: true,
+        interactive: true,
+      });
+    });
+    // Held still, the same values render at full quality, still transient.
+    f.actor.send({ type: 'scrubParameters', parameters: { width: 20 }, settled: true });
+    await vi.waitFor(() => {
+      expect(f.runtime.document.update).toHaveBeenLastCalledWith({ parameters: { width: 20 }, transient: true });
     });
     const stage = { 'main.params.json': new Uint8Array([1]) };
     f.actor.send({ type: 'commitParameters', stage });

@@ -16,7 +16,7 @@ import { schedaRiconoscimentoSchema, schemaPerApi } from '#riconoscimento/schema
 export const modelloRiconoscimento = 'claude-sonnet-5-5';
 
 /** Versione del contratto: sale quando la forma di ingresso o di uscita cambia. @public */
-export const versioneContratto = 1;
+export const versioneContratto = 2;
 
 const parametroCatalogo = (definizione: DefinizioneParametro): ParametroCatalogo => ({
   chiave: definizione.chiave,
@@ -43,6 +43,11 @@ export const famigliaCatalogo = (famiglia: FamigliaQualsiasi): FamigliaCatalogo 
   versione: famiglia.versione,
   varianti: [...famiglia.varianti],
   partTypes: [...famiglia.partTypes],
+  viste: {
+    principale: famiglia.viste.principale,
+    facce: famiglia.viste.facce.map((faccia) => ({ id: faccia.id, descrizione: faccia.descrizione })),
+    nomi: famiglia.viste.nomi,
+  },
   parametri: famiglia.parametri
     .filter((definizione) => !definizione.fuoriRiconoscimento)
     .map((definizione) => parametroCatalogo(definizione)),

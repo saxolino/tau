@@ -496,9 +496,12 @@ export class RuntimeDocumentSessionClient {
         throw operationError ?? new OperationAbortedError();
       }
       // JS consumers can bypass the discriminated TypeScript update contract.
-      const wireChange: { transient?: boolean; stage?: unknown } = change;
+      const wireChange: { transient?: boolean; interactive?: boolean; stage?: unknown } = change;
       if (wireChange.transient === true && wireChange.stage !== undefined) {
         throw new TypeError('A transient document update cannot stage files.');
+      }
+      if (wireChange.interactive === true && wireChange.transient !== true) {
+        throw new TypeError('Only a transient document update can be interactive.');
       }
       if (evaluationId !== undefined && ![...exportPins.values()].includes(evaluationId)) {
         this.#signalAbort(evaluationId, evaluationGeneration, abortReason.superseded);
@@ -534,6 +537,7 @@ export class RuntimeDocumentSessionClient {
         ...(change.parameters ? { parameters: change.parameters } : {}),
         ...(change.evaluateOptions ? { evaluateOptions: change.evaluateOptions } : {}),
         ...(change.transient === undefined ? {} : { transient: change.transient }),
+        ...(wireChange.interactive === true ? { interactive: true } : {}),
         ...(encodedStage ? { stage: encodedStage } : {}),
       };
       channel.notify('update', command);

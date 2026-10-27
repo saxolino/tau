@@ -36,6 +36,7 @@ import {
   trasportaMarcatori,
 } from '#famiglie/verifiche-comuni.js';
 import { misuraPezzo } from '#famiglie/sonda-tempi.js';
+import { faccia as f } from '#famiglie/viste.js';
 
 /**
  * Famiglia `tacco` (specifica §1.1): varianti stiletto, blocco, rocchetto, cono e kitten.
@@ -1161,6 +1162,33 @@ export const tacco: Famiglia<ParametriTacco> = {
   costruisci: (lib, p, opzioni) => costruisciConEsiti(lib, p, opzioni).pezzi,
   costruisciConEsiti,
   verifiche,
+  viste: {
+    principale: 'fianco_esterno',
+    facce: [
+      f(
+        'fianco_esterno',
+        90,
+        0,
+        'outer side profile of the heel, the foot-side view of a product photo: toe to the right, top lift on the ground line (shows height, curve of the back, seat slope)',
+      ),
+      f('fianco_interno', -90, 0, 'inner (arch) side profile, toe to the left'),
+      f(
+        'davanti',
+        180,
+        0,
+        'front of the heel, the face that looks toward the toe (shows width at the seat and at the top lift)',
+      ),
+      f('dietro', 0, 0, 'back of the heel (dorso) seen from behind the shoe, the classic heel-from-behind view'),
+      f('sopra', 0, 90, 'the seat from above, toe up (rare)'),
+      f('sotto', 180, -90, 'the top lift (tappo) seen from below, toe up'),
+    ],
+    nomi: {
+      fronte: { faccia: 'davanti', azimuth: 0, elevation: 0 },
+      tre_quarti: { faccia: 'fianco_esterno', azimuth: 35, elevation: 15 },
+      lato: { faccia: 'fianco_esterno', azimuth: 0, elevation: 0 },
+      alto: { faccia: 'sopra', azimuth: 0, elevation: 0 },
+    },
+  },
   silhouette: { assi: ['x', 'y', 'z'], simmetrie: ['yz'] },
   materialiAmmessi: ['abs', 'pa6', 'pa_gf30', 'pu', 'legno_faggio', 'alluminio', 'tpu', 'acciaio'],
   emettiMain: (p, ipotesi, opzioni) =>

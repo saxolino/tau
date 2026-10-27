@@ -5,6 +5,7 @@ import { emettiMainFamiglia } from '#famiglie/emetti-main.js';
 import { aspettoMateriale } from '#famiglie/materiali.js';
 import { limita, normalizzaConParametri, predefinitiDaParametri, schemaDaParametri } from '#famiglie/parametri.js';
 import { esitiPezzi, esito, esitoMinimo, mm, normalizzaForma } from '#famiglie/verifiche-comuni.js';
+import { faccia as f } from '#famiglie/viste.js';
 
 /**
  * Famiglia `puntale` (specifica §1.6): puntalino di lamiera imbutita a quarto d'ellissoide. Telaio: apertura sul retro
@@ -231,6 +232,22 @@ export const puntale: Famiglia<ParametriPuntale> = {
   costruisci: (lib, p) => costruisciConEsiti(lib, p).pezzi,
   costruisciConEsiti,
   verifiche,
+  viste: {
+    principale: 'fianco_esterno',
+    facce: [
+      f('fianco_esterno', 90, 0, 'side profile, opening at the back (left), tip to the right (length and height)'),
+      f('sopra', 0, 90, 'from above, tip up (length and width)'),
+      f('davanti', 180, 0, 'the tip head-on (width and height)'),
+      f('dietro', 0, 0, 'the open back from behind (opening, wall thickness)'),
+      f('sotto', 180, -90, 'from below, tip up'),
+    ],
+    nomi: {
+      fronte: { faccia: 'davanti', azimuth: 0, elevation: 0 },
+      tre_quarti: { faccia: 'fianco_esterno', azimuth: 35, elevation: 25 },
+      lato: { faccia: 'fianco_esterno', azimuth: 0, elevation: 0 },
+      alto: { faccia: 'sopra', azimuth: 0, elevation: 0 },
+    },
+  },
   silhouette: { assi: ['x', 'y', 'z'], simmetrie: ['yz'] },
   materialiAmmessi: ['ottone', 'inox', 'alluminio'],
   emettiMain: (p, ipotesi) =>

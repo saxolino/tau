@@ -21,6 +21,7 @@ import {
   normalizzaForma,
   sformoDuePiani,
 } from '#famiglie/verifiche-comuni.js';
+import { faccia as f } from '#famiglie/viste.js';
 
 /**
  * Famiglia `borchia` (ribattino, specifica §1.4): testa sopra z = 0 (cupola, piramide, piatta, cono), gambo verso
@@ -325,6 +326,25 @@ export const borchia: Famiglia<ParametriBorchia> = {
   costruisci: (lib, p) => costruisciConEsiti(lib, p).pezzi,
   costruisciConEsiti,
   verifiche,
+  viste: {
+    principale: 'sopra',
+    facce: [
+      f('sopra', 0, 90, 'the head of the stud seen from above, straight on (outline and head diameter, pyramid sides)'),
+      f(
+        'fianco_esterno',
+        90,
+        0,
+        'side profile of the stud: head on top, shank down (shows head height, dome and shank length)',
+      ),
+      f('sotto', 180, -90, 'the back of the stud seen from below (shank, hollow head)'),
+    ],
+    nomi: {
+      fronte: { faccia: 'sopra', azimuth: 0, elevation: 0 },
+      tre_quarti: { faccia: 'sopra', azimuth: 25, elevation: 40 },
+      lato: { faccia: 'fianco_esterno', azimuth: 0, elevation: 0 },
+      alto: { faccia: 'sopra', azimuth: 0, elevation: 0 },
+    },
+  },
   silhouette: { assi: ['z'], simmetrie: ['yz', 'xz'] },
   materialiAmmessi: ['zama', 'ottone'],
   emettiMain: (p, ipotesi, opzioni) =>

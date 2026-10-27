@@ -21,6 +21,7 @@ const hooks = vi.hoisted(() => ({
   currentUser: '10000000-0000-4000-8000-000000000001',
   pieces: [] as unknown[],
   move: vi.fn(),
+  source: undefined as ((...args: unknown[]) => unknown) | undefined,
 }));
 vi.mock('#hooks/use-sinopia-cad-sync.js', () => ({ useMoveSinopiaCadModel: () => hooks.move }));
 vi.mock('#hooks/use-project.js', () => ({ useProject: () => ({ projectId: 'local' }) }));
@@ -30,7 +31,7 @@ vi.mock('#hooks/use-file-manager.js', () => ({
   }),
 }));
 vi.mock('#hooks/use-project-export.js', () => ({
-  useProjectExport: () => ({ prepareSinopia: hooks.prepare, deliveryPieces: hooks.pieces, deliveryAvailable: false }),
+  useProjectExport: () => ({ prepareSinopia: hooks.source ?? hooks.prepare, deliveryPieces: hooks.pieces, deliveryAvailable: false }),
 }));
 vi.mock('#lib/sinopia-data-client.js', () => ({ getSinopiaDataClient: async () => ({ userId: hooks.currentUser }) }));
 vi.mock('#components/ui/sonner.js', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
@@ -66,6 +67,7 @@ function mount(onOpenChange = vi.fn()) {
 }
 beforeEach(() => {
   hooks.currentUser = owner;
+  hooks.source = undefined;
   stored.clear();
   saved = undefined;
   hooks.prepare.mockResolvedValue(prepared);
@@ -270,6 +272,84 @@ describe('Sinopia delivery recovery', () => {
     expect(hooks.prepare).not.toHaveBeenCalled();
     expect([...stored.keys()].filter((path) => path.includes('/sinopia-sent/'))).toHaveLength(1);
     expect([...stored.keys()].filter((path) => path.includes('/sinopia-send-pending/'))).toEqual([]);
+  });
+
+  it('should register the sent version in Versions even when the delivery source changes right after the send', async () => {
+    setLanguage('en');
+    const user = userEvent.setup();
+    const view = mount();
+    const originalSend = vi.mocked(sinopiaSender.send).getMockImplementation()!;
+    vi.mocked(sinopiaSender.send).mockImplementation(async (input) => {
+      const receipt = await originalSend(input);
+      // The project files changed: the render owner hands out a new delivery source while the send settles.
+      hooks.source = async (...args: unknown[]) => hooks.prepare(...args);
+      await act(async () => {
+        view.rerender(
+          <QueryClientProvider client={clients[0]!}>
+            <SendToSinopiaDialog isOpen link={link} onOpenChange={view.onOpenChange} />
+          </QueryClientProvider>,
+        );
+      });
+      return receipt;
+    });
+    await user.click(await screen.findByRole('button', { name: 'Send version 3' }));
+    await waitFor(() => {
+      expect(view.onOpenChange).toHaveBeenCalledWith(false);
+    });
+    expect(sinopiaSender.send).toHaveBeenCalledOnce();
+    expect([...stored.keys()].filter((path) => path.includes('/sinopia-sent/'))).toHaveLength(1);
+    expect([...stored.keys()].filter((path) => path.includes('/sinopia-send-pending/'))).toEqual([]);
+  });
+
+  it('should record the version when the pending intent is already gone, and show the cause of a real failure', async () => {
+    setLanguage('en');
+    const user = userEvent.setup();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    hooks.unlink.mockImplementation(async () => {
+      throw Object.assign(new Error('gone'), { code: 'ENOENT' });
+    });
+    const view = mount();
+    await user.click(await screen.findByRole('button', { name: 'Send version 3' }));
+    await waitFor(() => {
+      expect(view.onOpenChange).toHaveBeenCalledWith(false);
+    });
+    expect([...stored.keys()].filter((path) => path.includes('/sinopia-sent/'))).toHaveLength(1);
+    view.unmount();
+    hooks.unlink.mockImplementation(async () => {
+      throw new Error('disk full');
+    });
+    stored.clear();
+    saved = undefined;
+    const second = mount();
+    await user.click(await screen.findByRole('button', { name: 'Send version 3' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('not in Versions yet');
+    expect(consoleError).toHaveBeenCalledWith(expect.stringContaining('Versions'), expect.any(Error));
+    second.unmount();
+  });
+
+  it('should send and register the version in the new project after the model was moved', async () => {
+    setLanguage('en');
+    const user = userEvent.setup();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    clients.push(client);
+    const onOpenChange = vi.fn();
+    const view = render(
+      <QueryClientProvider client={client}>
+        <SendToSinopiaDialog isOpen link={link} onOpenChange={onOpenChange} />
+      </QueryClientProvider>,
+    );
+    await screen.findByText('Destination project: Collana', { exact: false }).catch(() => undefined);
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <SendToSinopiaDialog isOpen link={{ ...link, projectId: alternative }} onOpenChange={onOpenChange} />
+      </QueryClientProvider>,
+    );
+    await user.click(await screen.findByRole('button', { name: 'Send version 3' }));
+    await waitFor(() => {
+      expect(onOpenChange).toHaveBeenCalledWith(false);
+    });
+    expect(sinopiaSender.send).toHaveBeenCalledWith(expect.objectContaining({ projectId: alternative }));
+    expect([...stored.keys()].filter((path) => path.includes('/sinopia-sent/'))).toHaveLength(1);
   });
 
   it('should preserve a pending identity and withhold history and success when the account changes at commit', async () => {

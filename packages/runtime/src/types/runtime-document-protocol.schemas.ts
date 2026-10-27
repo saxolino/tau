@@ -335,11 +335,15 @@ export const runtimeDocumentProtocolSchemas = {
         parameters: values.optional(),
         evaluateOptions: values.optional(),
         transient: z.boolean().optional(),
+        interactive: z.boolean().optional(),
         stage: stage.optional(),
       })
       .strip()
       .refine((update) => update.transient !== true || update.stage === undefined, {
         message: 'Transient updates cannot stage files.',
+      })
+      .refine((update) => update.interactive !== true || update.transient === true, {
+        message: 'Only transient updates can be interactive.',
       }),
     close: z.object(document).strip(),
     openView: z

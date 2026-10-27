@@ -4,6 +4,7 @@ import type { SchedaParte } from '@taucad/smlib/riconoscimento';
 import { randomUuid } from '@taucad/utils/id';
 import { requireClientEnvironment } from '#environment.config.js';
 import { requireSinopiaUser } from '#lib/sinopia-data-client.js';
+import { completaFacciaScheda } from '#services/riconoscimento-faccia.js';
 import { leggiPrezziCad } from '#services/sinopia-foto.js';
 import type { ImmaginiRiconoscimento } from '#services/riconoscimento-immagini.js';
 
@@ -43,8 +44,9 @@ export class ErroreRiconoscimento extends Error {
 }
 
 const rispostaSchema = z.object({
-  versione: z.literal(1),
-  scheda: schedaRiconoscimentoSchema,
+  /** 2 = the sheet names the face; 1 = a function not yet updated (the face is completed from the view name). */
+  versione: z.union([z.literal(1), z.literal(2)]),
+  scheda: z.preprocess(completaFacciaScheda, schedaRiconoscimentoSchema),
   vincolo: z.object({
     vincolo: z.enum(['vincolata', 'suggerita', 'libera']),
     famiglia: z.string().optional(),
@@ -190,7 +192,7 @@ export async function riconosciParte(
 export const riconoscimentoRegistrato = (
   opzioni: Readonly<{ famigliaIncerta?: boolean }> = {},
 ): EsitoRiconoscimento => ({
-  versione: 1,
+  versione: 2,
   scheda: opzioni.famigliaIncerta
     ? {
         ...structuredClone(schedaRiconoscimentoDiProva),

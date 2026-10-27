@@ -28,6 +28,7 @@ import {
   normalizzaForma,
   sformoDuePiani,
 } from '#famiglie/verifiche-comuni.js';
+import { facceDiPezzoPiatto, nomiPezzoPiatto } from '#famiglie/viste.js';
 
 /**
  * Famiglia `placca` (specifica §1.5): piastra su XY con la faccia a vista +Z, testo centrato in rilievo o inciso,
@@ -904,6 +905,16 @@ export const placca: Famiglia<ParametriPlacca> = {
   costruisci: (lib, p) => costruisciConEsiti(lib, p).pezzi,
   costruisciConEsiti,
   verifiche,
+  viste: {
+    principale: 'sopra',
+    facce: facceDiPezzoPiatto({
+      sopra: 'front face with the lettering or logo',
+      sotto: 'back of the plate (mirror image)',
+      fianco: 'side edge (shows thickness and relief)',
+      dietro: 'bottom edge head-on',
+    }),
+    nomi: nomiPezzoPiatto,
+  },
   silhouette: { assi: ['z'], simmetrie: ['yz', 'xz'] },
   materialiAmmessi: ['zama', 'ottone', 'argento_925', 'inox'],
   emettiMain: (p, ipotesi, opzioni) =>

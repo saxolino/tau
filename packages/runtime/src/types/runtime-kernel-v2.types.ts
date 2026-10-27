@@ -143,6 +143,11 @@ export type RenderInput<Handle, Views> = {
       handle: Handle;
       view: Id;
       options: ParsedOptions<SchemaOf<Views[Id]>>;
+      /**
+       * `'continuous'` while the render projects a sample of a continuous interaction (a slider drag): the kernel may
+       * mesh it coarser. Absent at rest; exports never see it.
+       */
+      interaction?: 'continuous';
     } & InstanceFor<Views[Id]> &
       ContentHookInputFor<ContentOf<Views[Id]>>
   >;

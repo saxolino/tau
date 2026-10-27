@@ -98,8 +98,21 @@ export type DocumentUpdate = Readonly<
     parameters?: Readonly<Record<string, unknown>>;
     evaluateOptions?: Readonly<Record<string, unknown>>;
   } & (
-    | { transient: true; stage?: never }
-    | { transient?: false; stage?: Readonly<Record<string, Uint8Array<ArrayBuffer> | string>> }
+    | {
+        transient: true;
+        /**
+         * The values are one sample of a continuous interaction, such as a slider being dragged: the next sample
+         * replaces them within a frame or two, so views may render them coarser. A later update without it (the
+         * values at rest, or the commit) renders at the requested quality. Exports never read such a render.
+         */
+        interactive?: boolean;
+        stage?: never;
+      }
+    | {
+        transient?: false;
+        interactive?: never;
+        stage?: Readonly<Record<string, Uint8Array<ArrayBuffer> | string>>;
+      }
   )
 >;
 

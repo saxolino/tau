@@ -4,6 +4,12 @@ exports[`prompt del classificatore > should describe the family anello with ever
 "## Family \`anello\` (recipe v1)
 Variants: griffe | chiuso | fascia
 part_type: — (jewellery and accessories, by shape)
+Faces of this part (\`vista.faccia\`; main product face: tre_quarti_pietra):
+- tre_quarti_pietra — three-quarter view on the stone, from a bit above and to one side: the usual jewellery product photo
+- asse_dito — along the finger axis: the ring as a circle, stone at the top (shank thickness, setting height)
+- fianco_esterno — pure side profile (shank width)
+- sopra — straight above the stone (table, shank width)
+View names here: fronte = asse_dito · tre_quarti = tre_quarti_pietra · lato = fianco_esterno · alto = sopra.
 Parameters (key — unit — range — default — flags — meaning in Italian):
 - taglia.sistema — enum — it | us | eu_iso | diametro — default "it" — Sistema di taglie
 - taglia.valore — n — 1…76 — default 14 — CRITICAL — Taglia (IT 1–35 · US 3–15 · ISO 41–76 · mm 13–24)
@@ -30,6 +36,11 @@ exports[`prompt del classificatore > should describe the family borchia with eve
 "## Family \`borchia\` (recipe v1)
 Variants: cupola | piramide | piatta | cono
 part_type: stud
+Faces of this part (\`vista.faccia\`; main product face: sopra):
+- sopra — the head of the stud seen from above, straight on (outline and head diameter, pyramid sides)
+- fianco_esterno — side profile of the stud: head on top, shank down (shows head height, dome and shank length)
+- sotto — the back of the stud seen from below (shank, hollow head)
+View names here: fronte = sopra · tre_quarti = sopra · lato = fianco_esterno · alto = sopra.
 Parameters (key — unit — range — default — flags — meaning in Italian):
 - testa.forma — enum — cupola | piramide | piatta | cono — default "cupola" — Forma della testa
 - testa.diametro — mm — 4…25 — default 8 — CRITICAL, silhouette — Diametro della testa
@@ -48,6 +59,12 @@ exports[`prompt del classificatore > should describe the family fibbia with ever
 "## Family \`fibbia\` (recipe v1)
 Variants: rettangolare | ovale | a_d | doppia
 part_type: buckle
+Faces of this part (\`vista.faccia\`; main product face: sopra):
+- sopra — the face that shows when worn: frame outline, opening and pin; strap enters from the bottom of the picture
+- sotto — back of the buckle (mirror image)
+- fianco_esterno — side edge (shows frame thickness and profile)
+- dietro — strap-entry edge head-on (shows the frame section)
+View names here: fronte = sopra · tre_quarti = sopra · lato = fianco_esterno · alto = sopra.
 Parameters (key — unit — range — default — flags — meaning in Italian):
 - cinturino.larghezza — mm — 8…60 — default 20 — CRITICAL, silhouette — Larghezza del cinturino che passa nella fibbia
 - cinturino.spessore — mm — 1.5…5 — default 3 — Spessore del cinturino
@@ -74,6 +91,14 @@ exports[`prompt del classificatore > should describe the family fondo_semplice w
 "## Family \`fondo_semplice\` (recipe v1)
 Variants: platform | zeppa | cuoio_liscio
 part_type: sole, midsole_wedge, welt
+Faces of this part (\`vista.faccia\`; main product face: fianco_esterno):
+- fianco_esterno — outer side profile of the sole on its ground line, toe to the right (shows thickness, platform and toe spring)
+- fianco_interno — inner (arch) side profile, toe to the left
+- sopra — the sole seen from above (the insole face), toe up: outline and width
+- sotto — the outsole seen from below, toe up
+- davanti — the toe end seen head-on (shows width and thickness at the toe)
+- dietro — the heel end seen from behind
+View names here: fronte = davanti · tre_quarti = fianco_esterno · lato = fianco_esterno · alto = sopra.
 Parameters (key — unit — range — default — flags — meaning in Italian):
 - pianta.taglia — n — 35…47 — default 37 — CRITICAL, silhouette — Taglia EU
 - pianta.lunghezza — mm — — — default 258.7 — DERIVED (do not output) — Taglia × 6,667 + 12 (ipotesi dichiarata)
@@ -96,6 +121,11 @@ exports[`prompt del classificatore > should describe the family occhiello with e
 "## Family \`occhiello\` (recipe v1)
 Variants: standard
 part_type: eyelet
+Faces of this part (\`vista.faccia\`; main product face: sopra):
+- sopra — the flange (head) of the eyelet seen straight on: outer diameter of the flange and hole
+- fianco_esterno — side profile of the eyelet: flange on top, barrel going down (shows barrel length and flange thickness)
+- sotto — the barrel end seen from below (the flared or rolled side)
+View names here: fronte = sopra · tre_quarti = sopra · lato = fianco_esterno · alto = sopra.
 Parameters (key — unit — range — default — flags — meaning in Italian):
 - foro.diametro — mm — 3…12 — default 5 — CRITICAL, silhouette — Diametro del foro
 - flangia.diametro — mm — 6…20 — default 9 — silhouette — Diametro della flangia (foro + 3 … foro + 8)
@@ -112,6 +142,12 @@ exports[`prompt del classificatore > should describe the family pendente with ev
 "## Family \`pendente\` (recipe v1)
 Variants: disco | cuore | goccia | placchetta
 part_type: — (jewellery and accessories, by shape)
+Faces of this part (\`vista.faccia\`; main product face: sopra):
+- sopra — front face of the charm, jump ring at the top
+- sotto — back of the charm (mirror image)
+- fianco_esterno — side edge (shows doming, thickness, jump ring profile)
+- dietro — bottom edge head-on
+View names here: fronte = sopra · tre_quarti = sopra · lato = fianco_esterno · alto = sopra.
 Parameters (key — unit — range — default — flags — meaning in Italian):
 - corpo.forma — enum — disco | cuore | goccia | placchetta — default "disco" — Forma del pendente
 - corpo.lunghezza — mm — 5…60 — default 15 — CRITICAL, silhouette — Altezza del pendente (senza anellino)
@@ -129,6 +165,12 @@ exports[`prompt del classificatore > should describe the family placca with ever
 "## Family \`placca\` (recipe v1)
 Variants: rettangolo | ovale | cerchio | scudo
 part_type: ornament
+Faces of this part (\`vista.faccia\`; main product face: sopra):
+- sopra — front face with the lettering or logo
+- sotto — back of the plate (mirror image)
+- fianco_esterno — side edge (shows thickness and relief)
+- dietro — bottom edge head-on
+View names here: fronte = sopra · tre_quarti = sopra · lato = fianco_esterno · alto = sopra.
 Parameters (key — unit — range — default — flags — meaning in Italian):
 - piastra.forma — enum — rettangolo | ovale | cerchio | scudo | contorno — default "rettangolo" — Forma della placca
 - piastra.lunghezza — mm — 6…120 — default 30 — CRITICAL, silhouette — Lunghezza (diametro per il cerchio)
@@ -156,6 +198,13 @@ exports[`prompt del classificatore > should describe the family puntale with eve
 "## Family \`puntale\` (recipe v1)
 Variants: quarto_ellissoide
 part_type: — (jewellery and accessories, by shape)
+Faces of this part (\`vista.faccia\`; main product face: fianco_esterno):
+- fianco_esterno — side profile, opening at the back (left), tip to the right (length and height)
+- sopra — from above, tip up (length and width)
+- davanti — the tip head-on (width and height)
+- dietro — the open back from behind (opening, wall thickness)
+- sotto — from below, tip up
+View names here: fronte = davanti · tre_quarti = fianco_esterno · lato = fianco_esterno · alto = sopra.
 Parameters (key — unit — range — default — flags — meaning in Italian):
 - puntale.lunghezza — mm — 10…60 — default 25 — CRITICAL, silhouette — Lunghezza (dal retro alla punta)
 - puntale.larghezza — mm — 10…60 — default 30 — CRITICAL, silhouette — Larghezza
@@ -170,6 +219,14 @@ exports[`prompt del classificatore > should describe the family tacco with every
 "## Family \`tacco\` (recipe v1)
 Variants: stiletto | blocco | rocchetto | cono | kitten
 part_type: heel, top_lift
+Faces of this part (\`vista.faccia\`; main product face: fianco_esterno):
+- fianco_esterno — outer side profile of the heel, the foot-side view of a product photo: toe to the right, top lift on the ground line (shows height, curve of the back, seat slope)
+- fianco_interno — inner (arch) side profile, toe to the left
+- davanti — front of the heel, the face that looks toward the toe (shows width at the seat and at the top lift)
+- dietro — back of the heel (dorso) seen from behind the shoe, the classic heel-from-behind view
+- sopra — the seat from above, toe up (rare)
+- sotto — the top lift (tappo) seen from below, toe up
+View names here: fronte = davanti · tre_quarti = fianco_esterno · lato = fianco_esterno · alto = sopra.
 Parameters (key — unit — range — default — flags — meaning in Italian):
 - tacco.altezza — mm — 15…130 — default 85 — CRITICAL, silhouette — Altezza dal piano d’appoggio al punto posteriore della seduta
 - tacco.spinta — deg — -2…10 — default 3 — silhouette — Inclinazione in avanti dell’asse del tacco

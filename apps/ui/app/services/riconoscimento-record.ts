@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { schedaParteSchema, schedaRiconoscimentoSchema } from '@taucad/smlib/riconoscimento';
+import { completaFaccia } from '#services/riconoscimento-faccia.js';
 
 /**
  * The recognition's record in the project (SinopiaCAD D2 §2.7, T-D2-07): `.tau/workbench/riconoscimento.json`, with
@@ -90,7 +91,7 @@ export function aggiornaRecord(grezzo: unknown): unknown {
   if (typeof grezzo !== 'object' || grezzo === null || Array.isArray(grezzo)) {
     return grezzo;
   }
-  const record = grezzo as Record<string, unknown>;
+  const record = completaFacciaRecord(grezzo as Record<string, unknown>);
   if (record['version'] !== undefined) {
     return record;
   }
@@ -104,6 +105,19 @@ export function aggiornaRecord(grezzo: unknown): unknown {
     cronologia: [],
     ...record,
   };
+}
+
+/**
+ * Records written before the sheet named the face: completed from the view name of the family built.
+ *
+ * @param record - The parsed record.
+ * @returns The record with the face in its sheet.
+ */
+function completaFacciaRecord(record: Record<string, unknown>): Record<string, unknown> {
+  const famiglia: unknown = record['famiglia'];
+  const idFamiglia: unknown =
+    typeof famiglia === 'object' && famiglia !== null ? Reflect.get(famiglia, 'id') : undefined;
+  return record['scheda'] === undefined ? record : { ...record, scheda: completaFaccia(record['scheda'], idFamiglia) };
 }
 
 /**

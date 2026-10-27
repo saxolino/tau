@@ -5,6 +5,7 @@ import { Button } from '@taucad/ui/components/button';
 import { Checkbox } from '@taucad/ui/components/checkbox';
 import { Input } from '@taucad/ui/components/input';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@taucad/ui/components/dialog';
+import { isNotFound } from '#db/attachment-store.js';
 import { useProject } from '#hooks/use-project.js';
 import { useFileManager } from '#hooks/use-file-manager.js';
 import { useProjectExport } from '#hooks/use-project-export.js';
@@ -218,6 +219,15 @@ function SendForm({
   const dialogLifetime = useRef<AbortController | undefined>(undefined);
   // The delivery source the current lifetime belongs to: a send never prepares files with another render's source.
   const lifetimeSource = useRef(prepareSinopia);
+  // Only closing the dialog ends the local registration: a source that changes after the send must not drop it silently.
+  const mountLifetime = useRef<AbortController | undefined>(undefined);
+  useEffect(() => {
+    const controller = new AbortController();
+    mountLifetime.current = controller;
+    return () => {
+      controller.abort();
+    };
+  }, []);
   useEffect(() => {
     const controller = new AbortController();
     dialogLifetime.current = controller;
@@ -272,7 +282,7 @@ function SendForm({
       let sent = receipt;
       if (!sent && hasPending) {
         sent = await sinopiaSender.receipt({ link, projectId: destinationId, assetId: deliveryId.current, signal });
-        signal.throwIfAborted();
+        (mountLifetime.current?.signal ?? signal).throwIfAborted();
         if (sent) {
           setReceipt(sent);
         }
@@ -314,23 +324,33 @@ function SendForm({
           })),
           ...(remoteModel.data?.thumbnail_path ? { fallbackThumbnailPath: remoteModel.data.thumbnail_path } : {}),
         });
-        signal.throwIfAborted();
+        // The version already exists on Sinopia: a changed source must not hide it, only a closed dialog may.
+        (mountLifetime.current?.signal ?? signal).throwIfAborted();
         setReceipt(sent);
       }
+      const mounted = mountLifetime.current?.signal ?? signal;
       const session = await getSinopiaDataClient();
-      signal.throwIfAborted();
+      mounted.throwIfAborted();
       if (session.userId !== sent.userId) {
         throw new SinopiaSendError('session');
       }
       try {
         await recordSinopiaDelivery(recordFiles, localProjectId, sent);
-        await recordFiles.unlink(sinopiaPendingPath(localProjectId, deliveryId.current));
-      } catch {
+        try {
+          await recordFiles.unlink(sinopiaPendingPath(localProjectId, deliveryId.current));
+        } catch (unlinkError) {
+          // An intent already removed by an earlier attempt is not a reason to fail the registration again.
+          if (!isNotFound(unlinkError)) {
+            throw unlinkError;
+          }
+        }
+      } catch (historyError) {
+        console.error('[sinopia] the delivery could not be recorded in Versions', historyError);
         throw new SinopiaSendError('history');
       }
-      signal.throwIfAborted();
+      mounted.throwIfAborted();
       const current = await getSinopiaDataClient();
-      signal.throwIfAborted();
+      mounted.throwIfAborted();
       if (current.userId !== sent.userId) {
         throw new SinopiaSendError('session');
       }
@@ -345,7 +365,9 @@ function SendForm({
       });
       onOpenChange(false);
     } catch (error) {
-      if (!isAborted(signal)) {
+      const mounted = mountLifetime.current?.signal;
+      // A source change aborts the preparation, never the registration; only a closed dialog stays silent.
+      if (mounted ? !isAborted(mounted) : !isAborted(signal)) {
         const failure = error instanceof SinopiaSendError ? error : new SinopiaSendError('failed');
         if (failure.problem === 'migration' || failure.problem === 'destination' || failure.problem === 'files') {
           try {
@@ -358,7 +380,8 @@ function SendForm({
         setError(failure);
       }
     } finally {
-      if (!isAborted(signal)) {
+      const mounted = mountLifetime.current?.signal;
+      if (mounted ? !isAborted(mounted) : !isAborted(signal)) {
         setIsSending(false);
       }
     }

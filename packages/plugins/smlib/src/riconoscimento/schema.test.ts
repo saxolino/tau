@@ -22,11 +22,18 @@ describe('scheda di riconoscimento: zod e schema JSON gemello', () => {
     };
     const { note: _note, ...senzaNote } = schedaRiconoscimentoDiProva;
     const conExtra = { ...schedaRiconoscimentoDiProva, extra: 1 };
-    for (const sbagliata of [famigliaIgnota, senzaNote, conExtra]) {
+    const facciaIgnota = {
+      ...schedaRiconoscimentoDiProva,
+      vista: { ...schedaRiconoscimentoDiProva.vista, faccia: 'lato_b' },
+    };
+    const { faccia: _faccia, ...vistaSenzaFaccia } = schedaRiconoscimentoDiProva.vista;
+    const senzaFaccia = { ...schedaRiconoscimentoDiProva, vista: vistaSenzaFaccia };
+    for (const sbagliata of [famigliaIgnota, senzaNote, conExtra, facciaIgnota, senzaFaccia]) {
       expect(schedaRiconoscimentoSchema.safeParse(sbagliata).success).toBe(false);
       expect(convalidaStruttura(sbagliata, contratto.schemaUscita).length).toBeGreaterThan(0);
     }
     expect(convalidaStruttura(senzaNote, contratto.schemaUscita)).toContain('/note: mancante');
+    expect(convalidaStruttura(senzaFaccia, contratto.schemaUscita)).toContain('/vista/faccia: mancante');
     expect(convalidaStruttura(conExtra, contratto.schemaUscita)).toContain('/extra: campo non previsto');
   });
 

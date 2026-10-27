@@ -153,6 +153,12 @@ function useLastRenderWithinBudget(cadRef: ActorRefFrom<typeof cadMachine> | und
 }
 
 /**
+ * How long a drag holds still before its values render at full quality: moving samples render coarse (the kernel
+ * meshes an interactive sample coarser), and a pause this long sends the same values once more as settled.
+ */
+const scrubSettleMilliseconds = 250;
+
+/**
  * Drag-time dispatch for one geometry unit (D2).
  *
  * The pump holds the newest sample and hands it to the unit on an animation frame, but only while
@@ -183,16 +189,46 @@ function useScrubDispatch(
   const frame = useRef<number | undefined>(undefined);
   const latestGeneration = useRef(0);
   const activeGeneration = useRef<Readonly<{ generation: number; sent: boolean }> | undefined>(undefined);
+  const lastSent = useRef<Readonly<{ generation: number; parameters: Record<string, unknown> }> | undefined>(undefined);
+  const settleTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const lane = useMemo(() => {
     const unit = cadRef;
+    const clearSettle = (): void => {
+      if (settleTimer.current !== undefined) {
+        clearTimeout(settleTimer.current);
+        settleTimer.current = undefined;
+      }
+    };
     const clearPending = (): void => {
       pending.current = undefined;
+      lastSent.current = undefined;
+      clearSettle();
       if (frame.current !== undefined) {
         cancelAnimationFrame(frame.current);
         frame.current = undefined;
       }
     };
+    /* The drag held still: the last sample, rendered coarse, renders once more at full quality. A sample still
+     * rendering is waited for, so the settled values supersede a finished picture rather than an unfinished one. */
+    function settle(): void {
+      settleTimer.current = undefined;
+      const sent = lastSent.current;
+      if (
+        sent === undefined ||
+        unit === undefined ||
+        pending.current !== undefined ||
+        activeGeneration.current?.generation !== sent.generation
+      ) {
+        return;
+      }
+      if (unit.getSnapshot().hasTag('cad-loading')) {
+        settleTimer.current = setTimeout(settle, scrubSettleMilliseconds);
+        return;
+      }
+      lastSent.current = undefined;
+      unit.send({ type: 'scrubParameters', parameters: sent.parameters, settled: true });
+    }
     function pump(): void {
       frame.current = undefined;
       if (pending.current === undefined || unit === undefined) {
@@ -208,6 +244,9 @@ function useScrubDispatch(
       if (activeGeneration.current?.generation === next.generation) {
         activeGeneration.current = { ...activeGeneration.current, sent: true };
       }
+      lastSent.current = next;
+      clearSettle();
+      settleTimer.current = setTimeout(settle, scrubSettleMilliseconds);
     }
     return {
       scrub(field: Readonly<{ pointer: string; value: JSONValue }>): void {
@@ -216,6 +255,7 @@ function useScrubDispatch(
           generation: activeGeneration.current.generation,
           parameters: withPointerValue({}, field.pointer, field.value),
         };
+        clearSettle();
         frame.current ??= requestAnimationFrame(pump);
       },
       async stop(final?: Promise<boolean>): Promise<void> {
