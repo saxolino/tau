@@ -367,7 +367,8 @@ export function InspectorPhotos(): React.JSX.Element {
             setIou((prima) => new Map(prima).set(foto.id, valore));
           }
         } catch (error) {
-          console.error('Failed to measure a sample photo:', error);
+          // A new miniature re-checks the photos still unmeasured, so a failure names how many are shown.
+          console.error('Failed to measure a sample photo:', error, { miniature: miniature.size });
         }
       })();
     }

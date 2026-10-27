@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useSinopiaSession } from '#hooks/use-sinopia-session.js';
 import { useSinopiaCadSync } from '#hooks/use-sinopia-cad-sync.js';
 import { SinopiaConflictDialog } from '#routes/w.$workspace.$project/sinopia-conflict-dialog.js';
@@ -156,12 +156,16 @@ function SinopiaProjectSaveStatus(): React.JSX.Element {
   const { t, language } = useTranslation();
   const { state, retry, resolve } = useSinopiaCadSync();
   const [isConflictOpen, setConflictOpen] = useState(false);
-  useEffect(() => {
-    if (state.kind === 'conflict') {
-      // oxlint-disable-next-line react/set-state-in-effect -- A newly observed remote conflict opens its decision surface.
+  // A newly observed remote conflict (a new conflict, or a new remote head) opens its decision surface. Derived while
+  // rendering from the head last seen, so no dependency array has to stand in for a change signal.
+  const conflictHead = state.kind === 'conflict' ? (state.remote?.head_revision_id ?? '') : undefined;
+  const [seenConflictHead, setSeenConflictHead] = useState<string>();
+  if (conflictHead !== seenConflictHead) {
+    setSeenConflictHead(conflictHead);
+    if (conflictHead !== undefined) {
       setConflictOpen(true);
     }
-  }, [state.kind, state.remote?.head_revision_id]);
+  }
   const sentence =
     state.kind === 'saved' && state.at !== undefined
       ? t('sinopiaSync.savedAt', { time: formatTime(state.at, language) })

@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
+import { KeyboardProvider } from '@taucad/ui/components/keyboard';
 import { TooltipProvider } from '@taucad/ui/components/tooltip';
 import type { captureDictation, DictationCapture } from '#components/dictation/dictation-capture.js';
 import type { transcribeDictation } from '#components/dictation/dictation-client.js';
@@ -22,6 +23,8 @@ vi.mock('#components/dictation/dictation-client.js', () => ({
 let capture: DictationCapture;
 beforeEach(() => {
   vi.clearAllMocks();
+  /* The dictation button is press-and-hold; jsdom has no pointer capture. */
+  HTMLElement.prototype.setPointerCapture = vi.fn();
   dictationDependencies.status.mockResolvedValue({ available: false });
   capture = { finish: vi.fn().mockResolvedValue(new Blob([])), cancel: vi.fn() };
   dictationDependencies.capture.mockResolvedValue(capture);
@@ -78,9 +81,11 @@ const renderCard = (overrides: Partial<QuestionCardProperties> = {}): QuestionCa
     ...overrides,
   };
   render(
-    <TooltipProvider>
-      <QuestionCard {...properties} />
-    </TooltipProvider>,
+    <KeyboardProvider>
+      <TooltipProvider>
+        <QuestionCard {...properties} />
+      </TooltipProvider>
+    </KeyboardProvider>,
   );
   return properties;
 };
@@ -258,7 +263,7 @@ describe('question dictation', () => {
     await user.click(screen.getByRole('button', { name: 'Dictate' }));
     expect(screen.getByRole('button', { name: 'Stop dictation' })).toBeEnabled();
     await user.dblClick(screen.getByRole('button', { name: 'Send answer' }));
-    await screen.findByRole('status', { name: 'Transcribing' });
+    await screen.findByRole('status', { name: 'Transcribing…' });
     expect(screen.getByRole('button', { name: 'Send answer' })).toHaveAttribute('aria-disabled', 'true');
     expect(onAnswer).not.toHaveBeenCalled();
     await act(async () => {
@@ -275,7 +280,7 @@ describe('question dictation', () => {
     await user.type(screen.getByRole('textbox', { name: 'Your answer' }), 'Keep this.');
     await user.click(screen.getByRole('button', { name: 'Dictate' }));
     await user.click(screen.getByRole('button', { name: 'Send answer' }));
-    await screen.findByRole('status', { name: 'Transcribing' });
+    await screen.findByRole('status', { name: 'Transcribing…' });
     await act(async () => {
       if (result === 'empty') {
         response.resolve('  ');
@@ -297,7 +302,7 @@ describe('question dictation', () => {
     await user.type(box, 'Keep this.');
     await user.click(screen.getByRole('button', { name: 'Dictate' }));
     await user.click(screen.getByRole('button', { name: 'Send answer' }));
-    await screen.findByRole('status', { name: 'Transcribing' });
+    await screen.findByRole('status', { name: 'Transcribing…' });
     await user.keyboard('{Escape}');
     await act(async () => {
       response.resolve('Discard this.');
@@ -315,7 +320,7 @@ describe('question dictation', () => {
     dictationDependencies.transcribe.mockReturnValue(response.promise);
     await user.click(screen.getByRole('button', { name: 'Dictate' }));
     await user.click(screen.getByRole('button', { name: 'Send answer' }));
-    await screen.findByRole('status', { name: 'Transcribing' });
+    await screen.findByRole('status', { name: 'Transcribing…' });
     cleanup();
     await act(async () => {
       response.resolve('Too late.');
@@ -331,7 +336,7 @@ describe('question dictation', () => {
     await user.type(box, 'Keep this.');
     await user.click(screen.getByRole('button', { name: 'Dictate' }));
     expect(await screen.findByRole('alert', { name: 'Dictation error' })).toHaveTextContent(
-      'Microphone access was denied',
+      'The microphone is blocked',
     );
     expect(box).toHaveValue('Keep this.');
     expect(screen.getByRole('button', { name: 'Send answer' })).toHaveAttribute('aria-disabled', 'false');
@@ -366,18 +371,22 @@ describe('question dictation', () => {
       onDecline: vi.fn(),
     };
     const view = render(
-      <TooltipProvider>
-        <QuestionCard {...properties} />
-      </TooltipProvider>,
+      <KeyboardProvider>
+        <TooltipProvider>
+          <QuestionCard {...properties} />
+        </TooltipProvider>
+      </KeyboardProvider>,
     );
     const user = userEvent.setup();
     await user.click(await screen.findByRole('button', { name: 'Dictate' }));
     await user.click(screen.getByRole('button', { name: 'Send answer' }));
-    await screen.findByRole('status', { name: 'Transcribing' });
+    await screen.findByRole('status', { name: 'Transcribing…' });
     view.rerender(
-      <TooltipProvider>
-        <QuestionCard {...properties} ask={{ ...properties.ask, id: 'different_ask' }} />
-      </TooltipProvider>,
+      <KeyboardProvider>
+        <TooltipProvider>
+          <QuestionCard {...properties} ask={{ ...properties.ask, id: 'different_ask' }} />
+        </TooltipProvider>
+      </KeyboardProvider>,
     );
     await act(async () => {
       response.resolve('Answer for the old ask.');

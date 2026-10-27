@@ -603,6 +603,14 @@ export default defineConfig(({ command, mode }) => {
         ignoreSourceErrors: true,
       },
       setupFiles: ['./vitest.setup.ts'],
+      /* Files under `@vitest-environment node` have no `window.ENV`: the client environment is read from
+       * `process.env`, and `flag.constants.ts` reads it while the module loads. The same URLs `vitest.setup.ts`
+       * gives jsdom files (and CI exports), so a run outside CI does not depend on the shell's variables. */
+      env: {
+        TAU_API_URL: process.env['TAU_API_URL'] ?? 'http://localhost:4000',
+        TAU_WEBSOCKET_URL: process.env['TAU_WEBSOCKET_URL'] ?? 'ws://localhost:4001',
+        TAU_FRONTEND_URL: process.env['TAU_FRONTEND_URL'] ?? 'http://localhost:3000',
+      },
       reporters: ['verbose'],
       coverage: {
         reportsDirectory: '../../out/reports/coverage/apps/ui',

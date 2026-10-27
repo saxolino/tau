@@ -149,6 +149,8 @@ vi.mock('#providers/chat-workspace-authority-provider.js', () => ({
 vi.mock('#lib/agent-host-placement.js', () => ({
   localAgentHostId: () => undefined,
   daemonPlacementOf: (execution: { kind: string; hostId?: string }) => execution.hostId,
+  agentPlacementOf: (execution: { kind: string; hostId?: string }) =>
+    execution.hostId === undefined ? 'browser' : 'daemon',
   listAgentHostPlacements: async () => [],
   hostDirectoryOutage: () => undefined,
   desktopWorkspaceRoot: async () => '/workspace',
@@ -265,42 +267,45 @@ beforeEach(() => {
 });
 
 describe('seeded first turn execution', () => {
-  it('runs the external agent the consumed row selected, not the cookie SinopiaCAD fallback', async () => {
+  /* SinopiaCAD has one built-in agent and no per-chat agent or model choice
+   * (`useSessionExecution` in `active-chat-provider.tsx` reads the default, not
+   * the row's `activeExecution`): a row naming an external agent still runs
+   * SinopiaCAD's own agent, with the CAD context and tool grant it composes. */
+  it('runs SinopiaCAD’s own agent even when the consumed row names an external agent', async () => {
     const command = await dispatchSeededTurn({ kind: 'acp', hostId: 'desktop', agentId: 'codex' });
 
     expect(command).toMatchObject({
       type: 'start',
       commandId: 'req_seeded',
-      payload: { runId: 'req_seeded', trigger: 'submit', config: { agent: { kind: 'acp', id: 'codex' } } },
+      payload: { runId: 'req_seeded', trigger: 'submit', config: { model: { id: cookieModelId } } },
     });
-    /* V12: the agent selection *and* the CAD context the client composed —
-     * without it the daemon prompts an agent that knows no kernel at all. No
-     * Tau model row, prompt blocks or tool grant travel with it (X6). */
     if (command.type !== 'start') {
       throw new Error('Expected seeded Start');
     }
+    expect(command.payload.config).not.toHaveProperty('agent');
     expect(command.payload.config?.systemPrompt).toContain('<workflow>');
-    expect(command.payload.config).not.toHaveProperty('model');
+    expect(command.payload.config?.allowedTools?.length).toBeGreaterThan(0);
   });
 
-  it('keeps the consumed row’s SinopiaCAD host and model instead of rebuilding them from the cookie', async () => {
+  it('uses the default SinopiaCAD model instead of the model the consumed row recorded', async () => {
     const command = await dispatchSeededTurn({ kind: 'tau', hostId: 'origin', model: 'openai-gpt-5.5' });
 
     expect(command).toMatchObject({
       type: 'start',
       commandId: 'req_seeded',
-      payload: { runId: 'req_seeded', trigger: 'submit', config: { model: { id: 'openai-gpt-5.5' } } },
+      payload: { runId: 'req_seeded', trigger: 'submit', config: { model: { id: cookieModelId } } },
     });
-    expect(JSON.stringify(command)).not.toContain(cookieModelId);
+    expect(JSON.stringify(command)).not.toContain('openai-gpt-5.5');
   });
 
-  it('remembers the external agent a turn ran on as the next new chat’s default', async () => {
+  it('remembers SinopiaCAD’s own agent, not the row’s external agent, as the next new chat’s default', async () => {
     const codex: CadAgentExecution = { kind: 'acp', hostId: 'desktop', agentId: 'codex', model: 'gpt-6-astra' };
     await dispatchSeededTurn(codex);
 
     await waitFor(() => {
-      expect(harness.models.rememberExecution).toHaveBeenCalledWith(codex);
+      expect(harness.models.rememberExecution).toHaveBeenCalledWith({ kind: 'tau', model: cookieModelId });
     });
+    expect(harness.models.rememberExecution).not.toHaveBeenCalledWith(codex);
   });
 
   it('commits the default a chat with no execution of its own ran on, so later defaults cannot move it', async () => {

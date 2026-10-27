@@ -656,7 +656,7 @@ describe('project route session identity', () => {
     expect(browserHostLeaseReleases[0]).not.toHaveBeenCalled();
   });
 
-  it('opens unopened chats on their own persisted host and retains one browser host until unmount', async () => {
+  it('opens every unopened chat in this page’s agent, keeping a daemon-saved chat off the daemon, and retains one browser host until unmount', async () => {
     fileManagerReady = true;
     storedHostSettings.set('chat-browser', {
       activeExecution: { kind: 'tau', model: 'model-browser' },
@@ -675,14 +675,18 @@ describe('project route session identity', () => {
     await connector('chat-browser');
     await connector('chat-daemon');
     await connector('chat-browser');
-    expect(browserClientOptions).toHaveLength(2);
+    /* SinopiaCAD has no daemon or agent picker (`designerExecution`): the chat saved on the `origin` daemon reads
+     * from this page's agent with the catalog's recommended model, so all three opens are browser hosts. */
+    expect(browserClientOptions).toHaveLength(3);
     expect(retainBrowserAgentHostProject).toHaveBeenCalledOnce();
     expect(browserClientOptions[0]).toMatchObject({
       authority: { projectId: projectA, workspaceId: 'live' },
       projectStorage: { projectId: projectA, backend: 'opfs' },
     });
     expect((browserClientOptions[0] as { systemPrompt: string }).systemPrompt).toContain('model-browser');
-    expect(daemonClientTransports).toHaveLength(1);
+    expect((browserClientOptions[1] as { systemPrompt: string }).systemPrompt).toContain('fixture-model');
+    expect((browserClientOptions[1] as { systemPrompt: string }).systemPrompt).not.toContain('model-daemon');
+    expect(daemonClientTransports).toHaveLength(0);
     view.unmount();
     expect(connectorReleases[0]).toHaveBeenCalledOnce();
     expect(browserHostLeaseReleases[0]).toHaveBeenCalledOnce();

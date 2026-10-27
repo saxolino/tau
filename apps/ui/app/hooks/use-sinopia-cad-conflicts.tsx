@@ -64,7 +64,8 @@ export function SinopiaConflictVersions(): React.JSX.Element | undefined {
     const abort = new AbortController();
     scope.current = abort;
     return () => {
-      abort.abort();
+      // The scope ends when the project or the account changes: the reason names both.
+      abort.abort(new DOMException(`Conflict reads of ${projectId} for ${userId ?? 'nobody'} ended`, 'AbortError'));
     };
   }, [projectId, userId]);
   const { data = [], refetch } = useQuery({
