@@ -1,8 +1,10 @@
 import { z } from 'zod';
 import { schedaRiconoscimentoSchema, schedaRiconoscimentoDiProva } from '@taucad/smlib/riconoscimento';
 import type { SchedaParte } from '@taucad/smlib/riconoscimento';
+import { randomUuid } from '@taucad/utils/id';
 import { requireClientEnvironment } from '#environment.config.js';
 import { requireSinopiaUser } from '#lib/sinopia-data-client.js';
+import { leggiPrezziCad } from '#services/sinopia-foto.js';
 import type { ImmaginiRiconoscimento } from '#services/riconoscimento-immagini.js';
 
 /**
@@ -20,6 +22,11 @@ export type CodiceErroreRiconoscimento =
   | 'RECOGNITION_INVALID'
   | 'RECOGNITION_REFUSED'
   | 'PROVIDER_UNAVAILABLE'
+  | 'CREDITS_NOT_CONFIGURED'
+  | 'CREDIT_COST_CHANGED'
+  | 'INSUFFICIENT_CREDITS'
+  | 'REQUEST_IN_PROGRESS'
+  | 'AI_REQUEST_CONFLICT'
   | 'NETWORK';
 
 /** A failed recognition, with a code the page turns into words. */
@@ -73,13 +80,24 @@ const codici = new Set<CodiceErroreRiconoscimento>([
   'RECOGNITION_INVALID',
   'RECOGNITION_REFUSED',
   'PROVIDER_UNAVAILABLE',
+  'CREDITS_NOT_CONFIGURED',
+  'CREDIT_COST_CHANGED',
+  'INSUFFICIENT_CREDITS',
+  'REQUEST_IN_PROGRESS',
+  'AI_REQUEST_CONFLICT',
 ]);
 
+/** The price of a recognition, `cad_recognize` in `credit_costs`; `undefined` while the row does not exist. */
+const prezzoRiconoscimento = async (): Promise<number | undefined> => (await leggiPrezziCad()).cad_recognize;
+
 /**
- * Ask Sinopia's function to recognise a part.
+ * Ask Sinopia's function to recognise a part. A recognition costs credits (`cad_recognize`): the price is read first and
+ * travels as the approved ceiling (`maxCreditCost`) with a fresh `requestId`; while the price row does not exist the
+ * call is not made at all.
  *
  * @param richiesta - The part sheet, the two pictures and the language of the reasons.
- * @param opzioni - Abort signal, the CAD project id (usage log), injected fetch and API base for tests.
+ * @param opzioni - Abort signal, the CAD project id (usage log), the price and request id, injected fetch and API base
+ *   for tests.
  * @returns The recognition.
  */
 export async function riconosciParte(
@@ -89,10 +107,30 @@ export async function riconosciParte(
     lingua: 'it' | 'en';
     rientro?: RientroRiconoscimento;
   }>,
-  opzioni: Readonly<{ segnale?: AbortSignal; progettoCad?: string; fetch?: typeof fetch; base?: string }> = {},
+  opzioni: Readonly<{
+    segnale?: AbortSignal;
+    progettoCad?: string;
+    fetch?: typeof fetch;
+    base?: string;
+    prezzo?: () => Promise<number | undefined>;
+    requestId?: string;
+  }> = {},
 ): Promise<EsitoRiconoscimento> {
   const base = (opzioni.base ?? requireClientEnvironment('TAU_API_URL')).replace(/\/$/u, '');
   const { token } = await requireSinopiaUser();
+  let prezzo: number | undefined;
+  try {
+    prezzo = await (opzioni.prezzo ?? prezzoRiconoscimento)();
+  } catch {
+    throw new ErroreRiconoscimento('NETWORK', 0, 'Il prezzo del riconoscimento non è leggibile ora.');
+  }
+  if (prezzo === undefined) {
+    throw new ErroreRiconoscimento(
+      'CREDITS_NOT_CONFIGURED',
+      0,
+      'Il prezzo del riconoscimento non è ancora attivo su Sinopia.',
+    );
+  }
   let risposta: Response;
   try {
     risposta = await (opzioni.fetch ?? globalThis.fetch)(`${base}/v1/recognize`, {
@@ -103,6 +141,8 @@ export async function riconosciParte(
         ...(opzioni.progettoCad ? { 'x-tau-project-id': opzioni.progettoCad } : {}),
       },
       body: JSON.stringify({
+        requestId: opzioni.requestId ?? randomUuid(),
+        maxCreditCost: prezzo,
         schedaParte: richiesta.schedaParte,
         immagini: {
           ritaglio: richiesta.immagini.ritaglio,

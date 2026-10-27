@@ -69,7 +69,11 @@ const messaggioRiconoscimento = (errore: ErroreRiconoscimento): PlainMessageKey 
         ? 'riconoscimento.errors.rateLimited'
         : errore.codice === 'INVALID_REQUEST' && errore.message.includes('non si modella')
           ? 'riconoscimento.errors.notModelable'
-          : 'riconoscimento.errors.unavailable';
+          : errore.codice === 'CREDITS_NOT_CONFIGURED'
+            ? 'riconoscimento.errors.creditsNotConfigured'
+            : errore.codice === 'INSUFFICIENT_CREDITS'
+              ? 'riconoscimento.errors.insufficientCredits'
+              : 'riconoscimento.errors.unavailable';
 
 /**
  * The sheet the check starts from: the recognition's, or, when the designer chose another family at the chip, that

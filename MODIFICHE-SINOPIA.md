@@ -898,3 +898,19 @@ Blocchi C1, C2, C5 e D4 del piano di Claude (`PIANO-CLAUDE-2026-10-26.md`), dall
   `apps/ui/app/routes/w.$workspace.$project/{inspector-recognition,inspector-lane}.tsx`); testi in
   `apps/ui/app/i18n/messages/{riconoscimento,measures}.ts` e `catalog.ts`; la skill dell'agente conosce
   `@sinopia/famiglie` e il marcatore esteso (`apps/ui/app/lib/sinopia-immagine-cad-skill.ts`).
+
+## 27 ottobre 2026 — foto del campione (D6) e crediti delle rotte del CAD (E5)
+
+- **Mappe gratis nel browser.** Modulo nuovo `apps/ui/app/lib/foto-campione/`: lettura del GLB presentato in
+  triangoli, normali e spigoli B-rep nel telaio di Tau (`glb-mesh.ts`); z-buffer in TypeScript con camera e luce fisse
+  per vista (fronte — dall'alto per un pezzo piatto —, 3/4, dettaglio) che dà ombreggiato neutro, profondità, normali,
+  bordi e sagoma (`mappe.ts`); impronta SHA-256 di hash del modello + vista + materiale + livello (`impronta.ts`);
+  galleria con stati «Pronta»/«Da rifare» e cache per impronta (`galleria.ts`); IoU della sagoma della foto contro
+  quella del render, soglia 0,95 (`sagoma.ts`); finto della prova di sviluppo `?prova=foto` (`prova.ts`).
+- **Ispettore.** Sezione «Foto del campione» (`apps/ui/app/routes/w.$workspace.$project/{inspector-photos,inspector-lane}.tsx`):
+  vista, materiale del pezzo con finitura, livello Standard o Fedele, costo prima del clic, galleria con stato,
+  sagoma e «Rigenera»; testi in `apps/ui/app/i18n/messages/foto-campione.ts` e `catalog.ts`.
+- **Sinopia.** Client di `POST /v1/photo`, prezzi da `credit_costs`, foto del modello dagli `assets` e scaricamento
+  (`apps/ui/app/services/{sinopia-foto,foto-campione-immagini}.ts`); il riconoscimento manda `requestId` e il costo
+  mostrato e non chiama finché il prezzo `cad_recognize` non è attivo (`apps/ui/app/services/sinopia-recognize.ts`,
+  `apps/ui/app/routes/nuovo/use-riconoscimento-nuovo.ts`, `apps/ui/app/i18n/messages/riconoscimento.ts`).
