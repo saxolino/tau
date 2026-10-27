@@ -1,8 +1,10 @@
+/* eslint-disable @typescript-eslint/naming-convention -- chiavi dei dati della specifica (processi, materiali, varianti, taglie): snake_case come in Sinopia. */
 import type { Processo } from '#famiglie/famiglia.js';
 
 /**
  * Soglie di producibilità per processo (specifica §1.10). Sono numeri «di mestiere da confermare col fornitore»:
  * ogni soglia porta `fonte: 'mestiere'` e sarà modificabile in Impostazioni (fase 2).
+ * @public
  */
 export type SoglieProcesso = {
   processo: Processo;
@@ -26,6 +28,10 @@ export type SoglieProcesso = {
   fonte: 'mestiere';
 };
 
+/**
+ * Soglie di producibilità per processo (§1.10).
+ * @public
+ */
 export const soglieProcessi: Readonly<Record<Processo, SoglieProcesso>> = {
   fusione_cera_persa: {
     processo: 'fusione_cera_persa',
@@ -110,6 +116,7 @@ export const soglieProcessi: Readonly<Record<Processo, SoglieProcesso>> = {
  * @param processo - Processo produttivo.
  * @param materiale - Chiave di `materiali.ts`.
  * @returns Millimetri.
+ * @public
  */
 export const sogliaParete = (processo: Processo, materiale?: string): number => {
   const soglie = soglieProcessi[processo];
@@ -121,6 +128,7 @@ export const sogliaParete = (processo: Processo, materiale?: string): number => 
  * @param processo - Processo produttivo.
  * @param materiale - Chiave di `materiali.ts`.
  * @returns Gradi.
+ * @public
  */
 export const sogliaSformo = (processo: Processo, materiale?: string): number | undefined => {
   const soglie = soglieProcessi[processo];

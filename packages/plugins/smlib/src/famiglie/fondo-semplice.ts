@@ -1,4 +1,5 @@
 /* oxlint-disable new-cap -- SMLib exposes capitalized shape factory functions. */
+/* eslint-disable @typescript-eslint/naming-convention -- chiavi dei dati della specifica (processi, materiali, varianti, taglie): snake_case come in Sinopia. */
 import type * as Smlib from '@classcad/smlibwasm';
 import type {
   DefinizioneParametro,
@@ -10,12 +11,7 @@ import type {
   RisultatoCostruzione,
 } from '#famiglie/famiglia.js';
 import { emettiMainFamiglia } from '#famiglie/emetti-main.js';
-import {
-  lunghezzaDaTaglia,
-  piantaDaMisure,
-  STAZIONE_PIANTA,
-  STAZIONE_TALLONE,
-} from '#famiglie/fondo-pianta-canonica.js';
+import { lunghezzaDaTaglia, piantaDaMisure, stazionePianta, stazioneTallone } from '#famiglie/fondo-pianta-canonica.js';
 import type { Pianta } from '#famiglie/fondo-pianta-canonica.js';
 import { aspettoMateriale } from '#famiglie/materiali.js';
 import { normalizzaConParametri, predefinitiDaParametri, schemaDaParametri } from '#famiglie/parametri.js';
@@ -35,9 +31,17 @@ import { esitiPezzi, esitiSformo, esito, esitoMinimo, normalizzaForma, sformo } 
 
 type Lib = typeof Smlib;
 
+/**
+ * Varianti della famiglia fondo.
+ * @public
+ */
 export type VarianteFondo = 'zeppa' | 'platform' | 'cuoio_liscio';
 type MaterialeFondo = 'tr' | 'tpu' | 'gomma' | 'eva' | 'pu_espanso' | 'cuoio' | 'sughero';
 
+/**
+ * Parametri della famiglia fondo, annidati per pezzo.
+ * @public
+ */
 export type ParametriFondo = {
   pianta: { taglia: number; rapportoPianta: number; rapportoTallone: number; sormonto: number };
   spessore: { punta: number; tallone: number; puntaRialzo: number };
@@ -220,8 +224,8 @@ const varianteDi = (opzioni?: OpzioniFamiglia): VarianteFondo =>
 const predefiniti = (variante?: string): ParametriFondo =>
   predefinitiDaParametri<ParametriFondo>(parametri, sostituzioniVariante[varianteDi({ variante })]);
 
-const vincoli = (p: ParametriFondo): { chiave: string; messaggio: string }[] => {
-  const violati: { chiave: string; messaggio: string }[] = [];
+const vincoli = (p: ParametriFondo): Array<{ chiave: string; messaggio: string }> => {
+  const violati: Array<{ chiave: string; messaggio: string }> = [];
   const { spessore, fianco, costruzione } = p;
   if (costruzione.materiale !== 'cuoio' && spessore.tallone < spessore.punta) {
     violati.push({ chiave: 'spessore.tallone', messaggio: 'Il tallone è più sottile della punta.' });
@@ -263,7 +267,7 @@ function quote(p: ParametriFondo, pianta: Pianta): { sotto: (y: number) => numbe
   const { punta, tallone, puntaRialzo } = p.spessore;
   const flesso = pianta.yPunta - 0.3 * pianta.lunghezza;
   const sotto = (y: number): number => puntaRialzo * Math.max(0, (y - flesso) / (pianta.yPunta - flesso)) ** 2;
-  const yPianta = (STAZIONE_PIANTA - STAZIONE_TALLONE) * pianta.lunghezza;
+  const yPianta = (stazionePianta - stazioneTallone) * pianta.lunghezza;
   const spessoreA = (y: number): number => tallone + (punta - tallone) * raccordo(y / yPianta);
   return { sotto, sopra: (y) => sotto(y) + spessoreA(y) };
 }
@@ -274,8 +278,9 @@ function quote(p: ParametriFondo, pianta: Pianta): { sotto: (y: number) => numbe
  * piana e non scende mai sotto (inviluppo convesso), e due superfici con punti a distanza costante restano a quella
  * distanza. Righe fitte sulle stazioni dello spessore e del rialzo.
  */
-function superficie(lib: Lib, pianta: Pianta, quota: (y: number) => number, larghezza: number): Smlib.Shell {
-  const yPianta = (STAZIONE_PIANTA - STAZIONE_TALLONE) * pianta.lunghezza;
+function superficie(lib: Lib, pianta: Pianta, forma: { quota: (y: number) => number; larghezza: number }): Smlib.Shell {
+  const { quota, larghezza } = forma;
+  const yPianta = (stazionePianta - stazioneTallone) * pianta.lunghezza;
   const flesso = pianta.yPunta - 0.3 * pianta.lunghezza;
   const righe = [
     pianta.yTallone - 30,
@@ -320,7 +325,7 @@ function costruisciDestro(lib: Lib, p: ParametriFondo, esiti: Esito[]): Smlib.Pa
   const larghezza = pianta.larghezzaPianta + 2 * p.pianta.sormonto + 20;
   // Il verso della normale di `surface` dipende dalla griglia: si sceglie il lato guardando la normale.
   const taglia = (parte: Smlib.Part, quota: (y: number) => number, tieni: 'sotto' | 'sopra'): Smlib.Part => {
-    const faccia = superficie(lib, pianta, quota, larghezza).faces()[0]!;
+    const faccia = superficie(lib, pianta, { quota, larghezza }).faces()[0]!;
     const insu = faccia.normalAt(faccia.interiorPoint()).z > 0;
     return parte.split(faccia, (tieni === 'sopra') === insu ? 'above' : 'below');
   };
@@ -330,12 +335,15 @@ function costruisciDestro(lib: Lib, p: ParametriFondo, esiti: Esito[]): Smlib.Pa
   const centro = (spigolo: Smlib.Edge): number => spigolo.center().z;
   if (p.costruzione.materiale === 'cuoio') {
     try {
-      blocco = blocco.chamfer(
+      // Bordo fresato: raggio di 0,5 mm (lo smusso vuole facce ad angolo costante, che il rialzo di punta non dà).
+      blocco = blocco.fillet(
         blocco.edges().filter((spigolo) => centro(spigolo) > p.spessore.punta * 0.5),
         0.5,
       );
     } catch {
-      esiti.push(esito('avviso', 'RACCORDO_RIDOTTO', 'Bordo fresato del cuoio non costruito.', { pezzo: 'Fondo' }));
+      esiti.push(
+        esito('avviso', 'RACCORDO_RIDOTTO', { messaggio: 'Bordo fresato del cuoio non costruito.', pezzo: 'Fondo' }),
+      );
     }
   } else {
     // Un solo raccordo per i due bordi (un raggio per spigolo): metà tempo di due chiamate.
@@ -353,7 +361,10 @@ function costruisciDestro(lib: Lib, p: ParametriFondo, esiti: Esito[]): Smlib.Pa
         );
       } catch {
         esiti.push(
-          esito('avviso', 'RACCORDO_RIDOTTO', 'Raccordi dei bordi non costruibili: spigoli vivi.', { pezzo: 'Fondo' }),
+          esito('avviso', 'RACCORDO_RIDOTTO', {
+            messaggio: 'Raccordi dei bordi non costruibili: spigoli vivi.',
+            pezzo: 'Fondo',
+          }),
         );
       }
     }
@@ -367,7 +378,9 @@ function costruisciConEsiti(lib: Lib, p: ParametriFondo): RisultatoCostruzione {
   try {
     const destro = costruisciDestro(lib, p, esiti);
     if (!destro.isValid()) {
-      esiti.push(esito('blocco', 'SOLIDO_NON_VALIDO', 'Il fondo non è un solido valido.', { pezzo: 'Fondo DX' }));
+      esiti.push(
+        esito('blocco', 'SOLIDO_NON_VALIDO', { messaggio: 'Il fondo non è un solido valido.', pezzo: 'Fondo DX' }),
+      );
     }
     const pezzo = (nome: string, forma: Smlib.Part): PezzoFamiglia => ({
       name: nome,
@@ -390,7 +403,10 @@ function costruisciConEsiti(lib: Lib, p: ParametriFondo): RisultatoCostruzione {
     };
   } catch (error) {
     esiti.push(
-      esito('blocco', 'SOLIDO_NON_VALIDO', `Fondo non costruito: ${(error as Error).message}`, { pezzo: 'Fondo' }),
+      esito('blocco', 'SOLIDO_NON_VALIDO', {
+        messaggio: `Fondo non costruito: ${(error as Error).message}`,
+        pezzo: 'Fondo',
+      }),
     );
     return { pezzi: [], esiti };
   }
@@ -413,12 +429,18 @@ const ritiri: Readonly<Partial<Record<MaterialeFondo, string>>> = {
   pu_espanso: '1–2 %',
 };
 
+// oxlint-disable-next-line eslint/max-params -- firma del contratto delle famiglie (§1.0): lib, pezzi, parametri, processo, opzioni.
 function verifiche(lib: Lib, pezzi: readonly PezzoFamiglia[], p: ParametriFondo): Esito[] {
   const esiti: Esito[] = [];
   const { materiale } = p.costruzione;
   const minimo = Math.min(p.spessore.punta, p.spessore.tallone);
   esiti.push(
-    esitoMinimo('SPESSORE_MIN', minimo, sogliaSpessore[materiale], 'Spessore minimo (fondo pieno)', { pezzo: 'Fondo' }),
+    esitoMinimo('SPESSORE_MIN', {
+      valore: minimo,
+      soglia: sogliaSpessore[materiale],
+      cosa: 'Spessore minimo (fondo pieno)',
+      pezzo: 'Fondo',
+    }),
   );
   const processo: Processo = materiale === 'cuoio' ? 'taglio_cuoio' : 'stampaggio_iniezione';
   const minimoSformo = materiale === 'cuoio' ? undefined : (sogliaSformo(processo, materiale) ?? 1);
@@ -434,12 +456,11 @@ function verifiche(lib: Lib, pezzi: readonly PezzoFamiglia[], p: ParametriFondo)
           !raccordi.some((raccordo) => raccordo.equals(faccia)),
       );
     esiti.push(
-      ...esitiSformo(
-        sformo(fondo, [0, 0, 1], minimoSformo - 1e-3, fianchi),
-        minimoSformo,
-        pezzi[0]!.name,
-        'Fianchi del fondo',
-      ),
+      ...esitiSformo(sformo(fondo, { direzione: [0, 0, 1], minimo: minimoSformo - 1e-3, facce: fianchi }), {
+        soglia: minimoSformo,
+        pezzo: pezzi[0]!.name,
+        dove: 'Fianchi del fondo',
+      }),
     );
   }
   const ritiro = ritiri[materiale];
@@ -448,7 +469,15 @@ function verifiche(lib: Lib, pezzi: readonly PezzoFamiglia[], p: ParametriFondo)
   }
   if (materiale !== 'cuoio') {
     const raggio = Math.min(p.bordo.raggioSuperiore, p.bordo.raggioInferiore);
-    esiti.push(esitoMinimo('RAGGI_MIN', raggio, 0.5, 'Raggio minimo dei bordi', { pezzo: 'Fondo', fattoreBlocco: 0 }));
+    esiti.push(
+      esitoMinimo('RAGGI_MIN', {
+        valore: raggio,
+        soglia: 0.5,
+        cosa: 'Raggio minimo dei bordi',
+        pezzo: 'Fondo',
+        fattoreBlocco: 0,
+      }),
+    );
   }
   esiti.push(
     esito(
@@ -461,6 +490,10 @@ function verifiche(lib: Lib, pezzi: readonly PezzoFamiglia[], p: ParametriFondo)
   return esiti;
 }
 
+/**
+ * La famiglia fondo semplice.
+ * @public
+ */
 export const fondoSemplice: Famiglia<ParametriFondo> = {
   id: 'fondo_semplice',
   versione: 1,
@@ -476,5 +509,6 @@ export const fondoSemplice: Famiglia<ParametriFondo> = {
   verifiche,
   silhouette: { assi: ['x', 'y', 'z'], simmetrie: ['yz'] },
   materialiAmmessi: ['tr', 'tpu', 'gomma', 'eva', 'pu_espanso', 'cuoio', 'sughero'],
-  emettiMain: (p, ipotesi, opzioni) => emettiMainFamiglia('fondo_semplice', 1, varianteDi(opzioni), p, ipotesi),
+  emettiMain: (p, ipotesi, opzioni) =>
+    emettiMainFamiglia({ id: 'fondo_semplice', versione: 1, variante: varianteDi(opzioni) }, p, ipotesi),
 };

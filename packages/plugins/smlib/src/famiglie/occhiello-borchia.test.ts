@@ -27,7 +27,7 @@ const blocchi = (valutazione: Valutazione) => valutazione.esiti.filter(({ livell
 describe('famiglia occhiello', () => {
   it('should revolve the eyelet profile into a valid solid of the expected volume', () => {
     const p = occhiello.predefiniti();
-    const valutazione = valutaFamiglia(lib, occhiello, p);
+    const valutazione = valutaFamiglia(lib, occhiello, { parametri: p });
     const pezzo = forma(valutazione);
     expect(pezzo.isValid()).toBe(true);
     const { size, min, max } = pezzo.bbox();
@@ -47,7 +47,7 @@ describe('famiglia occhiello', () => {
 
   it('should add the washer and flag a deep draw', () => {
     const p = occhiello.normalizza({ rondella: { abilitata: true }, gambo: { altezza: 8 }, parete: { spessore: 0.3 } });
-    const valutazione = valutaFamiglia(lib, occhiello, p);
+    const valutazione = valutaFamiglia(lib, occhiello, { parametri: p });
     expect(valutazione.pezzi.map(({ name }) => name)).toEqual(['Occhiello', 'Rondella']);
     expect(forma(valutazione, 1).isValid()).toBe(true);
     expect(forma(valutazione).intersect(forma(valutazione, 1)).volume).toBeLessThan(1e-6);
@@ -59,7 +59,7 @@ describe('famiglia occhiello', () => {
 describe('famiglia borchia', () => {
   it('should build a 3 mm dome head on a drafted shank', () => {
     const p = borchia.predefiniti('cupola');
-    const valutazione = valutaFamiglia(lib, borchia, p, { variante: 'cupola' });
+    const valutazione = valutaFamiglia(lib, borchia, { parametri: p, variante: 'cupola' });
     const pezzo = forma(valutazione);
     expect(pezzo.isValid()).toBe(true);
     expect(pezzo.solids()).toHaveLength(1);
@@ -77,7 +77,7 @@ describe('famiglia borchia', () => {
   });
 
   it.each(['piramide', 'piatta', 'cono'] as const)('should build the %s head', (variante) => {
-    const valutazione = valutaFamiglia(lib, borchia, borchia.predefiniti(variante), { variante });
+    const valutazione = valutaFamiglia(lib, borchia, { parametri: borchia.predefiniti(variante), variante });
     expect(forma(valutazione).isValid()).toBe(true);
     expect(forma(valutazione).solids()).toHaveLength(1);
     expect(blocchi(valutazione)).toEqual([]);
@@ -86,9 +86,12 @@ describe('famiglia borchia', () => {
   it('should hollow a zamak head from below and keep the shank attached', () => {
     const p = borchia.normalizza({ testa: { diametro: 14, altezza: 5 }, costruzione: { cava: true } });
     const piena = forma(
-      valutaFamiglia(lib, borchia, { ...p, costruzione: { ...p.costruzione, cava: false } }, { verifiche: false }),
+      valutaFamiglia(lib, borchia, {
+        parametri: { ...p, costruzione: { ...p.costruzione, cava: false } },
+        verifiche: false,
+      }),
     );
-    const valutazione = valutaFamiglia(lib, borchia, p);
+    const valutazione = valutaFamiglia(lib, borchia, { parametri: p });
     expect(forma(valutazione).isValid()).toBe(true);
     expect(forma(valutazione).solids()).toHaveLength(1);
     expect(forma(valutazione).volume).toBeLessThan(piena.volume * 0.8);

@@ -2,11 +2,12 @@
  * Materiali delle famiglie (specifica §1.11): chiavi stabili, densità in g/cm³ (come `ShapeConfig.density`, che il
  * kernel trasforma in massa con il volume esatto), colore e finitura di resa. La resa e il peso per materiale li
  * mostra il visore; qui si dichiarano soltanto.
+ * @public
  */
 export type Materiale = {
   chiave: string;
   nome: string;
-  /** g/cm³. */
+  /** G/cm³. */
   densita: number;
   colore: string;
   metalness: number;
@@ -15,6 +16,7 @@ export type Materiale = {
   tipo: 'metallo_prezioso' | 'metallo' | 'polimero' | 'organico' | 'pietra';
 };
 
+// oxlint-disable-next-line eslint/max-params -- una riga per materiale nella tabella qui sotto.
 const metallo = (
   chiave: string,
   nome: string,
@@ -24,6 +26,7 @@ const metallo = (
   roughness = 0.3,
 ): Materiale => ({ chiave, nome, densita, colore, metalness: 1, roughness, tipo });
 
+// oxlint-disable-next-line eslint/max-params -- una riga per materiale nella tabella qui sotto.
 const nonMetallo = (
   chiave: string,
   nome: string,
@@ -64,7 +67,10 @@ const elenco: readonly Materiale[] = [
   nonMetallo('diamante', 'Diamante', 3.52, '#e8f1fb', 'pietra', 0.05),
 ];
 
-/** Materiali per chiave. */
+/**
+ * Materiali per chiave.
+ * @public
+ */
 export const materiali: Readonly<Record<string, Materiale>> = Object.fromEntries(
   elenco.map((materiale) => [materiale.chiave, materiale]),
 );
@@ -73,6 +79,7 @@ export const materiali: Readonly<Record<string, Materiale>> = Object.fromEntries
  * Il materiale di una chiave.
  * @param chiave - Chiave stabile (`ottone`, `abs`…).
  * @returns Il materiale.
+ * @public
  */
 export function materiale(chiave: string): Materiale {
   const trovato = materiali[chiave];
@@ -86,6 +93,7 @@ export function materiale(chiave: string): Materiale {
  * I campi di resa e di densità di un `ShapeConfig` per un materiale.
  * @param chiave - Chiave del materiale.
  * @returns color, density, metalness, roughness.
+ * @public
  */
 export function aspettoMateriale(chiave: string): {
   color: string;

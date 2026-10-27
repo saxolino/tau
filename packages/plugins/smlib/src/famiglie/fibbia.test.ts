@@ -38,7 +38,7 @@ const pezzo = (valutazione: ReturnType<typeof valutaFamiglia>, nome: string): Sm
 describe('famiglia fibbia', () => {
   it('should build the default buckle as a valid frame and pin with the declared size', () => {
     const p = fibbia.predefiniti();
-    const valutazione = valutaFamiglia(lib, fibbia, p);
+    const valutazione = valutaFamiglia(lib, fibbia, { parametri: p });
     expect(valutazione.pezzi.map(({ name }) => name)).toEqual(['Telaio', 'Ardiglione']);
     const telaio = pezzo(valutazione, 'Telaio');
     const ardiglione = pezzo(valutazione, 'Ardiglione');
@@ -85,7 +85,7 @@ describe('famiglia fibbia', () => {
   });
 
   it.each(['ovale', 'a_d', 'doppia'] as const)('should build the %s variant as valid single solids', (variante) => {
-    const valutazione = valutaFamiglia(lib, fibbia, fibbia.predefiniti(variante), { variante });
+    const valutazione = valutaFamiglia(lib, fibbia, { parametri: fibbia.predefiniti(variante), variante });
     expect(valutazione.pezzi).toHaveLength(2);
     for (const { shape } of valutazione.pezzi) {
       expect(shape instanceof lib.Part && shape.isValid() && shape.solids().length === 1).toBe(true);
@@ -96,7 +96,7 @@ describe('famiglia fibbia', () => {
   it('should build round and flat sections', () => {
     for (const profilo of ['tondo', 'piatto'] as const) {
       const p = fibbia.normalizza({ telaio: { profilo } });
-      const valutazione = valutaFamiglia(lib, fibbia, p);
+      const valutazione = valutaFamiglia(lib, fibbia, { parametri: p });
       const telaio = pezzo(valutazione, 'Telaio');
       expect(telaio.isValid()).toBe(true);
       expect(telaio.bbox().size.z).toBeCloseTo(p.telaio.sezioneSpessore, 3);
@@ -130,11 +130,11 @@ describe('famiglia fibbia', () => {
       import.meta.url,
     ).href;
     const pilota = (await import(/* @vite-ignore */ percorso)) as {
-      default: () => { name: string; shape: Smlib.Part }[];
+      default: () => Array<{ name: string; shape: Smlib.Part }>;
     };
     const telaioPilota = pilota.default().find(({ name }) => name === 'Telaio fibbia')!.shape;
     const { variante, parametri } = presetPilotaFibbia;
-    const valutazione = valutaFamiglia(lib, fibbia, parametri, { variante });
+    const valutazione = valutaFamiglia(lib, fibbia, { parametri, variante });
     const telaio = pezzo(valutazione, 'Telaio');
     expect(Math.abs(telaio.volume / telaioPilota.volume - 1)).toBeLessThan(0.02);
     const atteso = telaioPilota.bbox().size;

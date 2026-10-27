@@ -14,6 +14,7 @@ import { famiglie } from '#famiglie/registro.js';
  * Una famiglia legata alla libreria del kernel: è ciò che il `main.ts` di un progetto importa da
  * `@sinopia/famiglie` (`tacco.costruisci(p, { variante })`). I parametri passano sempre da `normalizza`, quindi un
  * `defaultParams` parziale o fuori limite costruisce comunque il pezzo coerente più vicino.
+ * @public
  */
 export type FamigliaLegata = {
   id: string;
@@ -36,8 +37,8 @@ const lega = (lib: typeof Smlib, famiglia: FamigliaQualsiasi): FamigliaLegata =>
   versione: famiglia.versione,
   varianti: famiglia.varianti,
   parametri: famiglia.parametri,
-  predefiniti: (variante) => famiglia.predefiniti(variante),
-  normalizza: (p, opzioni) => famiglia.normalizza(p, opzioni),
+  predefiniti: (variante): unknown => famiglia.predefiniti(variante) as unknown,
+  normalizza: (p, opzioni): unknown => famiglia.normalizza(p, opzioni) as unknown,
   costruisci: (p, opzioni) => famiglia.costruisci(lib, famiglia.normalizza(p, opzioni), opzioni),
   costruisciConEsiti: (p, opzioni) => famiglia.costruisciConEsiti(lib, famiglia.normalizza(p, opzioni), opzioni),
   verifiche: (pezzi, p, opzioni) =>
@@ -49,6 +50,7 @@ const lega = (lib: typeof Smlib, famiglia: FamigliaQualsiasi): FamigliaLegata =>
  * (`fibbia`, `tacco`, `placca`…) e l'elenco `famiglie`.
  * @param lib - La libreria del kernel (la stessa che il kernel usa per leggere i pezzi restituiti da `main`).
  * @returns Le esportazioni del modulo.
+ * @public
  */
 export function creaModuloFamiglie(lib: typeof Smlib): Record<string, unknown> {
   const legate: Record<string, FamigliaLegata> = Object.fromEntries(

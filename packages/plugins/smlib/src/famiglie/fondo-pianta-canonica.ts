@@ -5,8 +5,9 @@
  *
  * Scelta nostra, dichiarata: la forma demo è simmetrica (stesso fianco interno ed esterno) e ha il fondo piano; il
  * fondificio sviluppa sulla forma campione vera (verifica `GRADING`).
+ * @public
  */
-export const piantaCanonica: readonly (readonly [number, number])[] = [
+export const piantaCanonica: ReadonlyArray<readonly [number, number]> = [
   [0, 0],
   [0.1129, 0.015],
   [0.1229, 0.05],
@@ -34,8 +35,8 @@ export const piantaCanonica: readonly (readonly [number, number])[] = [
 ];
 
 /** Stazione del centro del tallone (origine della pianta) e della linea delle teste metatarsali (pianta). */
-export const STAZIONE_TALLONE = 0.18;
-export const STAZIONE_PIANTA = 0.64;
+export const stazioneTallone = 0.18;
+export const stazionePianta = 0.64;
 
 /** Larghezze della pianta canonica (frazioni della lunghezza) al tallone e alla pianta. */
 const larghezzaCanonicaTallone = 2 * 0.1533;
@@ -46,12 +47,16 @@ const larghezzaCanonicaPianta = 2 * 0.1829;
  * dichiarata della specifica §1.2).
  * @param taglia - Taglia EU (35–47).
  * @returns Millimetri.
+ * @public
  */
 export const lunghezzaDaTaglia = (taglia: number): number => taglia * 6.667 + 12;
 
-/** Una pianta in millimetri: contorno chiuso (+Y verso la punta, origine sotto il centro del tallone) e misure. */
+/**
+ * Una pianta in millimetri: contorno chiuso (+Y verso la punta, origine sotto il centro del tallone) e misure.
+ * @public
+ */
 export type Pianta = {
-  contorno: [number, number][];
+  contorno: Array<[number, number]>;
   lunghezza: number;
   larghezzaPianta: number;
   larghezzaTallone: number;
@@ -70,6 +75,7 @@ const raccordo = (u: number): number => {
  * fino al tallone e con quello della pianta dalla linea delle teste in avanti, raccordati fra le due.
  * @param misure - Lunghezza e larghezze in mm (default 0,37 e 0,25 della lunghezza).
  * @returns Contorno e misure.
+ * @public
  */
 export function piantaDaMisure(misure: {
   lunghezza: number;
@@ -82,17 +88,17 @@ export function piantaDaMisure(misure: {
   const fattoreTallone = larghezzaTallone / (larghezzaCanonicaTallone * lunghezza);
   const fattorePianta = larghezzaPianta / (larghezzaCanonicaPianta * lunghezza);
   const contorno = piantaCanonica.map(([x, y]): [number, number] => {
-    const peso = raccordo((y - STAZIONE_TALLONE) / (STAZIONE_PIANTA - STAZIONE_TALLONE));
+    const peso = raccordo((y - stazioneTallone) / (stazionePianta - stazioneTallone));
     const fattore = fattoreTallone + (fattorePianta - fattoreTallone) * peso;
-    return [x * lunghezza * fattore, (y - STAZIONE_TALLONE) * lunghezza];
+    return [x * lunghezza * fattore, (y - stazioneTallone) * lunghezza];
   });
   return {
     contorno,
     lunghezza,
     larghezzaPianta,
     larghezzaTallone,
-    yPunta: (1 - STAZIONE_TALLONE) * lunghezza,
-    yTallone: -STAZIONE_TALLONE * lunghezza,
+    yPunta: (1 - stazioneTallone) * lunghezza,
+    yTallone: -stazioneTallone * lunghezza,
   };
 }
 
@@ -100,6 +106,7 @@ export function piantaDaMisure(misure: {
  * La pianta di una taglia EU con le larghezze in proporzione (0,37 e 0,25 della lunghezza).
  * @param taglia - Taglia EU.
  * @returns Contorno e misure.
+ * @public
  */
 export const piantaDaTaglia = (taglia: number): Pianta => piantaDaMisure({ lunghezza: lunghezzaDaTaglia(taglia) });
 
@@ -107,32 +114,25 @@ export const piantaDaTaglia = (taglia: number): Pianta => piantaDaMisure({ lungh
  * Se un poligono chiuso non si autointerseca (lati non adiacenti che non si toccano).
  * @param punti - Vertici in ordine.
  * @returns True se semplice.
+ * @public
  */
-export function poligonoSemplice(punti: readonly (readonly [number, number])[]): boolean {
+export function poligonoSemplice(punti: ReadonlyArray<readonly [number, number]>): boolean {
   const n = punti.length;
   if (n < 3) {
     return false;
   }
-  const incrocia = (
-    a: readonly [number, number],
-    b: readonly [number, number],
-    c: readonly [number, number],
-    d: readonly [number, number],
-  ): boolean => {
-    const lato = (p: readonly [number, number], q: readonly [number, number], r: readonly [number, number]): number =>
-      (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
-    const d1 = lato(c, d, a);
-    const d2 = lato(c, d, b);
-    const d3 = lato(a, b, c);
-    const d4 = lato(a, b, d);
-    return d1 * d2 < 0 && d3 * d4 < 0;
-  };
+  type Punto2 = readonly [number, number];
+  const lato = (p: Punto2, q: Punto2, r: Punto2): number =>
+    (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+  /** Due lati [a, b] e [c, d] si incrociano propriamente. */
+  const incrocia = ([a, b]: readonly [Punto2, Punto2], [c, d]: readonly [Punto2, Punto2]): boolean =>
+    lato(c, d, a) * lato(c, d, b) < 0 && lato(a, b, c) * lato(a, b, d) < 0;
   for (let i = 0; i < n; i++) {
     for (let j = i + 2; j < n; j++) {
       if (i === 0 && j === n - 1) {
         continue;
       }
-      if (incrocia(punti[i]!, punti[(i + 1) % n]!, punti[j]!, punti[(j + 1) % n]!)) {
+      if (incrocia([punti[i]!, punti[(i + 1) % n]!], [punti[j]!, punti[(j + 1) % n]!])) {
         return false;
       }
     }

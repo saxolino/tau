@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/naming-convention -- chiavi dei dati della specifica (processi, materiali, varianti, taglie): snake_case come in Sinopia. */
 /**
  * Taglie degli anelli (specifica §1.7): dal sistema e dal valore al diametro interno in millimetri.
  *
@@ -7,10 +8,14 @@
  *   specifica (circonferenza = 2,5296 × taglia + 36,54) dà 17,27 per US 7 contro i 17,35 del suo stesso test: si usa
  *   quella della tabella, che sta entro 0,05 mm dai valori pubblicati da US 3 a US 15.
  * - `diametro`: il valore è già il diametro interno.
+ * @public
  */
 export type SistemaTaglia = 'it' | 'us' | 'eu_iso' | 'diametro';
 
-/** Intervallo ammesso per sistema. */
+/**
+ * Intervallo ammesso per sistema.
+ * @public
+ */
 export const intervalliTaglia: Readonly<Record<SistemaTaglia, readonly [number, number]>> = {
   it: [1, 35],
   us: [3, 15],
@@ -23,6 +28,7 @@ export const intervalliTaglia: Readonly<Record<SistemaTaglia, readonly [number, 
  * @param sistema - Sistema di taglie.
  * @param valore - Taglia (US anche a mezzi numeri).
  * @returns Millimetri.
+ * @public
  */
 export function diametroInterno(sistema: SistemaTaglia, valore: number): number {
   switch (sistema) {
@@ -46,6 +52,7 @@ export function diametroInterno(sistema: SistemaTaglia, valore: number): number 
  * @param sistema - Sistema di taglie.
  * @param diametro - Diametro interno in mm.
  * @returns La taglia.
+ * @public
  */
 export function tagliaDaDiametro(sistema: SistemaTaglia, diametro: number): number {
   switch (sistema) {

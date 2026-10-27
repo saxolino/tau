@@ -49,15 +49,15 @@ async function puntiDaGlb(percorso: string): Promise<Punto[]> {
  * @param punti - Vertici in mm, lunghezza lungo X dal tallone.
  * @returns I punti `[x, y]` normalizzati per la lunghezza e la lunghezza in mm.
  */
-export function piantaDaVertici(punti: readonly Punto[]): { punti: [number, number][]; lunghezza: number } {
+export function piantaDaVertici(punti: readonly Punto[]): { punti: Array<[number, number]>; lunghezza: number } {
   const xs = punti.map(([x]) => x);
   const inizio = Math.min(...xs);
   const lunghezza = Math.max(...xs) - inizio;
   const semilarghezza = (t: number): number => {
     const centro = inizio + t * lunghezza;
     const fetta = punti.filter(([x]) => Math.abs(x - centro) <= 0.03 * lunghezza);
-    const fondo = Math.min(...fetta.map(([, , z]) => z));
-    return Math.max(...fetta.filter(([, , z]) => z <= fondo + 3).map(([, y]) => Math.abs(y)));
+    const fondo = Math.min(...fetta.map((punto) => punto[2]));
+    return Math.max(...fetta.filter((punto) => punto[2] <= fondo + 3).map(([, y]) => Math.abs(y)));
   };
   const lato = stazioniPianta.map((t) => [semilarghezza(t) / lunghezza, t] as [number, number]);
   return {

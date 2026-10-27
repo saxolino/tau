@@ -37,12 +37,12 @@ export function scriviParametro(p: ParametriAnnidati, chiave: string, valore: Va
   let corrente: ParametriAnnidati = p;
   for (const segmento of segmenti.slice(0, -1)) {
     const prossimo = corrente[segmento];
-    if (!isRecord(prossimo)) {
+    if (isRecord(prossimo)) {
+      corrente = prossimo;
+    } else {
       const nuovo: ParametriAnnidati = {};
       corrente[segmento] = nuovo;
       corrente = nuovo;
-    } else {
-      corrente = prossimo as ParametriAnnidati;
     }
   }
   corrente[segmenti.at(-1)!] = valore;
@@ -182,7 +182,7 @@ export function normalizzaConParametri<P>(definizioni: readonly DefinizioneParam
         );
         valore =
           punti && validi
-            ? (punti as [number, number][])
+            ? (punti as Array<[number, number]>)
                 .slice(0, definizione.lunghezzaMassima ?? 64)
                 .map(([x, y]) => [x, y] as const)
             : predefinito;
@@ -208,6 +208,7 @@ export function normalizzaConParametri<P>(definizioni: readonly DefinizioneParam
  * @param definizioni - Definizioni della famiglia.
  * @param p - Parametri normalizzati.
  * @returns Mappa percorso puntato → valore.
+ * @public
  */
 export function valoriDerivati(
   definizioni: readonly DefinizioneParametro[],
@@ -227,7 +228,7 @@ export function valoriDerivati(
  * @param t - Ascissa.
  * @returns Il valore interpolato (costante fuori dall'intervallo).
  */
-export function interpolaMonotona(punti: readonly (readonly [number, number])[], t: number): number {
+export function interpolaMonotona(punti: ReadonlyArray<readonly [number, number]>, t: number): number {
   const n = punti.length;
   if (n === 0) {
     return Number.NaN;

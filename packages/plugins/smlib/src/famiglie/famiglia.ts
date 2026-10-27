@@ -9,7 +9,10 @@ import type { NamedInputShape } from '#utils/render-output.js';
  * costruisce pezzi nominati e ne misura la producibilità. Gira nel worker del kernel e nei test Node.
  */
 
-/** Processi produttivi per cui le verifiche conoscono le soglie (§1.10). */
+/**
+ * Processi produttivi per cui le verifiche conoscono le soglie (§1.10).
+ * @public
+ */
 export type Processo =
   | 'fusione_cera_persa'
   | 'pressofusione_zama'
@@ -19,7 +22,10 @@ export type Processo =
   | 'stampa_3d_resina'
   | 'taglio_cuoio';
 
-/** Identificativi delle famiglie previste dalla specifica (non tutte già realizzate: vedi `famiglie` in index). */
+/**
+ * Identificativi delle famiglie previste dalla specifica (non tutte già realizzate: vedi `famiglie` in index).
+ * @public
+ */
 export type IdFamiglia =
   | 'tacco'
   | 'fondo_semplice'
@@ -31,19 +37,34 @@ export type IdFamiglia =
   | 'anello'
   | 'pendente';
 
-/** Unità di un parametro: `testo` per le stringhe libere (contenuto della placca), `contorno` per un elenco di punti. */
+/**
+ * Unità di un parametro: `testo` per le stringhe libere (contenuto della placca), `contorno` per un elenco di punti.
+ * @public
+ */
 export type UnitaParametro = 'mm' | 'deg' | 'n' | 'bool' | 'enum' | 'frazione' | 'testo' | 'contorno';
 
-/** Da dove viene il valore predefinito: regola del mestiere, calcolo da altri, o scelta nostra dichiarata. */
+/**
+ * Da dove viene il valore predefinito: regola del mestiere, calcolo da altri, o scelta nostra dichiarata.
+ * @public
+ */
 export type FonteDefault = 'mestiere' | 'derivato' | 'scelta_nostra';
 
-/** Valore di un parametro foglia. */
+/**
+ * Valore di un parametro foglia.
+ * @public
+ */
 export type ValoreParametro = number | string | boolean | ReadonlyArray<readonly [number, number]>;
 
-/** Parametri annidati per pezzo (`{ tacco: { altezza: 85 } }`), come chiede la skill delle Misure. */
+/**
+ * Parametri annidati per pezzo (`{ tacco: { altezza: 85 } }`), come chiede la skill delle Misure.
+ * @public
+ */
 export type ParametriAnnidati = { [chiave: string]: ValoreParametro | ParametriAnnidati };
 
-/** Descrizione di un parametro: limiti, unità, predefinito e provenienza (per Misure, D2 e D3). */
+/**
+ * Descrizione di un parametro: limiti, unità, predefinito e provenienza (per Misure, D2 e D3).
+ * @public
+ */
 export type DefinizioneParametro = {
   /** Percorso puntato, per esempio `tappo.altezza`. */
   chiave: string;
@@ -68,7 +89,10 @@ export type DefinizioneParametro = {
   descrizione?: string;
 };
 
-/** Esito di una verifica di producibilità (§1.10). */
+/**
+ * Esito di una verifica di producibilità (§1.10).
+ * @public
+ */
 export type Esito = {
   livello: 'ok' | 'avviso' | 'blocco' | 'info';
   codice: string;
@@ -78,7 +102,10 @@ export type Esito = {
   messaggio: string;
 };
 
-/** Un pezzo restituito da una famiglia: la forma per il kernel, con ruolo e materiale dichiarati. */
+/**
+ * Un pezzo restituito da una famiglia: la forma per il kernel, con ruolo e materiale dichiarati.
+ * @public
+ */
 export type PezzoFamiglia = NamedInputShape & {
   /** Ruolo del pezzo nella famiglia (`corpo`, `tappo`, `anima`, `telaio`, `ardiglione`, `pietra`…). */
   ruolo: string;
@@ -86,16 +113,28 @@ export type PezzoFamiglia = NamedInputShape & {
   materiale: string;
 };
 
-/** Opzioni di costruzione e di verifica: la variante della famiglia. */
+/**
+ * Opzioni di costruzione e di verifica: la variante della famiglia.
+ * @public
+ */
 export type OpzioniFamiglia = { variante?: string };
 
-/** Pezzi e avvisi di costruzione (raccordo ridotto, testo ridotto, solido non valido…). */
+/**
+ * Pezzi e avvisi di costruzione (raccordo ridotto, testo ridotto, solido non valido…).
+ * @public
+ */
 export type RisultatoCostruzione = { pezzi: PezzoFamiglia[]; esiti: Esito[] };
 
-/** Piani di simmetria e assi utili alla verifica della silhouette (D3). */
-export type SilhouetteFamiglia = { assi: readonly ('x' | 'y' | 'z')[]; simmetrie: readonly ('yz' | 'xz')[] };
+/**
+ * Piani di simmetria e assi utili alla verifica della silhouette (D3).
+ * @public
+ */
+export type SilhouetteFamiglia = { assi: ReadonlyArray<'x' | 'y' | 'z'>; simmetrie: ReadonlyArray<'yz' | 'xz'> };
 
-/** Una famiglia parametrica (contratto di §1.0, con la variante come opzione esplicita). */
+/**
+ * Una famiglia parametrica (contratto di §1.0, con la variante come opzione esplicita).
+ * @public
+ */
 export type Famiglia<P extends ParametriAnnidati = ParametriAnnidati> = {
   id: IdFamiglia;
   /** Entra nell'impronta della ricetta: si incrementa quando la geometria cambia a parità di parametri. */
@@ -109,7 +148,7 @@ export type Famiglia<P extends ParametriAnnidati = ParametriAnnidati> = {
   /** Parametri predefiniti di una variante (la prima se assente). */
   predefiniti: (variante?: string) => P;
   /** Vincoli violati (vuoto = coerente). */
-  vincoli: (p: P) => readonly { chiave: string; messaggio: string }[];
+  vincoli: (p: P) => ReadonlyArray<{ chiave: string; messaggio: string }>;
   /** Riporta dentro limiti e vincoli; completa le chiavi mancanti; lancia solo se `p` non è un oggetto. */
   normalizza: (p: unknown, opzioni?: OpzioniFamiglia) => P;
   /** Pezzi nominati, ciascuno già passato da `fromSmb(toSmb())`; mai lancia. */
@@ -117,6 +156,7 @@ export type Famiglia<P extends ParametriAnnidati = ParametriAnnidati> = {
   /** Come `costruisci`, con gli avvisi nati durante la costruzione. */
   costruisciConEsiti: (lib: typeof Smlib, p: P, opzioni?: OpzioniFamiglia) => RisultatoCostruzione;
   /** Verifiche di producibilità con soglie per processo (§1.10). */
+  // oxlint-disable-next-line eslint/max-params -- firma della specifica §1.0 (lib, pezzi, parametri, processo, opzioni).
   verifiche: (
     lib: typeof Smlib,
     pezzi: readonly PezzoFamiglia[],
@@ -131,6 +171,9 @@ export type Famiglia<P extends ParametriAnnidati = ParametriAnnidati> = {
   emettiMain: (p: P, ipotesi: Record<string, string>, opzioni?: OpzioniFamiglia) => string;
 };
 
-/** Una famiglia di parametri qualsiasi, per il registro. */
+/**
+ * Una famiglia di parametri qualsiasi, per il registro.
+ * @public
+ */
 // oxlint-disable-next-line typescript/no-explicit-any -- the registry stores families of different parameter types.
 export type FamigliaQualsiasi = Famiglia<any>;

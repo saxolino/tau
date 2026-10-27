@@ -11,7 +11,10 @@ import type * as Smlib from '@classcad/smlibwasm';
  * dell'1–3 % di b per rapporti a/b fino a 2.
  */
 
-/** I raggi e i centri di un ovale a quattro centri di semiassi a ≥ b. */
+/**
+ * I raggi e i centri di un ovale a quattro centri di semiassi a ≥ b.
+ * @public
+ */
 export function ovaleQuattroCentri(a: number, b: number): { r1: number; r2: number; angolo: number } {
   const r1 = (b * b) / a;
   const r2 = (a * (a + b)) / (2 * b);
@@ -26,6 +29,7 @@ export function ovaleQuattroCentri(a: number, b: number): { r1: number; r2: numb
  * @param x - Semiasse lungo X.
  * @param y - Semiasse lungo Y.
  * @returns Lo schizzo.
+ * @public
  */
 export function ovale(lib: typeof Smlib, x: number, y: number): Smlib.Sketch {
   if (Math.abs(x - y) < 1e-6 * Math.max(x, y)) {
@@ -54,11 +58,16 @@ export function ovale(lib: typeof Smlib, x: number, y: number): Smlib.Sketch {
  * si torna al `taper`.
  * @param lib - Libreria SMLib.
  * @param schizzo - Schizzo posato su un piano orizzontale.
- * @param altezza - Altezza con segno.
- * @param sformo - Gradi (0 = dritto).
+ * @param misure - Altezza con segno e sformo in gradi (0 = dritto).
  * @returns Il solido.
+ * @public
  */
-export function estrudiSformato(lib: typeof Smlib, schizzo: Smlib.Sketch, altezza: number, sformo: number): Smlib.Part {
+export function estrudiSformato(
+  lib: typeof Smlib,
+  schizzo: Smlib.Sketch,
+  misure: { altezza: number; sformo: number },
+): Smlib.Part {
+  const { altezza, sformo } = misure;
   const dritto = schizzo.extrude(altezza);
   if (sformo <= 0) {
     return dritto;

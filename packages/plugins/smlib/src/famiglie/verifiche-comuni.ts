@@ -15,16 +15,14 @@ type Punto = readonly [number, number, number];
  * Un esito di verifica.
  * @param livello - ok, avviso, blocco o info.
  * @param codice - Codice stabile (`PARETE_MIN`…).
- * @param messaggio - Testo in italiano per il pannello Verifiche.
- * @param extra - Pezzo, valore misurato e soglia.
+ * @param dettagli - Testo in italiano per il pannello Verifiche, o il testo con pezzo, valore misurato e soglia.
  * @returns L'esito.
  */
 export const esito = (
   livello: Esito['livello'],
   codice: string,
-  messaggio: string,
-  extra: Partial<Pick<Esito, 'pezzo' | 'valore' | 'soglia'>> = {},
-): Esito => ({ livello, codice, messaggio, ...extra });
+  dettagli: string | (Pick<Esito, 'messaggio'> & Partial<Pick<Esito, 'pezzo' | 'valore' | 'soglia'>>),
+): Esito => ({ livello, codice, ...(typeof dettagli === 'string' ? { messaggio: dettagli } : dettagli) });
 
 /** Formattazione italiana dei millimetri per i messaggi. */
 export const mm = (valore: number, decimali = 2): string =>
@@ -33,28 +31,27 @@ export const mm = (valore: number, decimali = 2): string =>
 /**
  * Esito di una soglia minima: blocco sotto `fattoreBlocco × soglia`, avviso sotto la soglia, ok sopra.
  * @param codice - Codice della verifica.
- * @param valore - Valore misurato.
- * @param soglia - Minimo ammesso.
- * @param cosa - Che cosa si misura, per il messaggio.
- * @param extra - Pezzo e fattore di blocco (default 0,8; 0 = mai blocco).
+ * @param misura - Valore misurato, minimo ammesso, che cosa si misura (per il messaggio), pezzo e fattore di blocco
+ *   (default 0,8; 0 = mai blocco).
  * @returns L'esito.
  */
 export function esitoMinimo(
   codice: string,
-  valore: number,
-  soglia: number,
-  cosa: string,
-  extra: { pezzo?: string; fattoreBlocco?: number } = {},
+  misura: { valore: number; soglia: number; cosa: string; pezzo?: string; fattoreBlocco?: number },
 ): Esito {
+  const { valore, soglia, cosa, ...extra } = misura;
   const fattore = extra.fattoreBlocco ?? 0.8;
   const base = { valore, soglia, ...(extra.pezzo ? { pezzo: extra.pezzo } : {}) };
   if (valore + 1e-9 >= soglia) {
-    return esito('ok', codice, `${cosa}: ${mm(valore)} (minimo ${mm(soglia)}).`, base);
+    return esito('ok', codice, { messaggio: `${cosa}: ${mm(valore)} (minimo ${mm(soglia)}).`, ...base });
   }
   if (valore < fattore * soglia) {
-    return esito('blocco', codice, `${cosa} ${mm(valore)}: sotto il minimo di ${mm(soglia)}.`, base);
+    return esito('blocco', codice, { messaggio: `${cosa} ${mm(valore)}: sotto il minimo di ${mm(soglia)}.`, ...base });
   }
-  return esito('avviso', codice, `${cosa} ${mm(valore)}: al limite, il minimo è ${mm(soglia)}.`, base);
+  return esito('avviso', codice, {
+    messaggio: `${cosa} ${mm(valore)}: al limite, il minimo è ${mm(soglia)}.`,
+    ...base,
+  });
 }
 
 /**
@@ -99,7 +96,7 @@ export const puntiDiFacce = (facce: Iterable<Smlib.Face>): Punto[] =>
   [...facce].map((faccia) => faccia.interiorPoint().toArray());
 
 /** Marcatori di facce per pezzo (cavità, fianchi del testo…), tenuti fuori dalla configurazione del kernel. */
-const marcatori = new WeakMap<object, Record<string, Punto[]>>();
+const marcatori = new WeakMap<WeakKey, Record<string, Punto[]>>();
 
 /**
  * Associa a una forma i punti che individuano un gruppo di sue facce.
@@ -107,7 +104,7 @@ const marcatori = new WeakMap<object, Record<string, Punto[]>>();
  * @param nome - Nome del gruppo (`cavita`).
  * @param punti - Punti sulle facce.
  */
-export function marcaFacce(forma: object, nome: string, punti: readonly Punto[]): void {
+export function marcaFacce(forma: WeakKey, nome: string, punti: readonly Punto[]): void {
   const esistenti = marcatori.get(forma) ?? {};
   marcatori.set(forma, { ...esistenti, [nome]: [...punti] });
 }
@@ -118,7 +115,7 @@ export function marcaFacce(forma: object, nome: string, punti: readonly Punto[])
  * @param nome - Nome del gruppo.
  * @returns I punti, o undefined se il gruppo non c'è.
  */
-export const puntiMarcati = (forma: object, nome: string): Punto[] | undefined => marcatori.get(forma)?.[nome];
+export const puntiMarcati = (forma: WeakKey, nome: string): Punto[] | undefined => marcatori.get(forma)?.[nome];
 
 /**
  * Copia i marcatori di una forma su un'altra trasformando i punti (specchio, traslazione).
@@ -126,10 +123,15 @@ export const puntiMarcati = (forma: object, nome: string): Punto[] | undefined =
  * @param a - Forma trasformata.
  * @param trasforma - Trasformazione dei punti.
  */
-export function trasportaMarcatori(da: object, a: object, trasforma: (punto: Punto) => Punto): void {
+export function trasportaMarcatori(da: WeakKey, a: WeakKey, trasforma: (punto: Punto) => Punto): void {
   const origine = marcatori.get(da);
   if (origine) {
-    marcatori.set(a, Object.fromEntries(Object.entries(origine).map(([nome, punti]) => [nome, punti.map(trasforma)])));
+    marcatori.set(
+      a,
+      Object.fromEntries(
+        Object.entries(origine).map(([nome, punti]) => [nome, punti.map((punto) => trasforma(punto))]),
+      ),
+    );
   }
 }
 
@@ -213,14 +215,25 @@ const raggruppa = (analisi: Iterable<Smlib.FaceDraft>, filtro: (draft: Smlib.Fac
       continue;
     }
     misura.minimo = Math.min(misura.minimo, draft.minAngle);
-    if (draft.kind === 'positive') {
-      misura.positive.push(draft.face);
-    } else if (draft.kind === 'insufficient') {
-      misura.insufficienti.push(draft.face);
-    } else if (draft.kind === 'vertical') {
-      misura.verticali.push(draft.face);
-    } else {
-      misura.sottosquadri.push(draft.face);
+    switch (draft.kind) {
+      case 'positive': {
+        misura.positive.push(draft.face);
+
+        break;
+      }
+      case 'insufficient': {
+        misura.insufficienti.push(draft.face);
+
+        break;
+      }
+      case 'vertical': {
+        misura.verticali.push(draft.face);
+
+        break;
+      }
+      default: {
+        misura.sottosquadri.push(draft.face);
+      }
     }
   }
   return misura;
@@ -229,17 +242,15 @@ const raggruppa = (analisi: Iterable<Smlib.FaceDraft>, filtro: (draft: Smlib.Fac
 /**
  * Sformo rispetto a una direzione di estrazione (wrapper di `draftAnalysis`), anche solo su alcune facce.
  * @param forma - Solido.
- * @param direzione - Direzione in cui lo stampo si stacca dal pezzo.
- * @param minimo - Sformo minimo (gradi).
- * @param facce - Facce da considerare (default tutte).
+ * @param opzioni - Direzione in cui lo stampo si stacca dal pezzo, sformo minimo (gradi), facce da considerare
+ *   (default tutte).
  * @returns Facce per gruppo e angolo minimo.
  */
 export function sformo(
   forma: Smlib.Part,
-  direzione: Punto,
-  minimo: number,
-  facce?: readonly Smlib.Face[],
+  opzioni: { direzione: Punto; minimo: number; facce?: readonly Smlib.Face[] },
 ): MisuraSformo {
+  const { direzione, minimo, facce } = opzioni;
   return raggruppa(forma.draftAnalysis(direzione, { minAngle: minimo }), (draft) => nellInsieme(draft.face, facce));
 }
 
@@ -248,24 +259,21 @@ export function sformo(
  * si estraggono verso +Z, quelle sotto verso −Z, quelle sul piano (la divisione) non contano; una faccia che
  * attraversa il piano conta col peggiore dei due versi.
  * @param forma - Solido.
- * @param zPiano - Quota del piano di divisione.
- * @param minimo - Sformo minimo (gradi).
- * @param facce - Facce da considerare (default tutte).
+ * @param opzioni - Quota del piano di divisione, sformo minimo (gradi), facce da considerare (default tutte).
  * @returns Facce per gruppo e angolo minimo.
  */
 export function sformoDuePiani(
   forma: Smlib.Part,
-  zPiano: number,
-  minimo: number,
-  facce?: readonly Smlib.Face[],
+  opzioni: { piano: number; minimo: number; facce?: readonly Smlib.Face[] },
 ): MisuraSformo {
+  const { piano: zPiano, minimo, facce } = opzioni;
   const tolleranza = 1e-4;
   const su = [...forma.draftAnalysis([0, 0, 1], { minAngle: minimo })];
   const giu = [...forma.draftAnalysis([0, 0, -1], { minAngle: minimo })];
   const scelte: Smlib.FaceDraft[] = [];
   for (const [indice, draftSu] of su.entries()) {
     const draftGiu = giu[indice]?.face.equals(draftSu.face)
-      ? giu[indice]!
+      ? giu[indice]
       : (giu.find((candidato) => candidato.face.equals(draftSu.face)) ?? draftSu);
     const { min, max } = draftSu.face.bbox();
     const sopra = min.z >= zPiano - tolleranza;
@@ -287,33 +295,33 @@ export function sformoDuePiani(
 /**
  * Esiti di sformo e sottosquadro da una misura: sottosquadri = blocco, insufficienti e verticali = avviso.
  * @param misura - Misura dello sformo.
- * @param soglia - Sformo minimo (gradi).
- * @param pezzo - Nome del pezzo.
- * @param dove - Descrizione delle facce, per il messaggio.
+ * @param contesto - Sformo minimo (gradi), nome del pezzo, descrizione delle facce per il messaggio.
  * @returns Esiti `SFORMO` e `SOTTOSQUADRO`.
  */
-export function esitiSformo(misura: MisuraSformo, soglia: number, pezzo: string, dove: string): Esito[] {
+export function esitiSformo(misura: MisuraSformo, contesto: { soglia: number; pezzo: string; dove: string }): Esito[] {
+  const { soglia, pezzo, dove } = contesto;
   const esiti: Esito[] = [];
   if (misura.sottosquadri.length > 0) {
     esiti.push(
-      esito(
-        'blocco',
-        'SOTTOSQUADRO',
-        `${dove}: ${misura.sottosquadri.length} facce in sottosquadro: serve un carrello o un altro piano di divisione.`,
-        { pezzo, valore: misura.minimo, soglia },
-      ),
+      esito('blocco', 'SOTTOSQUADRO', {
+        messaggio: `${dove}: ${misura.sottosquadri.length} facce in sottosquadro: serve un carrello o un altro piano di divisione.`,
+        pezzo,
+        valore: misura.minimo,
+        soglia,
+      }),
     );
   }
   const scarse = misura.insufficienti.length + misura.verticali.length;
   esiti.push(
     scarse > 0
-      ? esito(
-          'avviso',
-          'SFORMO',
-          `${dove}: ${scarse} facce con sformo sotto ${soglia}° (${misura.verticali.length} a 0°).`,
-          { pezzo, valore: Math.max(0, misura.minimo), soglia },
-        )
-      : esito('ok', 'SFORMO', `${dove}: sformo almeno ${soglia}° su tutte le facce.`, {
+      ? esito('avviso', 'SFORMO', {
+          messaggio: `${dove}: ${scarse} facce con sformo sotto ${soglia}° (${misura.verticali.length} a 0°).`,
+          pezzo,
+          valore: Math.max(0, misura.minimo),
+          soglia,
+        })
+      : esito('ok', 'SFORMO', {
+          messaggio: `${dove}: sformo almeno ${soglia}° su tutte le facce.`,
           pezzo,
           valore: misura.minimo,
           soglia,
@@ -335,8 +343,9 @@ export function esitiPezzi(lib: Lib, pezzi: readonly PezzoFamiglia[]): Esito[] {
     const chiuso = solidoChiuso(lib, pezzo.shape);
     esiti.push(
       chiuso
-        ? esito('ok', 'SOLIDO_CHIUSO', `${pezzo.name}: solido chiuso in un pezzo.`, { pezzo: pezzo.name })
-        : esito('blocco', 'SOLIDO_CHIUSO', `${pezzo.name}: il solido non è chiuso o è in più pezzi.`, {
+        ? esito('ok', 'SOLIDO_CHIUSO', { messaggio: `${pezzo.name}: solido chiuso in un pezzo.`, pezzo: pezzo.name })
+        : esito('blocco', 'SOLIDO_CHIUSO', {
+            messaggio: `${pezzo.name}: il solido non è chiuso o è in più pezzi.`,
             pezzo: pezzo.name,
           }),
     );
@@ -344,7 +353,8 @@ export function esitiPezzi(lib: Lib, pezzi: readonly PezzoFamiglia[]): Esito[] {
       const grammi = pesoGrammi(pezzo.shape, pezzo.density);
       totale += grammi;
       esiti.push(
-        esito('info', 'PESO', `${pezzo.name}: ${grammi.toLocaleString('it-IT', { maximumFractionDigits: 2 })} g.`, {
+        esito('info', 'PESO', {
+          messaggio: `${pezzo.name}: ${grammi.toLocaleString('it-IT', { maximumFractionDigits: 2 })} g.`,
           pezzo: pezzo.name,
           valore: grammi,
         }),
@@ -353,7 +363,8 @@ export function esitiPezzi(lib: Lib, pezzi: readonly PezzoFamiglia[]): Esito[] {
   }
   if (pezzi.length > 1) {
     esiti.push(
-      esito('info', 'PESO', `Totale: ${totale.toLocaleString('it-IT', { maximumFractionDigits: 2 })} g.`, {
+      esito('info', 'PESO', {
+        messaggio: `Totale: ${totale.toLocaleString('it-IT', { maximumFractionDigits: 2 })} g.`,
         valore: totale,
       }),
     );
@@ -362,7 +373,7 @@ export function esitiPezzi(lib: Lib, pezzi: readonly PezzoFamiglia[]): Esito[] {
 }
 
 /** Un corpo riletto dallo STEP. */
-export type CorpoStep = { nome: string | null; volume: number; valido: boolean };
+export type CorpoStep = { nome: string | undefined; volume: number; valido: boolean };
 
 /**
  * Scrive i pezzi in STEP (un prodotto per pezzo, col suo nome) e li rilegge: stesso numero di corpi, volumi entro
@@ -371,6 +382,7 @@ export type CorpoStep = { nome: string | null; volume: number; valido: boolean }
  * @param pezzi - Pezzi della famiglia.
  * @param nome - Nome dell'assieme.
  * @returns Il testo STEP, i corpi riletti e l'esito `STEP_RILETTO`.
+ * @public
  */
 export function rileggiStep(
   lib: Lib,
@@ -380,9 +392,9 @@ export function rileggiStep(
   const corpi = pezzi.flatMap((pezzo) => (pezzo.shape instanceof lib.Part ? [pezzo.shape.named(pezzo.name)] : []));
   const step = lib.toStep(corpi, { assembly: true, name: nome });
   const letti = lib.fromStep(step);
-  const elenco = (letti instanceof lib.Shape ? [letti] : [...letti]) as (Smlib.Part | Smlib.Shell)[];
+  const elenco = (letti instanceof lib.Shape ? [letti] : [...letti]) as Array<Smlib.Part | Smlib.Shell>;
   const riletti: CorpoStep[] = elenco.map((corpo) => ({
-    nome: corpo.name,
+    nome: corpo.name ?? undefined,
     volume: corpo instanceof lib.Part ? corpo.volume : 0,
     valido: corpo instanceof lib.Part && corpo.isValid(),
   }));

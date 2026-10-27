@@ -22,13 +22,13 @@ beforeAll(async () => {
 });
 
 const casi = Object.values(famiglie).flatMap((famiglia: FamigliaQualsiasi) =>
-  famiglia.varianti.map((variante, indice) => [famiglia.id, variante, famiglia, indice === 0] as const),
+  famiglia.varianti.map((variante, indice) => ({ id: famiglia.id, variante, famiglia, predefinita: indice === 0 })),
 );
 
 describe('tempo di ricostruzione delle famiglie', () => {
   const tempi: string[] = [];
 
-  it.each(casi)('should rebuild %s (%s) within the budget', (_id, variante, famiglia, predefinita) => {
+  it.each(casi)('should rebuild $id ($variante) within the budget', ({ variante, famiglia, predefinita }) => {
     const p: unknown = famiglia.normalizza(famiglia.predefiniti(variante), { variante });
     famiglia.costruisci(lib, p, { variante });
     const misure: number[] = [];
@@ -46,6 +46,8 @@ describe('tempo di ricostruzione delle famiglie', () => {
     // semplice è fuori budget (≈ 0,9 s la coppia: tagli con due superfici e raccordi su un fianco B-spline): tetto 5×.
     const fuoriBudget = famiglia.id === 'fondo_semplice';
     const stretta = !fuoriBudget && (predefinita || variante === 'ovale' || variante === 'a_d');
+    // Taratura subito prima del caso: la contesa con gli altri file di test cambia durante la suite.
+    soglia = budgetTarato(lib);
     expect(migliore).toBeLessThan(fuoriBudget ? soglia * 5 : stretta ? soglia : soglia * 1.5);
   });
 

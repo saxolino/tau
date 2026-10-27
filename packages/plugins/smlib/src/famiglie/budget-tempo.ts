@@ -2,10 +2,10 @@
 import type * as Smlib from '@classcad/smlibwasm';
 
 /** Budget di ricostruzione di una famiglia (T-D1-12), in millisecondi su un M-series libero. */
-export const BUDGET_RICOSTRUZIONE = 300;
+export const budgetRicostruzione = 300;
 
 /** Tempo di riferimento della prova di taratura su un M-series libero (ms). */
-const RIFERIMENTO = 48;
+const riferimentoTaratura = 48;
 
 /**
  * Il budget di ricostruzione tarato sulla macchina di adesso: una prova fissa (raccordo, foro, rilettura SMB di un
@@ -26,5 +26,5 @@ export function budgetTarato(lib: typeof Smlib): number {
     prova();
     migliore = Math.min(migliore, performance.now() - inizio);
   }
-  return BUDGET_RICOSTRUZIONE * (process.env['CI'] ? 2 : 1) * Math.max(1, migliore / RIFERIMENTO);
+  return budgetRicostruzione * (process.env['CI'] ? 2 : 1) * Math.max(1, migliore / riferimentoTaratura);
 }

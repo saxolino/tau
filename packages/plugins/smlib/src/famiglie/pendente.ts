@@ -23,6 +23,10 @@ import { esitiPezzi, esito, esitoMinimo, normalizzaForma } from '#famiglie/verif
 
 type Lib = typeof Smlib;
 
+/**
+ * Varianti della famiglia pendente.
+ * @public
+ */
 export type VariantePendente = 'disco' | 'cuore' | 'goccia' | 'placchetta';
 
 const leghe = [
@@ -35,6 +39,10 @@ const leghe = [
   'ottone',
 ] as const;
 
+/**
+ * Parametri della famiglia pendente, annidati per pezzo.
+ * @public
+ */
 export type ParametriPendente = {
   corpo: { forma: VariantePendente; lunghezza: number; larghezza: number; spessore: number; bombatura: number };
   anellino: { diametroInterno: number; filo: number; orientamento: 'in_piano' | 'di_traverso' };
@@ -146,8 +154,8 @@ const predefiniti = (variante?: string): ParametriPendente =>
     ...(variante === 'goccia' ? { 'corpo.larghezza': 10 } : {}),
   });
 
-const vincoli = (p: ParametriPendente): { chiave: string; messaggio: string }[] => {
-  const violati: { chiave: string; messaggio: string }[] = [];
+const vincoli = (p: ParametriPendente): Array<{ chiave: string; messaggio: string }> => {
+  const violati: Array<{ chiave: string; messaggio: string }> = [];
   if (p.occhiello.foro > 0 && p.occhiello.foro < 1) {
     violati.push({ chiave: 'occhiello.foro', messaggio: 'Il foro va da 1 a 3 mm (0 = nessuno).' });
   }
@@ -233,7 +241,9 @@ function costruisciConEsiti(lib: Lib, p: ParametriPendente): RisultatoCostruzion
     }
     const forma = normalizzaForma(lib, corpo);
     if (!forma.isValid()) {
-      esiti.push(esito('blocco', 'SOLIDO_NON_VALIDO', 'Il pendente non è un solido valido.', { pezzo: 'Pendente' }));
+      esiti.push(
+        esito('blocco', 'SOLIDO_NON_VALIDO', { messaggio: 'Il pendente non è un solido valido.', pezzo: 'Pendente' }),
+      );
     }
     return {
       pezzi: [{ name: 'Pendente', shape: forma, ruolo: 'metallo', materiale: p.lega, ...aspettoMateriale(p.lega) }],
@@ -241,7 +251,8 @@ function costruisciConEsiti(lib: Lib, p: ParametriPendente): RisultatoCostruzion
     };
   } catch (error) {
     esiti.push(
-      esito('blocco', 'SOLIDO_NON_VALIDO', `Pendente non costruito: ${(error as Error).message}`, {
+      esito('blocco', 'SOLIDO_NON_VALIDO', {
+        messaggio: `Pendente non costruito: ${(error as Error).message}`,
         pezzo: 'Pendente',
       }),
     );
@@ -249,6 +260,7 @@ function costruisciConEsiti(lib: Lib, p: ParametriPendente): RisultatoCostruzion
   }
 }
 
+// oxlint-disable-next-line eslint/max-params -- firma del contratto delle famiglie (§1.0): lib, pezzi, parametri, processo, opzioni.
 function verifiche(
   lib: Lib,
   pezzi: readonly PezzoFamiglia[],
@@ -257,19 +269,27 @@ function verifiche(
 ): Esito[] {
   const esiti: Esito[] = [];
   esiti.push(
-    esitoMinimo(
-      'PARETE_MIN',
-      p.corpo.spessore,
-      sogliaParete(processo, p.lega),
-      `Spessore al bordo (${materiale(p.lega).nome})`,
-      { pezzo: 'Pendente' },
-    ),
+    esitoMinimo('PARETE_MIN', {
+      valore: p.corpo.spessore,
+      soglia: sogliaParete(processo, p.lega),
+      cosa: `Spessore al bordo (${materiale(p.lega).nome})`,
+      pezzo: 'Pendente',
+    }),
   );
-  esiti.push(esitoMinimo('FILO_ANELLINO', p.anellino.filo, 0.6, 'Filo dell’anellino', { pezzo: 'Pendente' }));
+  esiti.push(
+    esitoMinimo('FILO_ANELLINO', {
+      valore: p.anellino.filo,
+      soglia: 0.6,
+      cosa: 'Filo dell’anellino',
+      pezzo: 'Pendente',
+    }),
+  );
   if (p.occhiello.foro > 0) {
-    esiti.push(esitoMinimo('PONTE_OCCHIELLO', 1.2, 0.8, 'Ponte sopra il foro', { pezzo: 'Pendente' }));
+    esiti.push(
+      esitoMinimo('PONTE_OCCHIELLO', { valore: 1.2, soglia: 0.8, cosa: 'Ponte sopra il foro', pezzo: 'Pendente' }),
+    );
   }
-  const ritiro = soglieProcessi[processo].ritiro;
+  const { ritiro } = soglieProcessi[processo];
   if (ritiro) {
     esiti.push(esito('info', 'RITIRO', `Ritiro della cera ${ritiro[0]}–${ritiro[1]} %: dichiarato, non applicato.`));
   }
@@ -277,6 +297,10 @@ function verifiche(
   return esiti;
 }
 
+/**
+ * La famiglia pendente.
+ * @public
+ */
 export const pendente: Famiglia<ParametriPendente> = {
   id: 'pendente',
   versione: 1,
@@ -293,5 +317,9 @@ export const pendente: Famiglia<ParametriPendente> = {
   silhouette: { assi: ['z'], simmetrie: ['yz'] },
   materialiAmmessi: [...leghe],
   emettiMain: (p, ipotesi, opzioni) =>
-    emettiMainFamiglia('pendente', 1, varianteDi(opzioni ?? { variante: p.corpo.forma }), p, ipotesi),
+    emettiMainFamiglia(
+      { id: 'pendente', versione: 1, variante: varianteDi(opzioni ?? { variante: p.corpo.forma }) },
+      p,
+      ipotesi,
+    ),
 };

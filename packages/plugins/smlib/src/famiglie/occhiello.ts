@@ -13,6 +13,10 @@ import { esitiPezzi, esito, mm, normalizzaForma } from '#famiglie/verifiche-comu
 
 type Lib = typeof Smlib;
 
+/**
+ * Parametri della famiglia occhiello, annidati per pezzo.
+ * @public
+ */
 export type ParametriOcchiello = {
   foro: { diametro: number };
   flangia: { diametro: number; spessore: number; raggio: number };
@@ -107,8 +111,8 @@ const parametri: readonly DefinizioneParametro[] = [
 
 const predefiniti = (): ParametriOcchiello => predefinitiDaParametri<ParametriOcchiello>(parametri);
 
-const vincoli = (p: ParametriOcchiello): { chiave: string; messaggio: string }[] => {
-  const violati: { chiave: string; messaggio: string }[] = [];
+const vincoli = (p: ParametriOcchiello): Array<{ chiave: string; messaggio: string }> => {
+  const violati: Array<{ chiave: string; messaggio: string }> = [];
   if (p.flangia.diametro < p.foro.diametro + 3 || p.flangia.diametro > p.foro.diametro + 8) {
     violati.push({ chiave: 'flangia.diametro', messaggio: 'La flangia va da foro + 3 a foro + 8 mm.' });
   }
@@ -129,6 +133,7 @@ const normalizza = (grezzi: unknown): ParametriOcchiello => {
  * Volume teorico senza raccordi: gambo (corona fra foro e foro + parete) e flangia (corona fino al diametro).
  * @param p - Parametri.
  * @returns mm³.
+ * @public
  */
 export function volumeOcchiello(p: ParametriOcchiello): number {
   const ri = p.foro.diametro / 2;
@@ -152,7 +157,9 @@ function costruisciConEsiti(lib: Lib, p: ParametriOcchiello): RisultatoCostruzio
     try {
       corpo = corpo.fillet(bordo, Math.min(p.flangia.raggio, 0.45 * s));
     } catch {
-      esiti.push(esito('avviso', 'RACCORDO_RIDOTTO', 'Bordo della flangia senza raccordo.', { pezzo: 'Occhiello' }));
+      esiti.push(
+        esito('avviso', 'RACCORDO_RIDOTTO', { messaggio: 'Bordo della flangia senza raccordo.', pezzo: 'Occhiello' }),
+      );
     }
     const { materiale } = p.costruzione;
     pezzi.push({
@@ -177,7 +184,8 @@ function costruisciConEsiti(lib: Lib, p: ParametriOcchiello): RisultatoCostruzio
     }
   } catch (error) {
     esiti.push(
-      esito('blocco', 'SOLIDO_NON_VALIDO', `Occhiello non costruito: ${(error as Error).message}`, {
+      esito('blocco', 'SOLIDO_NON_VALIDO', {
+        messaggio: `Occhiello non costruito: ${(error as Error).message}`,
         pezzo: 'Occhiello',
       }),
     );
@@ -185,16 +193,19 @@ function costruisciConEsiti(lib: Lib, p: ParametriOcchiello): RisultatoCostruzio
   return { pezzi, esiti };
 }
 
+// oxlint-disable-next-line eslint/max-params -- firma del contratto delle famiglie (§1.0): lib, pezzi, parametri, processo, opzioni.
 function verifiche(lib: Lib, pezzi: readonly PezzoFamiglia[], p: ParametriOcchiello): Esito[] {
   const esiti: Esito[] = [];
   const parete = p.parete.spessore;
   esiti.push(
     parete >= 0.3 && parete <= 0.8
-      ? esito('ok', 'PARETE_MIN', `Parete di ${mm(parete)} per l’imbutitura (0,3–0,8).`, {
+      ? esito('ok', 'PARETE_MIN', {
+          messaggio: `Parete di ${mm(parete)} per l’imbutitura (0,3–0,8).`,
           pezzo: 'Occhiello',
           valore: parete,
         })
-      : esito('avviso', 'PARETE_MIN', `Parete di ${mm(parete)} fuori da 0,3–0,8 mm.`, {
+      : esito('avviso', 'PARETE_MIN', {
+          messaggio: `Parete di ${mm(parete)} fuori da 0,3–0,8 mm.`,
           pezzo: 'Occhiello',
           valore: parete,
         }),
@@ -202,19 +213,22 @@ function verifiche(lib: Lib, pezzi: readonly PezzoFamiglia[], p: ParametriOcchie
   const rapporto = p.flangia.diametro / p.foro.diametro;
   esiti.push(
     rapporto >= 1.4 && rapporto <= 2.5
-      ? esito('ok', 'FLANGIA_FORO', `Flangia / foro = ${rapporto.toFixed(2)}.`, { valore: rapporto })
-      : esito('avviso', 'FLANGIA_FORO', `Flangia / foro = ${rapporto.toFixed(2)}: fuori da 1,4–2,5.`, {
+      ? esito('ok', 'FLANGIA_FORO', { messaggio: `Flangia / foro = ${rapporto.toFixed(2)}.`, valore: rapporto })
+      : esito('avviso', 'FLANGIA_FORO', {
+          messaggio: `Flangia / foro = ${rapporto.toFixed(2)}: fuori da 1,4–2,5.`,
           valore: rapporto,
         }),
   );
   const massima = 6 * parete + 2;
   esiti.push(
     p.gambo.altezza <= massima
-      ? esito('ok', 'IMBUTITURA', `Gambo di ${mm(p.gambo.altezza)}: imbutitura normale.`, {
+      ? esito('ok', 'IMBUTITURA', {
+          messaggio: `Gambo di ${mm(p.gambo.altezza)}: imbutitura normale.`,
           valore: p.gambo.altezza,
           soglia: massima,
         })
-      : esito('avviso', 'IMBUTITURA', `Gambo di ${mm(p.gambo.altezza)}: imbutitura profonda (oltre ${mm(massima)}).`, {
+      : esito('avviso', 'IMBUTITURA', {
+          messaggio: `Gambo di ${mm(p.gambo.altezza)}: imbutitura profonda (oltre ${mm(massima)}).`,
           valore: p.gambo.altezza,
           soglia: massima,
         }),
@@ -223,6 +237,10 @@ function verifiche(lib: Lib, pezzi: readonly PezzoFamiglia[], p: ParametriOcchie
   return esiti;
 }
 
+/**
+ * La famiglia occhiello.
+ * @public
+ */
 export const occhiello: Famiglia<ParametriOcchiello> = {
   id: 'occhiello',
   versione: 1,
@@ -238,5 +256,5 @@ export const occhiello: Famiglia<ParametriOcchiello> = {
   verifiche,
   silhouette: { assi: ['z'], simmetrie: ['yz', 'xz'] },
   materialiAmmessi: ['ottone', 'alluminio'],
-  emettiMain: (p, ipotesi) => emettiMainFamiglia('occhiello', 1, 'standard', p, ipotesi),
+  emettiMain: (p, ipotesi) => emettiMainFamiglia({ id: 'occhiello', versione: 1, variante: 'standard' }, p, ipotesi),
 };

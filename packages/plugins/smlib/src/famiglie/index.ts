@@ -15,7 +15,7 @@ export type { FamigliaLegata } from '#famiglie/modulo.js';
 export { fibbia, presetPilotaFibbia } from '#famiglie/fibbia.js';
 export type { ParametriFibbia, VarianteFibbia } from '#famiglie/fibbia.js';
 export { tacco } from '#famiglie/tacco.js';
-export { placca, TRATTO_LATO } from '#famiglie/placca.js';
+export { placca, trattoLato } from '#famiglie/placca.js';
 export type { ParametriPlacca, VariantePlacca } from '#famiglie/placca.js';
 export { occhiello, volumeOcchiello } from '#famiglie/occhiello.js';
 export type { ParametriOcchiello } from '#famiglie/occhiello.js';

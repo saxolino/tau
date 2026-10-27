@@ -41,7 +41,7 @@ const blocchi = (valutazione: Valutazione) => valutazione.esiti.filter(({ livell
 describe('famiglia tacco', () => {
   it('should build an 85 mm stiletto with a 10 x 10 top lift and a steel shank', () => {
     const p = tacco.normalizza({ costruzione: { lato: 'dx' } }, { variante: 'stiletto' });
-    const valutazione = valutaFamiglia(lib, tacco, p, { variante: 'stiletto' });
+    const valutazione = valutaFamiglia(lib, tacco, { parametri: p, variante: 'stiletto' });
     expect(valutazione.pezzi.map(({ name }) => name)).toEqual(['Tacco DX', 'Tappo DX', 'Anima DX']);
     const corpo = pezzo(valutazione, 'Tacco DX');
     const tappo = pezzo(valutazione, 'Tappo DX');
@@ -71,7 +71,7 @@ describe('famiglia tacco', () => {
 
   it('should hollow the stiletto from the seat with 2.2 mm walls drafted for the core', () => {
     const p = tacco.normalizza({ costruzione: { lato: 'dx' } });
-    const valutazione = valutaFamiglia(lib, tacco, p);
+    const valutazione = valutaFamiglia(lib, tacco, { parametri: p });
     const corpo = pezzo(valutazione, 'Tacco DX');
     const punti = puntiMarcati(corpo, 'cavita');
     expect(punti?.length).toBeGreaterThan(2);
@@ -80,7 +80,7 @@ describe('famiglia tacco', () => {
     // 2.2 mm at the stations; between them the inner and outer lofts part by up to 6 %, still above the 1.8 mm of ABS.
     expect(parete.min).toBeGreaterThan(2.2 * 0.94);
     expect(parete.min).toBeLessThan(2.6);
-    const estrazione = sformo(corpo, [0, 0, 1], 1, facce);
+    const estrazione = sformo(corpo, { direzione: [0, 0, 1], minimo: 1, facce });
     expect(estrazione.sottosquadri).toEqual([]);
     expect(estrazione.insufficienti).toEqual([]);
     expect(estrazione.minimo).toBeGreaterThanOrEqual(1.5 - 1e-3);
@@ -88,7 +88,9 @@ describe('famiglia tacco', () => {
     expect(valutazione.esiti.find(({ codice }) => codice === 'PARETE_MIN')?.livello).toBe('ok');
     // The hollow heel is lighter than the solid one of the same outline.
     const pieno = pezzo(
-      valutaFamiglia(lib, tacco, { ...p, costruzione: { ...p.costruzione, processo: 'stampa_3d_resina' } }),
+      valutaFamiglia(lib, tacco, {
+        parametri: { ...p, costruzione: { ...p.costruzione, processo: 'stampa_3d_resina' } },
+      }),
       'Tacco DX',
     );
     expect(corpo.volume).toBeLessThan(pieno.volume * 0.85);
@@ -96,7 +98,7 @@ describe('famiglia tacco', () => {
 
   it('should build a 60 mm block heel without shank', () => {
     const p = tacco.normalizza({ costruzione: { lato: 'dx' } }, { variante: 'blocco' });
-    const valutazione = valutaFamiglia(lib, tacco, p, { variante: 'blocco' });
+    const valutazione = valutaFamiglia(lib, tacco, { parametri: p, variante: 'blocco' });
     expect(valutazione.pezzi.map(({ name }) => name)).toEqual(['Tacco DX', 'Tappo DX']);
     const corpo = pezzo(valutazione, 'Tacco DX');
     expect(corpo.isValid()).toBe(true);
@@ -115,7 +117,7 @@ describe('famiglia tacco', () => {
       },
       { variante: 'rocchetto' },
     );
-    const corpo = pezzo(valutaFamiglia(lib, tacco, p, { variante: 'rocchetto' }), 'Tacco DX');
+    const corpo = pezzo(valutaFamiglia(lib, tacco, { parametri: p, variante: 'rocchetto' }), 'Tacco DX');
     const meta = p.tappo.altezza + p.vita.quota * (p.tacco.altezza - p.tappo.altezza);
     const vita = corpo.section(lib.Plane.XY.offset(meta)).area;
     const seduta = (Math.PI / 4) * p.seduta.lunghezza * p.seduta.larghezza;
@@ -126,7 +128,7 @@ describe('famiglia tacco', () => {
     'should build the %s variant as valid solids',
     (variante) => {
       const p = tacco.normalizza({ costruzione: { lato: 'dx' } }, { variante });
-      const valutazione = valutaFamiglia(lib, tacco, p, { variante });
+      const valutazione = valutaFamiglia(lib, tacco, { parametri: p, variante });
       for (const { shape } of valutazione.pezzi) {
         expect(shape instanceof lib.Part && shape.isValid() && shape.solids().length === 1).toBe(true);
       }
@@ -138,7 +140,7 @@ describe('famiglia tacco', () => {
   it('should build rectangular and shield seats', () => {
     for (const forma of ['rettangolo', 'scudo'] as const) {
       const p = tacco.normalizza({ seduta: { forma }, costruzione: { lato: 'dx' } });
-      const valutazione = valutaFamiglia(lib, tacco, p);
+      const valutazione = valutaFamiglia(lib, tacco, { parametri: p });
       const corpo = pezzo(valutazione, 'Tacco DX');
       expect(corpo.isValid()).toBe(true);
       expect(corpo.bbox().size.x).toBeCloseTo(48, 2);
@@ -147,7 +149,7 @@ describe('famiglia tacco', () => {
   });
 
   it('should make the left heel the mirror of the right one, side by side', () => {
-    const valutazione = valutaFamiglia(lib, tacco, tacco.predefiniti());
+    const valutazione = valutaFamiglia(lib, tacco, { parametri: tacco.predefiniti() });
     expect(valutazione.pezzi.map(({ name }) => name)).toEqual([
       'Tacco DX',
       'Tappo DX',
