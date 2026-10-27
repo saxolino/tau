@@ -14,7 +14,7 @@ import { Eyebrow } from '#components/ui/eyebrow.js';
 import { formatNumber, useTranslation } from '#i18n/translate.js';
 import type { PlainMessageKey } from '#i18n/translate.js';
 import type { Language } from '#i18n/language.js';
-import { readablePieceName } from '#lib/piece-measures.js';
+import { readablePieceName, visibleGroupName } from '#lib/piece-measures.js';
 
 /**
  * The recognition card (SinopiaCAD D2 §2.7): «Riconosciuto: Fibbia · rettangolare», how it was seen (view, scale,
@@ -26,7 +26,9 @@ import { readablePieceName } from '#lib/piece-measures.js';
 type Valore = number | string | boolean;
 
 /** What the card shows of the D3 silhouette check. */
-export type VerificaCard = Readonly<{ stato: 'non_disponibile' }> | Readonly<{ stato: 'fatta'; iou: number }>;
+export type VerificaCard =
+  | Readonly<{ stato: 'non_disponibile' }>
+  | Readonly<{ stato: 'fatta'; iou: number; suggerimenti?: readonly string[] }>;
 
 const unitaVisibile: Record<string, string> = { mm: 'mm', deg: '°' };
 
@@ -41,8 +43,8 @@ export function etichettaParametro(chiave: string, language: Language): string {
   const [gruppo, ...resto] = chiave.split('.');
   const campo = resto.join(' ');
   return campo
-    ? `${readablePieceName(gruppo ?? '', language)} · ${readablePieceName(campo, language).toLocaleLowerCase(language)}`
-    : readablePieceName(gruppo ?? chiave, language);
+    ? `${readablePieceName(visibleGroupName(gruppo ?? ''), language)} · ${readablePieceName(campo, language).toLocaleLowerCase(language)}`
+    : readablePieceName(visibleGroupName(gruppo ?? chiave), language);
 }
 
 const testoValore = (valore: Valore, unita: string | undefined, language: Language): string => {
@@ -459,6 +461,11 @@ export function RecognitionCard({
                 ? t('riconoscimento.oneAssumption')
                 : t('riconoscimento.openAssumptions', { count: aperte }))}
         </p>
+        {verifica?.stato === 'fatta' && verifica.suggerimenti?.includes('foto_lato') ? (
+          <p className='mt-1 text-xs leading-4 text-muted-foreground' data-slot='recognition-suggestion'>
+            {t('riconoscimento.suggestSidePhoto')}
+          </p>
+        ) : null}
       </header>
       {/* The one open question comes first: it is what the designer can act on now. */}
       {domanda && onRisposta ? (

@@ -93,7 +93,14 @@ export function facceAiPunti(forma: Smlib.Part, punti: readonly Punto[], tollera
 
 /** Un punto interno di ogni faccia, per ritrovarle con `facceAiPunti`. */
 export const puntiDiFacce = (facce: Iterable<Smlib.Face>): Punto[] =>
-  [...facce].map((faccia) => faccia.interiorPoint().toArray());
+  [...facce].flatMap((faccia) => {
+    try {
+      return [faccia.interiorPoint().toArray()];
+    } catch {
+      // Una faccia degenere (sul tacco basso, dopo una booleana) non ha un punto interno: non si marca, il pezzo resta.
+      return [];
+    }
+  });
 
 /** Marcatori di facce per pezzo (cavità, fianchi del testo…), tenuti fuori dalla configurazione del kernel. */
 const marcatori = new WeakMap<WeakKey, Record<string, Punto[]>>();

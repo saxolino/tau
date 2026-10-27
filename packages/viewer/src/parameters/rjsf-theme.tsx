@@ -525,6 +525,15 @@ function ArrayFieldTemplate(
     }
   }, [formContext.searchTerm, shouldShowArray]);
 
+  // A host that shows this array its own way takes the whole field.
+  const hosted = formContext.presentationOptions?.arrayField?.(
+    arrayPath ?? [],
+    Array.isArray(props.formData) ? (props.formData as readonly unknown[]) : [],
+  );
+  if (hosted !== undefined) {
+    return hosted;
+  }
+
   // Don't render the array if it wouldn't be visible
   if (!shouldShowArray) {
     return null;

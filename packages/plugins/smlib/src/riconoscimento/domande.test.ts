@@ -114,4 +114,25 @@ describe('domande del riconoscimento', () => {
     expect(prossimaDomanda(incerta, tacco, { risposte: new Set() })?.tipo).toBe('famiglia');
     expect(prossimaDomanda(incerta, tacco, { risposte: new Set(), famigliaScelta: true })?.tipo).toBe('parametro');
   });
+
+  it('should always ask the ring size: a photo does not measure a finger', () => {
+    const anello = catalogo.find((famiglia) => famiglia.id === 'anello')!;
+    const scheda: SchedaRiconoscimento = {
+      ...schedaRiconoscimentoDiProva,
+      famiglia: { id: 'anello', confidenza: 0.95, alternative: [] },
+      variante: { id: 'chiuso', confidenza: 0.9 },
+      parametri: [{ chiave: 'taglia.valore', valore: 15, confidenza: 0.9, fonte: 'proporzione', motivo: 'dalla foto' }],
+      domande: [],
+    };
+    // Even sure of itself, the classifier cannot know it.
+    expect(domandeParametri(scheda, anello)[0]).toMatchObject({ chiave: 'taglia.valore', proposte: [14, 15, 16] });
+    // Not named at all: it starts from the default.
+    const senza = domandeParametri({ ...scheda, parametri: [] }, anello);
+    expect(senza[0]).toMatchObject({ chiave: 'taglia.valore', proposte: [13, 14, 15] });
+    expect(domandeParametri(scheda, anello, new Set(['taglia.valore']))).toStrictEqual([]);
+    expect(prossimaDomanda(scheda, anello, { risposte: new Set(), famigliaScelta: true })).toMatchObject({
+      tipo: 'parametro',
+      chiave: 'taglia.valore',
+    });
+  });
 });

@@ -89,7 +89,7 @@ const parametri: readonly DefinizioneParametro[] = [
     valori: [...varianti, 'contorno'],
     default: 'rettangolo',
     fonteDefault: 'mestiere',
-    descrizione: 'Forma della piastra',
+    descrizione: 'Forma della placca',
   },
   {
     chiave: 'piastra.contorno',
@@ -294,7 +294,7 @@ const vincoli = (p: ParametriPlacca): Array<{ chiave: string; messaggio: string 
     violati.push({ chiave: 'testo.profondita', messaggio: 'L’incisione supera il 60 % dello spessore.' });
   }
   if (p.bordo.larghezza * 2 >= Math.min(p.piastra.lunghezza, p.piastra.larghezza)) {
-    violati.push({ chiave: 'bordo.larghezza', messaggio: 'Il bordo chiude la piastra.' });
+    violati.push({ chiave: 'bordo.larghezza', messaggio: 'Il bordo chiude la placca.' });
   }
   return violati;
 };
@@ -365,7 +365,7 @@ function sagoma(lib: Lib, p: ParametriPlacca, esiti: Esito[] = []): Smlib.Sketch
     }
     esiti.push(
       esito('avviso', 'CONTORNO', {
-        messaggio: 'Contorno assente, con meno di 3 punti o che si autointerseca: piastra rettangolare.',
+        messaggio: 'Contorno assente, con meno di 3 punti o che si autointerseca: placca rettangolare.',
         pezzo: 'Placca',
       }),
     );
@@ -636,7 +636,7 @@ function verifiche(
     esitoMinimo('PARETE_MIN', {
       valore: parete,
       soglia: sogliaPiastra,
-      cosa: testo.modo === 'inciso' ? 'Spessore sotto l’incisione' : 'Spessore della piastra',
+      cosa: testo.modo === 'inciso' ? 'Spessore sotto l’incisione' : 'Spessore della placca',
       pezzo: 'Placca',
     }),
   );

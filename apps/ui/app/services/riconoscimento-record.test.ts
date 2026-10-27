@@ -25,6 +25,7 @@ describe('recognised piece project', () => {
     const { files, record, nome, piano } = progetto();
     expect(Object.keys(files).toSorted()).toStrictEqual(
       [
+        '.tau/workbench/entries.json',
         '.tau/workbench/riconoscimento.json',
         'main.ts',
         'riferimenti/fibbia.jpg',
@@ -38,6 +39,21 @@ describe('recognised piece project', () => {
       risposte: {},
     });
     expect(record.mainScritto).toBe(piano.main);
+    // The recognised brass (and the frame's wire in steel) reach the viewer as the material of each piece.
+    expect(JSON.parse(new TextDecoder().decode(files['.tau/workbench/entries.json']!.content))).toMatchObject({
+      version: 1,
+      entries: {
+        'main.ts': {
+          components: {
+            materials: [
+              { id: 'component:telaio', material: 'brass' },
+              { id: 'component:ardiglione', material: 'stainless-steel' },
+            ],
+          },
+        },
+      },
+    });
+    expect(piano.parametri).toMatchObject({ costruzione: { materiale: 'ottone' } });
     expect(nome).toBe('Fibbia del cinturino');
     expect(percorsoRiconoscimento).toBe('.tau/workbench/riconoscimento.json');
   });

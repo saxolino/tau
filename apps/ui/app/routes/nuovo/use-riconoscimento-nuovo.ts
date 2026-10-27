@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
-import { domandaFamiglia, mappaLibreria, mappaPartType, risolviFamiglia } from '@taucad/smlib/riconoscimento';
-import type { DomandaFamiglia } from '@taucad/smlib/riconoscimento';
+import {
+  catalogoFamiglie,
+  domandaFamiglia,
+  mappaLibreria,
+  mappaPartType,
+  risolviFamiglia,
+} from '@taucad/smlib/riconoscimento';
+import type { DomandaFamiglia, SchedaRiconoscimento } from '@taucad/smlib/riconoscimento';
 import { useProjectManager } from '#hooks/use-project-manager.js';
 import type { PlainMessageKey } from '#i18n/translate.js';
 import { sinopiaStarterKernelId } from '#lib/sinopia-engines.js';
@@ -9,7 +15,11 @@ import { homeProjectCreationLocation } from '#types/project-creation-location.ty
 import { projectUrl } from '#utils/project-url.utils.js';
 import { caricaProvaFibbia } from '#routes/nuovo/prova-fibbia.js';
 import { preparaImmaginiRiconoscimento, strumentiBrowser } from '#services/riconoscimento-immagini.js';
+import type { ImmaginiRiconoscimento } from '#services/riconoscimento-immagini.js';
+import { eseguiPipelineRiconoscimento } from '#services/riconoscimento-pipeline.js';
 import { progettoRiconosciuto } from '#services/riconoscimento-progetto.js';
+import type { RecordRiconoscimento } from '#services/riconoscimento-record.js';
+import { creaVerificatoreBrowser } from '#services/riconoscimento-verifica.js';
 import { caricaSchedaParte, ErroreParte } from '#services/sinopia-parts.js';
 import type { LetturaNuovo, ParteCaricata } from '#services/sinopia-parts.js';
 import { ErroreRiconoscimento, riconosciParte, riconoscimentoRegistrato } from '#services/sinopia-recognize.js';
@@ -17,7 +27,9 @@ import type { EsitoRiconoscimento } from '#services/sinopia-recognize.js';
 
 /**
  * The flow of «/cad/nuovo»: read the part from Sinopia, recognise it, ask the family when the recognition is unsure,
- * then build the piece and open it. Each step shows on the page; a failure says how to go on.
+ * check the piece against the mask (D3: the silhouette, the best of two rounds), then build it and open it. Each step
+ * shows on the page; a failure says how to go on. Stopping the check (Esc, «Salta la verifica», leaving the page) ends
+ * its worker; the piece is then built from the recognition alone, said so in its record.
  */
 
 /** The part as the page shows it: the sheet, and object URLs of the picture and the mask. */
@@ -28,7 +40,15 @@ export type FaseNuovo =
   | Readonly<{ fase: 'leggo' }>
   | Readonly<{ fase: 'riconosco'; parte: ParteVista }>
   | Readonly<{ fase: 'scegli_famiglia'; parte: ParteVista; esito: EsitoRiconoscimento; domanda: DomandaFamiglia }>
-  | Readonly<{ fase: 'costruisco'; parte: ParteVista; esito: EsitoRiconoscimento; famiglia?: string }>
+  | Readonly<{ fase: 'verifico'; parte: ParteVista; esito: EsitoRiconoscimento; famiglia?: string }>
+  | Readonly<{
+      fase: 'costruisco';
+      parte: ParteVista;
+      esito: EsitoRiconoscimento;
+      famiglia?: string;
+      /** The check's IoU, when it was made. */
+      iou?: number;
+    }>
   | Readonly<{ fase: 'fermo'; parte: ParteVista; esito?: EsitoRiconoscimento; messaggio: PlainMessageKey }>
   | Readonly<{ fase: 'errore'; parte?: ParteVista; messaggio: PlainMessageKey; riprova: boolean }>;
 
@@ -51,6 +71,24 @@ const messaggioRiconoscimento = (errore: ErroreRiconoscimento): PlainMessageKey 
           ? 'riconoscimento.errors.notModelable'
           : 'riconoscimento.errors.unavailable';
 
+/**
+ * The sheet the check starts from: the recognition's, or, when the designer chose another family at the chip, that
+ * family from its defaults (the recognised parameters belonged to the other one).
+ */
+const schedaPerVerifica = (scheda: SchedaRiconoscimento, famiglia: string | undefined): SchedaRiconoscimento => {
+  if (famiglia === undefined || famiglia === scheda.famiglia.id) {
+    return scheda;
+  }
+  const scelta = catalogoFamiglie().find((voce) => voce.id === famiglia);
+  return {
+    ...scheda,
+    famiglia: { id: famiglia as SchedaRiconoscimento['famiglia']['id'], confidenza: 1, alternative: [] },
+    variante: { id: scelta?.varianti[0] ?? scheda.variante.id, confidenza: 1 },
+    parametri: [],
+    domande: [],
+  };
+};
+
 /** In the trial the recognition takes a moment, so its step can be seen. */
 const attesaProva = 900;
 
@@ -68,6 +106,8 @@ export function useRiconoscimentoNuovo(
   fase: FaseNuovo;
   scegliFamiglia: (famiglia: string) => void;
   riprova: () => void;
+  /** Stop the check (and its worker) and build the piece from the recognition alone. */
+  saltaVerifica: () => void;
 }> {
   const navigate = useNavigate();
   const projectManager = useProjectManager();
@@ -78,23 +118,88 @@ export function useRiconoscimentoNuovo(
   );
   const [giro, setGiro] = useState(0);
   const urls = useRef<string[]>([]);
+  /** The flow's own controller (the page going away) and the check's (Esc / «Salta la verifica»). */
+  const flusso = useRef<AbortController | undefined>(undefined);
+  const verifica = useRef<AbortController | undefined>(undefined);
+  /** The two pictures the recognition took, for the second round. */
+  const immaginiRientro = useRef<ImmaginiRiconoscimento | undefined>(undefined);
 
   const costruisci = useCallback(
     async (parte: ParteVista, esito: EsitoRiconoscimento, famiglia?: string): Promise<void> => {
-      setFase({ fase: 'costruisco', parte, esito, ...(famiglia === undefined ? {} : { famiglia }) });
+      const maschera = new Uint8Array(await parte.mascheraPng.arrayBuffer());
+      const segno = (famiglia === undefined ? {} : { famiglia }) as { famiglia?: string };
+      setFase({ fase: 'verifico', parte, esito, ...segno });
+      // The check: the machine of the pipeline with the real clients. A stop, a failure or a part now said free-form
+      // never keeps the piece from opening: it is built from the recognition, and the record says why.
+      const controlloVerifica = new AbortController();
+      verifica.current = controlloVerifica;
+      const verificatore = creaVerificatoreBrowser();
+      const segnale = flusso.current
+        ? AbortSignal.any([flusso.current.signal, controlloVerifica.signal])
+        : controlloVerifica.signal;
+      const risultato = await eseguiPipelineRiconoscimento({
+        scheda: schedaPerVerifica(esito.scheda, famiglia),
+        maschera,
+        progettoId: parte.schedaParte.progetto.id,
+        parteId: parte.schedaParte.parte.id,
+        verificatore,
+        rientro: async ({ scheda, differenzaPng, testo, iou }) => {
+          if (parte.prova || immaginiRientro.current === undefined) {
+            return scheda;
+          }
+          const seconda = await riconosciParte(
+            {
+              schedaParte: parte.schedaParte,
+              immagini: immaginiRientro.current,
+              lingua,
+              rientro: { differenzaPng, testo, iou },
+            },
+            { segnale },
+          );
+          return seconda.scheda;
+        },
+        lingua,
+        segnale,
+      });
+      verificatore.chiudi();
+      verifica.current = undefined;
+      if (flusso.current?.signal.aborted) {
+        return;
+      }
+      if (risultato.tipo === 'libero') {
+        setFase({ fase: 'fermo', parte, esito, messaggio: 'riconoscimento.errors.freePart' });
+        return;
+      }
+      const verificata = risultato.tipo === 'consegna';
+      const verificaRecord: RecordRiconoscimento['verifica'] = verificata
+        ? risultato.verifica
+        : { stato: 'non_disponibile', motivo: risultato.tipo === 'fermata' ? 'saltata' : 'errore' };
+      const schedaFinale = verificata ? risultato.scheda : esito.scheda;
+      const esitoFinale = { ...esito, scheda: schedaFinale };
+      setFase({
+        fase: 'costruisco',
+        parte,
+        esito: esitoFinale,
+        ...segno,
+        ...(verificata ? { iou: risultato.verifica.iou } : {}),
+      });
       const progetto = progettoRiconosciuto({
-        scheda: esito.scheda,
+        scheda: schedaFinale,
         schedaParte: parte.schedaParte,
         immagine: {
           bytes: new Uint8Array(await parte.immagine.arrayBuffer()),
           tipo: parte.immagine.type || 'image/png',
         },
-        maschera: new Uint8Array(await parte.mascheraPng.arrayBuffer()),
+        maschera,
         lingua,
+        verifica: verificaRecord,
         ...(famiglia === undefined ? {} : { famigliaScelta: famiglia }),
       });
       if (progetto === undefined) {
         setFase({ fase: 'fermo', parte, esito, messaggio: 'riconoscimento.errors.freePart' });
+        return;
+      }
+      if (flusso.current?.signal.aborted) {
         return;
       }
       try {
@@ -128,6 +233,7 @@ export function useRiconoscimentoNuovo(
       return;
     }
     const controllo = new AbortController();
+    flusso.current = controllo;
     const { signal } = controllo;
     /* Read at each step: the page may have gone away while the step awaited. */
     const annullato = (): boolean => signal.aborted;
@@ -181,6 +287,7 @@ export function useRiconoscimentoNuovo(
             parte.maschera,
             parte.schedaParte.parte.box,
           );
+          immaginiRientro.current = immagini;
           esito = await riconosciParte({ schedaParte: parte.schedaParte, immagini, lingua }, { segnale: signal });
         }
       } catch (error) {
@@ -222,6 +329,10 @@ export function useRiconoscimentoNuovo(
     };
   }, [chiave, giro, lingua]);
 
+  const saltaVerifica = useCallback((): void => {
+    verifica.current?.abort();
+  }, []);
+
   useEffect(
     () => () => {
       for (const url of urls.current) {
@@ -247,5 +358,5 @@ export function useRiconoscimentoNuovo(
   const riprova = useCallback((): void => {
     setGiro((numero) => numero + 1);
   }, []);
-  return { fase, scegliFamiglia, riprova };
+  return { fase, scegliFamiglia, riprova, saltaVerifica };
 }

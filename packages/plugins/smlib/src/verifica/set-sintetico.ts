@@ -73,6 +73,12 @@ export type ErroreParametro = {
   vero: number;
   stima: number;
   ottimizzato: number;
+  /** Sensibilità alla vista finale (frazione d'area per ±5 % dell'intervallo), se misurata. */
+  sensibilita?: number;
+  /** Calo di IoU per ±5 % dell'intervallo con la camera riadattata. */
+  degrado?: number;
+  /** Osservabile nella vista: solo allora la verifica lo consegna come misurato. */
+  osservabile: boolean;
 };
 
 export type RisultatoCaso = {
@@ -145,6 +151,13 @@ export function eseguiCaso(
     vero: Number(leggiParametro(caso.veri, definizione.chiave)),
     stima: Number(leggiParametro(caso.stima, definizione.chiave)),
     ottimizzato: Number(leggiParametro(esito.parametri, definizione.chiave)),
+    ...(esito.sensibilita.find((voce) => voce.chiave === definizione.chiave) === undefined
+      ? {}
+      : {
+          sensibilita: esito.sensibilita.find((voce) => voce.chiave === definizione.chiave)!.sensibilita,
+          degrado: esito.sensibilita.find((voce) => voce.chiave === definizione.chiave)!.degrado,
+        }),
+    osservabile: esito.sensibilita.find((voce) => voce.chiave === definizione.chiave)?.osservabile ?? false,
   }));
   return {
     risultato: {
@@ -193,6 +206,12 @@ export type RigaRiassunto = {
   erroreRelativoMedio: number;
   entroUnMm: number;
   misure: number;
+  /** Misure critiche che la vista data fissa (osservabili) e il loro errore medio / massimo (mm). */
+  osservabili: number;
+  erroreOsservabiliMedio: number;
+  erroreOsservabiliMassimo: number;
+  /** Quante delle misure con errore oltre 2 mm risultano comunque osservabili (devono essere poche). */
+  sbagliateOsservabili: number;
   tempoMedio: number;
   tempoMassimo: number;
   interrotti: number;
@@ -229,6 +248,16 @@ export function riassunto(risultati: readonly RisultatoCaso[]): RigaRiassunto[] 
       ),
       entroUnMm: errori.filter((errore) => errore <= 1).length,
       misure: errori.length,
+      osservabili: misure.filter((misura) => misura.osservabile).length,
+      erroreOsservabiliMedio: media(
+        misure.filter((misura) => misura.osservabile).map((misura) => Math.abs(misura.ottimizzato - misura.vero)),
+      ),
+      erroreOsservabiliMassimo: Math.max(
+        ...misure.filter((misura) => misura.osservabile).map((misura) => Math.abs(misura.ottimizzato - misura.vero)),
+      ),
+      sbagliateOsservabili: misure.filter(
+        (misura) => misura.osservabile && Math.abs(misura.ottimizzato - misura.vero) > 2,
+      ).length,
       tempoMedio: media(casi.map((caso) => caso.tempoMs)),
       tempoMassimo: Math.max(...casi.map((caso) => caso.tempoMs)),
       interrotti: casi.filter((caso) => caso.interrotto).length,
@@ -277,11 +306,11 @@ const numero = (valore: number, decimali = 2): string =>
  */
 export function tabellaMarkdown(righe: readonly RigaRiassunto[]): string {
   const testa =
-    '| Famiglia | Casi | IoU prima (media) | IoU dopo media / min | IoU alla verità | Errore stima mm (media) | Errore dopo mm media / max | Errore dopo % | Misure ≤ 1 mm | Tempo s medio / max |\n' +
-    '|---|---|---|---|---|---|---|---|---|---|';
+    '| Famiglia | Casi | IoU prima (media) | IoU dopo media / min | IoU alla verità | Errore stima mm (media) | Errore dopo mm media / max | Errore dopo % | Misure ≤ 1 mm | Osservabili (errore medio / max mm; > 2 mm) | Tempo s medio / max |\n' +
+    '|---|---|---|---|---|---|---|---|---|---|---|';
   const corpo = righe.map(
     (riga) =>
-      `| ${riga.famiglia} | ${riga.casi} | ${numero(riga.iouPrimaMedia, 3)} | ${numero(riga.iouMedia, 3)} / ${numero(riga.iouMinima, 3)} | ${numero(riga.iouVeritaMedia, 3)} | ${numero(riga.erroreStimaMedio)} | ${numero(riga.erroreMedio)} / ${numero(riga.erroreMassimo)} | ${numero(riga.erroreRelativoMedio, 1)} | ${riga.entroUnMm}/${riga.misure} | ${numero(riga.tempoMedio / 1000, 1)} / ${numero(riga.tempoMassimo / 1000, 1)}${riga.interrotti ? ` (${riga.interrotti} al budget)` : ''} |`,
+      `| ${riga.famiglia} | ${riga.casi} | ${numero(riga.iouPrimaMedia, 3)} | ${numero(riga.iouMedia, 3)} / ${numero(riga.iouMinima, 3)} | ${numero(riga.iouVeritaMedia, 3)} | ${numero(riga.erroreStimaMedio)} | ${numero(riga.erroreMedio)} / ${numero(riga.erroreMassimo)} | ${numero(riga.erroreRelativoMedio, 1)} | ${riga.entroUnMm}/${riga.misure} | ${riga.osservabili}/${riga.misure} (${numero(riga.erroreOsservabiliMedio)} / ${numero(riga.erroreOsservabiliMassimo)}; ${riga.sbagliateOsservabili}) | ${numero(riga.tempoMedio / 1000, 1)} / ${numero(riga.tempoMassimo / 1000, 1)}${riga.interrotti ? ` (${riga.interrotti} al budget)` : ''} |`,
   );
   return [testa, ...corpo].join('\n');
 }
@@ -292,22 +321,29 @@ export function tabellaMarkdown(righe: readonly RigaRiassunto[]): string {
  * @returns Markdown.
  */
 export function tabellaPerMisura(risultati: readonly RisultatoCaso[]): string {
-  const perChiave = new Map<string, { stima: number[]; dopo: number[] }>();
+  const perChiave = new Map<string, { stima: number[]; dopo: number[]; sens: number[]; osservabili: number }>();
   for (const risultato of risultati.filter((voce) => !voce.nota)) {
     for (const misura of misureCritiche(risultato)) {
-      const voce = perChiave.get(`${risultato.famiglia} · ${misura.chiave}`) ?? { stima: [], dopo: [] };
+      const voce = perChiave.get(`${risultato.famiglia} · ${misura.chiave}`) ?? {
+        stima: [],
+        dopo: [],
+        sens: [],
+        osservabili: 0,
+      };
       voce.stima.push(Math.abs(misura.stima - misura.vero));
       voce.dopo.push(Math.abs(misura.ottimizzato - misura.vero));
+      voce.sens.push(misura.sensibilita ?? Number.NaN);
+      voce.osservabili += misura.osservabile ? 1 : 0;
       perChiave.set(`${risultato.famiglia} · ${misura.chiave}`, voce);
     }
   }
   const righe = [...perChiave.entries()].map(
-    ([chiave, { stima, dopo }]) =>
-      `| ${chiave} | ${numero(media(stima))} | ${numero(media(dopo))} | ${numero(Math.max(...dopo))} | ${dopo.filter((valore) => valore <= 1).length}/${dopo.length} |`,
+    ([chiave, { stima, dopo, sens, osservabili }]) =>
+      `| ${chiave} | ${numero(media(stima))} | ${numero(media(dopo))} | ${numero(Math.max(...dopo))} | ${dopo.filter((valore) => valore <= 1).length}/${dopo.length} | ${numero(media(sens.filter(Number.isFinite)) * 100, 1)} % | ${osservabili}/${dopo.length} |`,
   );
   return [
-    '| Misura | Errore stima mm (media) | Errore dopo mm (media) | Max | ≤ 1 mm |',
-    '|---|---|---|---|---|',
+    '| Misura | Errore stima mm (media) | Errore dopo mm (media) | Max | ≤ 1 mm | Sensibilità (media) | Osservabile |',
+    '|---|---|---|---|---|---|---|',
     ...righe,
   ].join('\n');
 }

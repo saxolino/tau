@@ -1,7 +1,9 @@
 import type { IdFamiglia, ParametriAnnidati, ValoreParametro } from '#famiglie/famiglia.js';
 import { scriviParametro } from '#famiglie/parametri.js';
+import { famiglie } from '#famiglie/registro.js';
 import type { LatoOccluso } from '#verifica/maschera.js';
 import type { FonteScala } from '#verifica/ottimizza.js';
+import { parametriSensibili } from '#verifica/ottimizza.js';
 import type { RichiestaVerifica, RispostaVerifica } from '#verifica/verifica-funzioni.js';
 
 /**
@@ -76,17 +78,23 @@ export type SchedaPerVerifica = {
   }>;
 };
 
+/** Le fonti che sono una misura dichiarata: la verifica non le muove (§2.5). */
+const FONTI_DICHIARATE: ReadonlySet<string> = new Set(['misura_nota', 'libreria', 'catalogo']);
+
 /**
  * La richiesta della verifica dalla scheda del classificatore e dal PNG della maschera.
  * @param scheda - Scheda di riconoscimento (D2).
  * @param png - Maschera SAM o alfa della parte.
  * @param opzioni - Opzioni dell'ottimizzatore (budget…).
+ * @param bloccati - Chiavi che l'ottimizzatore non muove (valori fissati dall'utente). Non si muovono mai nemmeno le
+ *   misure dichiarate (`misura_nota`, `libreria`, `catalogo`): sono la scala stessa della foto, non ipotesi.
  * @returns La richiesta per il worker, o null se la famiglia non si verifica (`libero`, `non_modellabile`).
  */
 export function richiestaDaScheda(
   scheda: SchedaPerVerifica,
   png: Uint8Array,
   opzioni: RichiestaVerifica['opzioni'] = {},
+  bloccati: readonly string[] = [],
 ): RichiestaVerifica | null {
   const famiglia = scheda.famiglia.id;
   if (famiglia === 'libero' || famiglia === 'non_modellabile') {
@@ -106,6 +114,11 @@ export function richiestaDaScheda(
       nonVisibili.push(parametro.chiave);
     }
   }
+  const dichiarati = new Set(scheda.parametri.filter((p) => FONTI_DICHIARATE.has(p.fonte)).map((p) => p.chiave));
+  const fermi = new Set([...bloccati, ...dichiarati]);
+  const chiavi = parametriSensibili(famiglie[famiglia]!)
+    .map((definizione) => definizione.chiave)
+    .filter((chiave) => !fermi.has(chiave));
   return {
     famiglia,
     variante: scheda.variante.id,
@@ -113,7 +126,7 @@ export function richiestaDaScheda(
     vista: scheda.vista,
     scala: { pxPerMmFoto: scheda.scala.pxPerMm, fonte: scheda.scala.fonte },
     maschera: { png },
-    opzioni,
+    opzioni: { ...(fermi.size > 0 ? { chiavi } : {}), ...opzioni },
   };
 }
 
@@ -124,6 +137,9 @@ export type ParametroConsegnato = {
   fonte: FonteClassificatore | 'silhouette';
   confidenza: number;
   stato: 'misurata' | 'stimata' | 'ipotesi';
+  /** Banda dei valori plausibili (del classificatore, o quelli che la vista non distingue). */
+  min?: number;
+  max?: number;
 };
 
 /** Una domanda da mostrare come chip (§2.6, §3.5). */
@@ -135,6 +151,10 @@ export type Consegna = {
   variante?: string;
   iou: number;
   parametri: ParametroConsegnato[];
+  /** Parametri mossi dall'ottimizzatore che la vista data non fissa: restano ipotesi (regola di osservabilità). */
+  nonOsservabili: string[];
+  /** Una misura critica non si vede da questa vista: «Aggiungi una foto di lato». */
+  suggerimenti: Array<'foto_lato'>;
   chip: ChipVerifica[];
   /** Messaggio della card (italiano). */
   messaggio: string;
@@ -157,10 +177,17 @@ const statoDaConfidenza = (fonte: ParametroConsegnato['fonte'], confidenza: numb
 const formatoIou = (iou: number): string =>
   iou.toLocaleString('it-IT', { maximumFractionDigits: 2, minimumFractionDigits: 2 });
 
+/** Confidenza di un'ipotesi che la vista non fissa: sotto la soglia delle domande (0,6), mai sopra quella del classificatore. */
+const CONFIDENZA_IPOTESI = 0.5;
+
 /**
- * I parametri e i chip da consegnare (§3.5): accettato → i parametri ottimizzati prendono `fonte: silhouette` e
- * confidenza `min(0,9, IoU)`; riserva → stessi valori ma restano «stimata» (confidenza al più 0,7) e chip della vista;
- * avviso → si tiene il migliore, card «Non combacia bene» e tre chip. Gli altri parametri restano del classificatore.
+ * I parametri e i chip da consegnare (§3.5), con la regola di osservabilità: accettato → i parametri ottimizzati
+ * **che la vista data fissa** prendono `fonte: silhouette` e confidenza `min(0,9, IoU)`; quelli che l'ottimizzatore ha
+ * mosso ma la vista non vede (calo di IoU sotto soglia per ±5 % dell'intervallo, `osservabilita.ts`) restano «ipotesi»
+ * con la fonte del classificatore, la sua banda min–max (o quella che la vista non distingue) e confidenza al più 0,5, così
+ * i critici fra loro diventano domande-chip (al massimo tre, una alla volta) e compare «Aggiungi una foto di lato». Riserva
+ * → stessi valori ma restano «stimata» (confidenza al più 0,7) e chip della vista; avviso → si tiene il migliore, card
+ * «Non combacia bene» e tre chip. Gli altri parametri restano del classificatore.
  * @param scheda - Scheda del classificatore (dopo l'eventuale rientro).
  * @param risposta - Risposta della verifica (la migliore).
  * @param esito - Esito della soglia (non `rientro`).
@@ -168,10 +195,14 @@ const formatoIou = (iou: number): string =>
  */
 export function consegnaVerifica(
   scheda: SchedaPerVerifica,
-  risposta: Pick<RispostaVerifica, 'famiglia' | 'variante' | 'iou' | 'parametri' | 'chiaviOttimizzate'>,
+  risposta: Pick<RispostaVerifica, 'famiglia' | 'variante' | 'iou' | 'parametri' | 'chiaviOttimizzate'> &
+    Partial<Pick<RispostaVerifica, 'sensibilita'>>,
   esito: Exclude<EsitoSoglia, 'rientro'>,
 ): Consegna {
   const ottimizzate = new Set(risposta.chiaviOttimizzate);
+  const sensibilita = new Map((risposta.sensibilita ?? []).map((voce) => [voce.chiave, voce]));
+  // Senza la misura (tempo, costruzione fallita) un parametro non è osservabile: nessuna misura senza prova.
+  const osservabile = (chiave: string): boolean => sensibilita.get(chiave)?.osservabile === true;
   const leggi = (chiave: string): ValoreParametro | undefined => {
     let corrente: unknown = risposta.parametri;
     for (const segmento of chiave.split('.')) {
@@ -179,15 +210,36 @@ export function consegnaVerifica(
     }
     return corrente as ValoreParametro | undefined;
   };
+  const famiglia = famiglie[risposta.famiglia];
+  const definizioni = new Map((famiglia?.parametri ?? []).map((definizione) => [definizione.chiave, definizione]));
   const confidenzaSilhouette = esito === 'accettato' ? Math.min(0.9, risposta.iou) : Math.min(0.7, risposta.iou);
-  const parametri: ParametroConsegnato[] = scheda.parametri.map((parametro) => {
+  const nonOsservabili: string[] = [];
+  const consegna = (
+    parametro: Pick<SchedaPerVerifica['parametri'][number], 'chiave' | 'valore' | 'confidenza' | 'fonte'> &
+      Partial<Pick<SchedaPerVerifica['parametri'][number], 'min' | 'max'>>,
+  ): ParametroConsegnato => {
     if (ottimizzate.has(parametro.chiave) && esito !== 'avviso') {
+      if (osservabile(parametro.chiave)) {
+        return {
+          chiave: parametro.chiave,
+          valore: leggi(parametro.chiave) ?? parametro.valore,
+          fonte: 'silhouette',
+          confidenza: confidenzaSilhouette,
+          stato: esito === 'accettato' ? statoDaConfidenza('silhouette', confidenzaSilhouette) : 'stimata',
+        };
+      }
+      // Mosso ma non visto: ipotesi, con la banda. Il valore è quello che la verifica ha dato, dentro la banda.
+      nonOsservabili.push(parametro.chiave);
+      const banda = sensibilita.get(parametro.chiave)?.banda;
+      const min = parametro.min ?? banda?.[0];
+      const max = parametro.max ?? banda?.[1];
       return {
         chiave: parametro.chiave,
         valore: leggi(parametro.chiave) ?? parametro.valore,
-        fonte: 'silhouette',
-        confidenza: confidenzaSilhouette,
-        stato: esito === 'accettato' ? statoDaConfidenza('silhouette', confidenzaSilhouette) : 'stimata',
+        fonte: parametro.fonte,
+        confidenza: Math.min(parametro.confidenza, CONFIDENZA_IPOTESI),
+        stato: 'ipotesi',
+        ...(min === undefined || max === undefined ? {} : { min, max }),
       };
     }
     // Con l'avviso si tiene il migliore trovato, ma la fonte resta del classificatore: non è una misura.
@@ -199,7 +251,18 @@ export function consegnaVerifica(
       confidenza: parametro.confidenza,
       stato: statoDaConfidenza(parametro.fonte, parametro.confidenza),
     };
-  });
+  };
+  const parametri: ParametroConsegnato[] = scheda.parametri.map((parametro) => consegna(parametro));
+  // I parametri che l'ottimizzatore ha mosso ma il classificatore non aveva nominato (default della famiglia).
+  const nominati = new Set(scheda.parametri.map((parametro) => parametro.chiave));
+  for (const chiave of risposta.chiaviOttimizzate) {
+    const valore = leggi(chiave);
+    if (nominati.has(chiave) || valore === undefined || esito === 'avviso') {
+      continue;
+    }
+    parametri.push(consegna({ chiave, valore, confidenza: 0.3, fonte: 'default_mestiere' }));
+  }
+  const critici = nonOsservabili.filter((chiave) => definizioni.get(chiave)?.critico === true);
   const chip: ChipVerifica[] = [];
   let messaggio = `Combacia con la foto (IoU ${formatoIou(risposta.iou)}).`;
   if (esito === 'riserva') {
@@ -219,6 +282,8 @@ export function consegnaVerifica(
     ...(risposta.variante === undefined ? {} : { variante: risposta.variante }),
     iou: risposta.iou,
     parametri,
+    nonOsservabili,
+    suggerimenti: critici.length > 0 && esito !== 'avviso' ? ['foto_lato'] : [],
     chip,
     messaggio,
   };

@@ -109,7 +109,7 @@ describe('recognition in the inspector', () => {
       record: {
         risposte: { 'cinturino.larghezza': 20 },
         mainScritto: main,
-        verifica: { stato: 'non_disponibile', motivo: 'modulo_assente' },
+        verifica: { stato: 'non_disponibile', motivo: 'maschera_assente' },
         cronologia: [{ iou: null, parametri: { 'cinturino.larghezza': 20 } }],
       },
     });

@@ -39,9 +39,9 @@ const caso = (
   iouDopo: iou,
   chamferDopoMm: 0.1,
   errori: [
-    { chiave: 'a.b', unita: 'mm', critico: true, vero: 10, stima: 12, ottimizzato: 10 + errore },
-    { chiave: 'a.c', unita: 'frazione', critico: true, vero: 0.5, stima: 0.6, ottimizzato: 0.9 },
-    { chiave: 'a.d', unita: 'mm', critico: false, vero: 3, stima: 4, ottimizzato: 9 },
+    { chiave: 'a.b', unita: 'mm', critico: true, vero: 10, stima: 12, ottimizzato: 10 + errore, osservabile: true },
+    { chiave: 'a.c', unita: 'frazione', critico: true, vero: 0.5, stima: 0.6, ottimizzato: 0.9, osservabile: false },
+    { chiave: 'a.d', unita: 'mm', critico: false, vero: 3, stima: 4, ottimizzato: 9, osservabile: false },
   ],
   tempoMs,
   valutazioni: 10,
@@ -95,8 +95,10 @@ describe('set di prova sintetico', () => {
     expect(righe[3]).toMatchObject({ casi: 3, misure: 3, entroUnMm: 2 });
     const tabella = tabellaMarkdown(righe);
     expect(tabella).toContain(
-      '| tacco | 2 | 0,800 | 0,960 / 0,950 | 0,990 | 2,00 | 1,00 / 1,50 | 10,0 | 1/2 | 15,0 / 20,0 |',
+      '| tacco | 2 | 0,800 | 0,960 / 0,950 | 0,990 | 2,00 | 1,00 / 1,50 | 10,0 | 1/2 | 2/2 (1,00 / 1,50; 0) | 15,0 / 20,0 |',
     );
-    expect(tabellaPerMisura([caso('tacco', 0.95, 0.5, 1)])).toContain('| tacco · a.b | 2,00 | 0,50 | 0,50 | 1/1 |');
+    expect(tabellaPerMisura([caso('tacco', 0.95, 0.5, 1)])).toContain(
+      '| tacco · a.b | 2,00 | 0,50 | 0,50 | 1/1 | — % | 1/1 |',
+    );
   });
 });

@@ -790,6 +790,39 @@ function costruisciCavita(
   return { cavita: lib.loft([...sezioni, cima], { smooth: sezioni.length + 1 >= 4 }), fori: foriTenuti };
 }
 
+/**
+ * Toglie gli strumenti dal corpo con una sola booleana; se il kernel la rifiuta («cut failed», che sui tacchi bassi come
+ * il kitten capita con certe combinazioni di cavità, fori e perno) li applica uno alla volta e scarta quello che
+ * fallisce, con un avviso pulito al posto dell'errore: il tacco si costruisce comunque, più pieno del previsto.
+ */
+function tagliaConRiserva(
+  corpo: Smlib.Part,
+  strumenti: readonly Smlib.Part[],
+  esiti: Esito[],
+  scartato: (strumento: Smlib.Part) => void,
+): Smlib.Part {
+  try {
+    return corpo.cut(...strumenti);
+  } catch {
+    // Uno alla volta, qui sotto.
+  }
+  let risultato = corpo;
+  for (const strumento of strumenti) {
+    try {
+      risultato = risultato.cut(strumento);
+    } catch {
+      scartato(strumento);
+      esiti.push(
+        esito('avviso', 'SVUOTAMENTO', {
+          messaggio: 'Una cavità o un foro non si costruiscono con questi valori: il tacco resta pieno lì.',
+          pezzo: 'Tacco',
+        }),
+      );
+    }
+  }
+  return risultato;
+}
+
 /** Corpo del tacco destro con cavità, fori e sede del perno. */
 function costruisciCorpo(
   lib: Lib,
@@ -878,10 +911,15 @@ function costruisciCorpo(
     foroAnima = lungoAsse(anima.diametro / 2 + 0.1, lungo + 0.1);
     strumenti.push(foroAnima);
   }
+  let cavitaTenuta = cavita;
   if (strumenti.length > 0) {
-    corpo = corpo.cut(...strumenti);
+    corpo = tagliaConRiserva(corpo, strumenti, esiti, (scartato) => {
+      if (scartato === cavita) {
+        cavitaTenuta = undefined;
+      }
+    });
   }
-  const cavitaPunti = cavita ? puntiDiFacce(corpo.faces().derivedFrom(cavita)) : [];
+  const cavitaPunti = cavitaTenuta ? puntiDiFacce(corpo.faces().derivedFrom(cavitaTenuta)) : [];
   if (!corpo.isValid()) {
     esiti.push(
       esito('blocco', 'SOLIDO_NON_VALIDO', { messaggio: 'Il corpo del tacco non è un solido valido.', pezzo: 'Tacco' }),
@@ -952,10 +990,10 @@ function costruisciConEsiti(lib: Lib, p: ParametriTacco, opzioni?: OpzioniFamigl
         ...aspettoMateriale('acciaio'),
       });
     }
-  } catch (error) {
+  } catch {
     esiti.push(
       esito('blocco', 'SOLIDO_NON_VALIDO', {
-        messaggio: `Tacco non costruito: ${(error as Error).message}`,
+        messaggio: `Il tacco non si costruisce con questi valori (il kernel non chiude il solido): provare un'altezza o una seduta diverse.`,
         pezzo: 'Tacco',
       }),
     );

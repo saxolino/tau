@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSelector } from '@xstate/react';
 import { ChevronDown, ChevronRight, Eye, EyeOff, LockKeyhole } from 'lucide-react';
 import { getActiveGroupValues } from '@taucad/types';
+import { catalogoFamiglie } from '@taucad/smlib/riconoscimento';
 import type { ParameterManifest } from '@taucad/parameters';
 import type { ParametersSource } from '@taucad/workbench-panes/parameters/parameters-source';
 import { Parameters } from '@taucad/viewer/parameters/parameters';
@@ -33,6 +34,19 @@ import { modelWeight } from '#lib/piece-weight.js';
 import { PieceMaterialRow } from '#routes/w.$workspace.$project/piece-material-row.js';
 
 const units = { length: { displaySymbol: 'mm' } } as const;
+
+/**
+ * The parameters that are a list of points (unit `contorno`: the plate's outline), by dotted key. The Measures show
+ * them as a line, «Outline · n points», with the way back to the plain shape; they have no point editor.
+ */
+const outlineKeys: ReadonlySet<string> = new Set(
+  catalogoFamiglie().flatMap((family) =>
+    family.parametri.filter((parameter) => parameter.unita === 'contorno').map((parameter) => parameter.chiave),
+  ),
+);
+
+const pointerOf = (path: readonly string[]): string =>
+  `/${path.map((part) => part.replaceAll('~', '~0').replaceAll('/', '~1')).join('/')}`;
 
 /** Counts all physical pieces, including hidden ones; unavailable mass is omitted. */
 export function ModelSummaryRow(): React.JSX.Element {
@@ -143,6 +157,54 @@ export const PieceGroup = memo(function PieceGroup({
         const measure = group.node && path.length === 1 ? flatMeasurePiece(key, [group.node])?.measure : undefined;
         return readablePieceName(measure ?? key, language);
       },
+      // A plate's outline is a line with its way back, not rows of numbers.
+      arrayField: (path, points) => {
+        if (!outlineKeys.has(path.join('.'))) {
+          return undefined;
+        }
+        if (points.length === 0 || !manifest || !activeGroup) {
+          return null;
+        }
+        const back = async (): Promise<void> => {
+          const sibling = [...path.slice(0, -1), 'forma'];
+          const steps: ReadonlyArray<readonly [readonly string[], string | never[]]> = [
+            [path, []],
+            [sibling, 'rettangolo'],
+          ];
+          for (const [target, value] of steps) {
+            const outcome = await source.commitValue(entryPath, manifest, {
+              pointer: pointerOf(target),
+              value,
+              group: activeGroup,
+            });
+            if (outcome?.status !== 'committed') {
+              source.reportError?.(t('measures.failure'));
+              return;
+            }
+          }
+        };
+        return (
+          <div
+            className='flex items-center justify-between gap-2 py-1.5 text-xs'
+            data-slot='piece-outline'
+            data-path={path.join('.')}
+          >
+            <span className='text-muted-foreground tabular-nums'>
+              {t('measures.outline', { count: points.length })}
+            </span>
+            <Button
+              type='button'
+              size='sm'
+              variant='outline'
+              onClick={() => {
+                void back();
+              }}
+            >
+              {t('measures.outlineBackToRectangle')}
+            </Button>
+          </div>
+        );
+      },
       fieldNote: (path) => {
         const locked = valueAtPath(values, path) !== undefined;
         const assumption = parameterAssumption(schema, path);
@@ -192,7 +254,7 @@ export const PieceGroup = memo(function PieceGroup({
           : undefined;
       },
     }),
-    [group.node, language, schema, t, values],
+    [activeGroup, entryPath, group.node, language, manifest, schema, source, t, values],
   );
   const changeParameters = useCallback(
     (next: Record<string, unknown>) => {

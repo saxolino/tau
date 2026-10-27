@@ -1167,6 +1167,18 @@
           "descrizione": "Processo produttivo del telaio"
         },
         {
+          "chiave": "costruzione.materiale",
+          "unita": "enum",
+          "default": "zama",
+          "valori": [
+            "zama",
+            "ottone",
+            "argento_925",
+            "inox"
+          ],
+          "descrizione": "Materiale del telaio (zama in pressofusione, ottone o argento fuso, ottone o inox lavorato)"
+        },
+        {
           "chiave": "costruzione.sformo",
           "unita": "deg",
           "min": 0.5,
@@ -1547,7 +1559,7 @@
             "scudo",
             "contorno"
           ],
-          "descrizione": "Forma della piastra"
+          "descrizione": "Forma della placca"
         },
         {
           "chiave": "piastra.contorno",

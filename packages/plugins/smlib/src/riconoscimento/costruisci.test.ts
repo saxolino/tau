@@ -69,4 +69,27 @@ describe('piano di costruzione di un pezzo riconosciuto', () => {
     };
     expect(pianoCostruzione(libero)).toBeUndefined();
   });
+
+  it('should carry the recognised material to the family, adapting the process rather than losing the material', () => {
+    // The recorded buckle is brass: the default process (zama die casting) cannot cast brass, so the process follows.
+    const fibbia = pianoCostruzione(schedaRiconoscimentoDiProva)!;
+    expect(fibbia.parametri).toMatchObject({ costruzione: { materiale: 'ottone', processo: 'fusione_cera_persa' } });
+    expect(fibbia.vincoli).toStrictEqual([]);
+    // A ring takes it in `lega`; with confidence under 0.5 the recognition is not trusted and the default stays.
+    const anello: SchedaRiconoscimento = {
+      ...schedaRiconoscimentoDiProva,
+      famiglia: { id: 'anello', confidenza: 0.9, alternative: [] },
+      variante: { id: 'griffe', confidenza: 0.8 },
+      parametri: [],
+      materiale: { chiave: 'oro_18kt_rosa', confidenza: 0.8 },
+    };
+    expect(pianoCostruzione(anello)!.parametri).toMatchObject({ lega: 'oro_18kt_rosa' });
+    expect(
+      pianoCostruzione({ ...anello, materiale: { chiave: 'oro_18kt_rosa', confidenza: 0.3 } })!.parametri,
+    ).not.toMatchObject({ lega: 'oro_18kt_rosa' });
+    // A material the family does not admit is ignored.
+    expect(
+      pianoCostruzione({ ...schedaRiconoscimentoDiProva, materiale: { chiave: 'cuoio', confidenza: 0.9 } })!.parametri,
+    ).toMatchObject({ costruzione: { materiale: 'zama', processo: 'pressofusione_zama' } });
+  });
 });

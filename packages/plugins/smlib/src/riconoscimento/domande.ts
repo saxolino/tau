@@ -41,6 +41,12 @@ export function domandaFamiglia(scheda: SchedaRiconoscimento): DomandaFamiglia |
   return { tipo: 'famiglia', opzioni: [...[...new Set(candidate)].slice(0, 3), 'libero'] };
 }
 
+/**
+ * I parametri che una foto non misura, per famiglia: si chiedono sempre con un chip (prima degli altri), qualunque
+ * confidenza abbia il classificatore. La taglia di un anello è la misura del dito, non del gioiello.
+ */
+const NON_DA_FOTO: Readonly<Record<string, readonly string[]>> = { anello: ['taglia.valore'] };
+
 const arrotonda = (valore: number, passo: number): number => Math.round(valore / passo) * passo;
 
 const proposteDa = (
@@ -77,13 +83,30 @@ export function domandeParametri(
 ): DomandaParametro[] {
   const definizioni = new Map(famiglia.parametri.map((definizione) => [definizione.chiave, definizione]));
   const proposteDelModello = new Map(scheda.domande.map((domanda) => [domanda.chiave, domanda]));
-  return scheda.parametri
+  // Ciò che una foto non misura si chiede sempre: se il classificatore non lo nomina, parte dal predefinito.
+  const nominati = new Set(scheda.parametri.map((parametro) => parametro.chiave));
+  const daChiedere = (NON_DA_FOTO[famiglia.id] ?? []).flatMap((chiave): SchedaRiconoscimento['parametri'] => {
+    const definizione = definizioni.get(chiave);
+    return nominati.has(chiave) || definizione === undefined || typeof definizione.default !== 'number'
+      ? []
+      : [
+          {
+            chiave,
+            valore: definizione.default,
+            confidenza: 0,
+            fonte: 'default_mestiere',
+            motivo: definizione.descrizione ?? '',
+          },
+        ];
+  });
+  return [...scheda.parametri, ...daChiedere]
     .flatMap((parametro) => {
       const definizione = definizioni.get(parametro.chiave);
+      const nonDaFoto = NON_DA_FOTO[famiglia.id]?.includes(parametro.chiave) === true;
       if (
         !definizione?.critico ||
         typeof parametro.valore !== 'number' ||
-        parametro.confidenza >= soglie.critico ||
+        (parametro.confidenza >= soglie.critico && !nonDaFoto) ||
         risposte.has(parametro.chiave)
       ) {
         return [];
@@ -102,7 +125,7 @@ export function domandeParametri(
         ...(definizione.min === undefined ? {} : { min: definizione.min }),
         ...(definizione.max === undefined ? {} : { max: definizione.max }),
       };
-      return [{ domanda, confidenza: parametro.confidenza }];
+      return [{ domanda, confidenza: nonDaFoto ? -1 : parametro.confidenza }];
     })
     .toSorted((a, b) => a.confidenza - b.confidenza)
     .slice(0, soglie.domandeMassime)

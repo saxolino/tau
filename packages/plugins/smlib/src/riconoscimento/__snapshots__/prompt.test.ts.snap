@@ -66,6 +66,7 @@ Parameters (key — unit — range — default — flags — meaning in Italian)
 - traversino.larghezza — mm — 1.5…6 — default 2.5 — Larghezza del traversino
 - traversino.profilo — enum — piatto | tondo — default "piatto" — Sezione del traversino: piatta (90 % dello spessore) o tonda di diametro = larghezza
 - costruzione.processo — enum — pressofusione_zama | fusione_cera_persa | cnc — default "pressofusione_zama" — Processo produttivo del telaio
+- costruzione.materiale — enum — zama | ottone | argento_925 | inox — default "zama" — Materiale del telaio (zama in pressofusione, ottone o argento fuso, ottone o inox lavorato)
 - costruzione.sformo — deg — 0.5…2 — default 1 — Sformo dei fianchi in pressofusione"
 `;
 
@@ -129,7 +130,7 @@ exports[`prompt del classificatore > should describe the family placca with ever
 Variants: rettangolo | ovale | cerchio | scudo
 part_type: ornament
 Parameters (key — unit — range — default — flags — meaning in Italian):
-- piastra.forma — enum — rettangolo | ovale | cerchio | scudo | contorno — default "rettangolo" — Forma della piastra
+- piastra.forma — enum — rettangolo | ovale | cerchio | scudo | contorno — default "rettangolo" — Forma della placca
 - piastra.lunghezza — mm — 6…120 — default 30 — CRITICAL, silhouette — Lunghezza (diametro per il cerchio)
 - piastra.larghezza — mm — 4…60 — default 12 — CRITICAL, silhouette — Larghezza
 - piastra.spessore — mm — 0.6…5 — default 1.5 — Spessore (zama 1,5 · ottone tranciato 0,8)

@@ -47,6 +47,20 @@ const rispostaSchema = z.object({
   telemetria: z.object({ modello: z.string(), scartati: z.array(z.string()), millisecondi: z.number() }).loose(),
 });
 
+/**
+ * The second round after the D3 check (specification §3.5): the silhouette of the model (red) over the mask (blue) as a
+ * PNG, the question, and the IoU that made the check ask. The function builds the prompt with `rientro: true`.
+ */
+export type RientroRiconoscimento = Readonly<{ differenzaPng: Uint8Array; testo: string; iou: number }>;
+
+const base64 = (bytes: Uint8Array): string => {
+  let testo = '';
+  for (let indice = 0; indice < bytes.length; indice += 0x80_00) {
+    testo += String.fromCodePoint(...bytes.subarray(indice, indice + 0x80_00));
+  }
+  return btoa(testo);
+};
+
 /** What the function answers. */
 export type EsitoRiconoscimento = z.infer<typeof rispostaSchema>;
 
@@ -68,7 +82,12 @@ const codici = new Set<CodiceErroreRiconoscimento>([
  * @returns The recognition.
  */
 export async function riconosciParte(
-  richiesta: Readonly<{ schedaParte: SchedaParte; immagini: ImmaginiRiconoscimento; lingua: 'it' | 'en' }>,
+  richiesta: Readonly<{
+    schedaParte: SchedaParte;
+    immagini: ImmaginiRiconoscimento;
+    lingua: 'it' | 'en';
+    rientro?: RientroRiconoscimento;
+  }>,
   opzioni: Readonly<{ segnale?: AbortSignal; progettoCad?: string; fetch?: typeof fetch; base?: string }> = {},
 ): Promise<EsitoRiconoscimento> {
   const base = (opzioni.base ?? requireClientEnvironment('TAU_API_URL')).replace(/\/$/u, '');
@@ -87,6 +106,15 @@ export async function riconosciParte(
         immagini: { ritaglio: richiesta.immagini.ritaglio, intera: richiesta.immagini.intera },
         fattoreRitaglio: richiesta.immagini.fattoreRitaglio,
         lingua: richiesta.lingua,
+        ...(richiesta.rientro
+          ? {
+              rientro: {
+                differenza: base64(richiesta.rientro.differenzaPng),
+                testo: richiesta.rientro.testo,
+                iou: richiesta.rientro.iou,
+              },
+            }
+          : {}),
       }),
       ...(opzioni.segnale ? { signal: opzioni.segnale } : {}),
     });

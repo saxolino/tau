@@ -50,10 +50,12 @@ export {
   versioneContratto,
 } from '#riconoscimento/contratto.js';
 export { promptPerScheda } from '#riconoscimento/prompt.js';
+export { materialeDelVisore, materialiPerPezzo } from '#riconoscimento/materiali-pezzi.js';
+export type { MaterialePezzo } from '#riconoscimento/materiali-pezzi.js';
+export { schedaConsegnata } from '#riconoscimento/consegna.js';
+export { riscalaScheda } from '#riconoscimento/riscala.js';
 export { famigliaDelRegistro, pianoCostruzione } from '#riconoscimento/costruisci.js';
 export type { PianoCostruzione, RisposteUtente } from '#riconoscimento/costruisci.js';
-export { registraVerificaSilhouette, verificaSilhouette } from '#riconoscimento/verifica-silhouette.js';
-export type { EsitoVerifica, RichiestaVerifica, VerificatoreSilhouette } from '#riconoscimento/verifica-silhouette.js';
 export {
   assumptionDescription,
   assumptionMarker,

@@ -14,6 +14,13 @@ import type { LatoOccluso } from '#verifica/maschera.js';
 import { confronta, immagineDifferenza, iouMorbido, obiettivo, preparaConfronto, prior } from '#verifica/metrica.js';
 import type { ConfrontoMaschera, StimaParametri } from '#verifica/metrica.js';
 import { nelderMead } from '#verifica/nelder-mead.js';
+import {
+  COSTO_LENTO_MS,
+  esitoOsservabilita,
+  differenzaSilhouette,
+  PASSO_OSSERVABILITA,
+} from '#verifica/osservabilita.js';
+import type { SensibilitaParametro } from '#verifica/osservabilita.js';
 import type { ImmagineRaster } from '#verifica/png.js';
 import { meshDaForme, silhouetteMesh, silhouetteMeshMorbida, tolleranzaPerPixel } from '#verifica/silhouette.js';
 import type { MascheraBinaria, MeshPiatta } from '#verifica/silhouette.js';
@@ -86,6 +93,12 @@ export type OpzioniOttimizzatore = {
   avvii?: 'auto' | 1 | 3;
   /** Valori imposti per la costruzione della verifica (per il tacco `costruzione.lato = dx`: la foto ne ha uno). */
   parametriVerifica?: Readonly<Record<string, ValoreParametro>>;
+  /**
+   * Sensibilità dei parametri alla vista finale (differenza finita, vedi `osservabilita.ts`; predefinito sì). `false` la
+   * salta (nessun parametro risulta osservabile). `budgetMs`: tempo massimo della misura oltre il budget
+   * dell'ottimizzatore (predefinito il 25 %, al più 12 s).
+   */
+  sensibilita?: false | { budgetMs?: number };
   segnale?: AbortSignal;
   /** Orologio in ms (predefinito `performance.now`). */
   adesso?: () => number;
@@ -131,6 +144,15 @@ export type EsitoVerifica = {
   tempoMs: number;
   /** Fermato da budget o segnale prima della fine. */
   interrotto: boolean;
+  /**
+   * Sensibilità alla vista finale dei parametri ottimizzati. Un parametro assente non si è potuto misurare (tempo o
+   * costruzione fallita): vale come non osservabile.
+   */
+  sensibilita: SensibilitaParametro[];
+  /** Costo medio di una ricostruzione della famiglia (ms): decide quante valutazioni dà la fase B. */
+  costoCostruzioneMs: number;
+  /** La famiglia costa troppo per l'ottimizzazione piena (fase B ridotta, niente fase C, sensibilità a un lato). */
+  lento: boolean;
   silhouette: MascheraBinaria;
   /** Immagine differenza 256² (rosso = solo modello, blu = solo maschera). */
   differenza: ImmagineRaster;
@@ -159,6 +181,8 @@ export const SEMPLIFICAZIONI_SILHOUETTE: Readonly<
   Partial<Record<IdFamiglia, Readonly<Record<string, ValoreParametro>>>>
 > = {
   tacco: { 'costruzione.processo': 'stampa_3d_resina', 'anima.diametro': 0, 'fori.numero': 0 },
+  // Raccordi dei bordi (la metà del tempo di costruzione, 0,9 s → 0,6 s): spostano il contorno di meno del raggio.
+  fondo_semplice: { 'bordo.raggioSuperiore': 0, 'bordo.raggioInferiore': 0 },
 };
 const UNITA_OTTIMIZZABILI = new Set(['mm', 'deg', 'frazione', 'n']);
 
@@ -198,7 +222,7 @@ export function verificaSilhouette(lib: typeof Smlib, ingresso: IngressoVerifica
   const inizio = adesso();
   const scadenza = inizio + (opzioni.budgetMs ?? 45_000);
   const variante = ingresso.variante;
-  const valutazioniMassime = { ...VALUTAZIONI, ...opzioni.valutazioni };
+  const limiti = { ...VALUTAZIONI, ...opzioni.valutazioni };
   const iouCamera = opzioni.iouArresto?.camera ?? 0.985;
   const iouParametri = opzioni.iouArresto?.parametri ?? 0.985;
   const finestra = opzioni.ristagno?.finestra ?? 10;
@@ -222,6 +246,7 @@ export function verificaSilhouette(lib: typeof Smlib, ingresso: IngressoVerifica
 
   const scalaLibera = ingresso.scala.fonte === 'stima' || ingresso.scala.pxPerMm === null;
   let ricostruzioni = 0;
+  let msCostruzione = 0;
   let valutazioniTotali = 0;
   let interrotto = false;
   const cache = new Map<string, Geometria>();
@@ -241,6 +266,7 @@ export function verificaSilhouette(lib: typeof Smlib, ingresso: IngressoVerifica
     }
     const costruzione = famiglia.normalizza(imposti, { variante }) as ParametriAnnidati;
     let mesh: MeshPiatta | null = null;
+    const inizioCostruzione = adesso();
     try {
       // Tutto ciò che il kernel crea qui (pezzi, intermedi, mesh) è liberato all'uscita: restano array JavaScript.
       mesh = lib.scope(() =>
@@ -254,6 +280,7 @@ export function verificaSilhouette(lib: typeof Smlib, ingresso: IngressoVerifica
       mesh = null;
     }
     ricostruzioni++;
+    msCostruzione += adesso() - inizioCostruzione;
     const risultato: Geometria = {
       mesh,
       violazioni,
@@ -319,8 +346,9 @@ export function verificaSilhouette(lib: typeof Smlib, ingresso: IngressoVerifica
     };
   };
 
+  let limiteTempo = scadenza;
   const controllaTempo = (): void => {
-    if (opzioni.segnale?.aborted || adesso() > scadenza) {
+    if (opzioni.segnale?.aborted || adesso() > limiteTempo) {
       interrotto = true;
       throw new Interruzione();
     }
@@ -530,7 +558,8 @@ export function verificaSilhouette(lib: typeof Smlib, ingresso: IngressoVerifica
     numeroAvvii,
   );
 
-  const giriParametri = opzioni.giriParametri ?? 3;
+  let giri = opzioni.giriParametri ?? 3;
+  let lento = false;
   const sovracampionamento = opzioni.sovracampionamento ?? 4;
   const cameraNelPiano = opzioni.cameraFaseA === 'piano';
   // Simplesso iniziale della camera in unità fisiche: 3° di azimut e di elevazione, 2° di rollo, 2 px di centro,
@@ -564,6 +593,87 @@ export function verificaSilhouette(lib: typeof Smlib, ingresso: IngressoVerifica
     stato.camera.cy -= (s.baricentro[1] - momentiMaschera.baricentro[1]) / stato.camera.pxPerMm;
   };
 
+  // Sensibilità alla vista finale (differenza finita centrata, vedi `osservabilita.ts`): per ogni parametro ottimizzato,
+  // ±5 % dell'intervallo con la camera ferma (ricentrata come nella fase B, perché la misura è la stessa) e la frazione
+  // dell'area della silhouette che cambia, nella regione valida. Le famiglie lente si misurano da un lato solo.
+  const misuraSensibilita = (stato: Stato): SensibilitaParametro[] => {
+    const concesso =
+      (opzioni.sensibilita ? opzioni.sensibilita.budgetMs : undefined) ??
+      Math.min(12_000, 0.25 * (opzioni.budgetMs ?? 45_000));
+    const scadenzaMisura = Math.max(scadenza, adesso()) + concesso;
+    const silhouetteDi = (parametri: ParametriAnnidati): MascheraBinaria | undefined => {
+      const { mesh } = geometria(parametri);
+      if (!mesh) {
+        return undefined;
+      }
+      const prova: Stato = { camera: { ...stato.camera }, parametri };
+      if (centraParametri) {
+        ricentra(prova);
+      }
+      return silhouetteMesh(mesh, prova.camera, { larghezza, altezza });
+    };
+    const base0 = silhouetteDi(stato.parametri);
+    if (!base0) {
+      return [];
+    }
+    limiteTempo = scadenzaMisura;
+    const iouBase = corrente!.valutazione.iou;
+    // Dopo la perturbazione la camera si riadatta (ancora poche proiezioni, nessuna ricostruzione): la camera assorbe
+    // gran parte degli errori di un parametro, e ciò che conta è quanto peggiora l'accordo con la maschera quando
+    // anche lei ha avuto modo di compensare.
+    const degradoDi = (parametri: ParametriAnnidati): number => {
+      const iniziale: Stato = { camera: { ...stato.camera }, parametri };
+      if (centraParametri) {
+        ricentra(iniziale);
+      }
+      const variabili = variabiliCamera(iniziale.camera, cameraNelPiano, riferimento0);
+      const rifatta = fase('camera', iniziale, variabili, 24, 2, passiCamera(variabili, iniziale.camera, 0.5));
+      return Math.max(0, iouBase - rifatta.valutazione.iou);
+    };
+    const risultati: SensibilitaParametro[] = [];
+    for (const definizione of definizioni) {
+      if (adesso() > scadenzaMisura || opzioni.segnale?.aborted) {
+        break;
+      }
+      const valore = Number(leggiParametro(stato.parametri, definizione.chiave));
+      const intervallo = definizione.max! - definizione.min!;
+      const passo =
+        definizione.unita === 'n'
+          ? Math.max(1, Math.round(PASSO_OSSERVABILITA * intervallo))
+          : PASSO_OSSERVABILITA * intervallo;
+      const versi = lento ? [valore + passo <= definizione.max! ? 1 : -1] : [1, -1];
+      let massima = 0;
+      let degrado = 0;
+      let misurato = false;
+      for (const verso of versi) {
+        const perturbato = Math.min(definizione.max!, Math.max(definizione.min!, valore + verso * passo));
+        if (perturbato === valore) {
+          continue;
+        }
+        const parametri = clona(stato.parametri);
+        scriviParametro(parametri, definizione.chiave, perturbato);
+        const altra = silhouetteDi(parametri);
+        if (!altra) {
+          continue;
+        }
+        misurato = true;
+        // Un passo ridotto dal limite (valore vicino al bordo) conta in proporzione: la sensibilità è per 5 % pieno.
+        const effettivo = Math.abs(perturbato - valore) / passo;
+        massima = Math.max(massima, differenzaSilhouette(base0, altra, riferimento.valida) / effettivo);
+        degrado += degradoDi(parametri) / effettivo / versi.length;
+      }
+      if (misurato) {
+        risultati.push(
+          esitoOsservabilita(definizione.chiave, { sensibilita: massima, degrado }, valore, [
+            definizione.min!,
+            definizione.max!,
+          ]),
+        );
+      }
+    }
+    return risultati;
+  };
+
   let corrente: { stato: Stato; valutazione: Valutazione } | undefined;
   // Camera di partenza dell'avvio scelto: i limiti degli angoli restano attorno a lei in tutte le fasi.
   let riferimento0: CameraVerifica | undefined;
@@ -578,6 +688,23 @@ export function verificaSilhouette(lib: typeof Smlib, ingresso: IngressoVerifica
       tolleranza = tolleranzaPerPixel(pxPerMmIniziale);
       cache.clear();
       meshStima = geometria(base).mesh;
+    }
+    // Famiglia lenta (fondo_semplice ≈ 0,6–0,9 s a costruzione): la fase A resta intera (proietta la mesh della stima,
+    // non ricostruisce), la B si limita a metà budget in un giro solo, la C salta, la sensibilità si misura da un lato.
+    // Con 60 valutazioni da 0,9 s la B da sola supererebbe i 45 s e l'ottimizzatore si fermerebbe a metà di un giro.
+    lento = ricostruzioni > 0 && msCostruzione / ricostruzioni > COSTO_LENTO_MS;
+    if (lento) {
+      const costo = msCostruzione / ricostruzioni;
+      if (opzioni.valutazioni?.parametri === undefined) {
+        limiti.parametri = Math.max(
+          10,
+          Math.min(VALUTAZIONI.parametri, Math.floor((0.5 * (scadenza - adesso())) / costo)),
+        );
+      }
+      if (opzioni.valutazioni?.congiunta === undefined) {
+        limiti.congiunta = 0;
+      }
+      giri = Math.min(giri, 1);
     }
     for (const azimuth of azimutAvvii) {
       controllaTempo();
@@ -598,7 +725,7 @@ export function verificaSilhouette(lib: typeof Smlib, ingresso: IngressoVerifica
         'camera',
         { camera, parametri: clona(base) },
         variabili,
-        valutazioniMassime.camera,
+        limiti.camera,
         iouCamera,
         passiCamera(variabili, camera),
       );
@@ -613,13 +740,13 @@ export function verificaSilhouette(lib: typeof Smlib, ingresso: IngressoVerifica
     // Fase B a giri: parametri con la camera ferma, poi la camera si riallinea (costa solo proiezioni) e i parametri
     // ripartono con un simplesso dimezzato. Il riavvio rimedia al simplesso che si appiattisce con 8–10 variabili.
     const dopoCamera = corrente!.valutazione.f;
-    for (let giro = 0; giro < giriParametri && !interrotto; giro++) {
+    for (let giro = 0; giro < giri && !interrotto; giro++) {
       const prima = corrente!.valutazione.f;
       const risultatoB = fase(
         'parametri',
         corrente!.stato,
         variabiliParametri,
-        valutazioniMassime.parametri,
+        limiti.parametri,
         iouParametri,
         passiParametri.map((passo) => passo * 0.5 ** giro),
         centraParametri ? ricentra : undefined,
@@ -638,7 +765,7 @@ export function verificaSilhouette(lib: typeof Smlib, ingresso: IngressoVerifica
         'camera',
         corrente.stato,
         variabili,
-        valutazioniMassime.camera,
+        limiti.camera,
         iouParametri,
         passiCamera(variabili, corrente.stato.camera, 0.5),
       );
@@ -646,21 +773,19 @@ export function verificaSilhouette(lib: typeof Smlib, ingresso: IngressoVerifica
       corrente = risultatoA;
     }
     // Fase C: congiunta, solo se B è servita.
-    if (!interrotto && dopoCamera - corrente!.valutazione.f > 0.01 && corrente!.valutazione.iou < iouParametri) {
+    if (
+      !interrotto &&
+      limiti.congiunta > 0 &&
+      dopoCamera - corrente!.valutazione.f > 0.01 &&
+      corrente!.valutazione.iou < iouParametri
+    ) {
       const variabiliC = variabiliCamera(corrente!.stato.camera, false, riferimento0);
       const variabili = [...variabiliC, ...variabiliParametri];
       const passi = [
         ...passiCamera(variabiliC, corrente!.stato.camera, 0.5),
         ...passiParametri.map((passo) => passo * 0.25),
       ];
-      const risultatoC = fase(
-        'congiunta',
-        corrente!.stato,
-        variabili,
-        valutazioniMassime.congiunta,
-        iouParametri,
-        passi,
-      );
+      const risultatoC = fase('congiunta', corrente!.stato, variabili, limiti.congiunta, iouParametri, passi);
       fasi.push(risultatoC.esito);
       corrente = risultatoC;
     }
@@ -682,6 +807,8 @@ export function verificaSilhouette(lib: typeof Smlib, ingresso: IngressoVerifica
     corrente = { stato: { camera, parametri: clona(base) }, valutazione: valuta({ camera, parametri: clona(base) }) };
   }
   const finale = geometria(corrente.stato.parametri);
+  const sensibilita =
+    opzioni.sensibilita === false || opzioni.segnale?.aborted ? [] : misuraSensibilita(corrente.stato);
   return {
     famiglia: ingresso.famiglia,
     ...(variante === undefined ? {} : { variante }),
@@ -697,6 +824,9 @@ export function verificaSilhouette(lib: typeof Smlib, ingresso: IngressoVerifica
     ricostruzioni,
     tempoMs: adesso() - inizio,
     interrotto,
+    sensibilita,
+    costoCostruzioneMs: ricostruzioni === 0 ? 0 : msCostruzione / ricostruzioni,
+    lento,
     silhouette: corrente.valutazione.silhouette,
     differenza: immagineDifferenza(corrente.valutazione.silhouette, riferimento),
   };

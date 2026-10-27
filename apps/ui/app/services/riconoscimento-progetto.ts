@@ -1,12 +1,20 @@
-import { pianoCostruzione } from '@taucad/smlib/riconoscimento';
+import { workbenchPaths, workbenchRecords } from '@taucad/workbench';
+import { findPieceMaterial } from '@taucad/viewer/cad/piece-materials';
+import { materialiPerPezzo, pianoCostruzione } from '@taucad/smlib/riconoscimento';
 import type { PianoCostruzione, SchedaParte, SchedaRiconoscimento } from '@taucad/smlib/riconoscimento';
-import { percorsoRiconoscimento, serializzaRecordRiconoscimento } from '#services/riconoscimento-record.js';
+import {
+  percorsoMaschera,
+  percorsoRiconoscimento,
+  serializzaRecordRiconoscimento,
+} from '#services/riconoscimento-record.js';
 import type { RecordRiconoscimento } from '#services/riconoscimento-record.js';
 
 /**
  * From a recognition to the files of the new CAD project (D2 §0 step 6): the family's `main.ts` (it imports the recipe
  * from `@sinopia/famiglie`), the record `.tau/workbench/riconoscimento.json`, and the part's picture and mask under
- * `riferimenti/` (the designer's own reference, beside the model, as the home's Sinopia images are).
+ * `riferimenti/` (the designer's own reference, beside the model, as the home's Sinopia images are), and, when the
+ * recognised material has a viewer material, `.tau/workbench/entries.json` with the material of each piece (the
+ * viewer shows and weighs them in it).
  */
 
 /** A project file as `createProject` takes it. */
@@ -44,6 +52,8 @@ export function progettoRiconosciuto(
     maschera?: Uint8Array<ArrayBuffer>;
     lingua: 'it' | 'en';
     famigliaScelta?: string;
+    /** The D3 check: its result, or why there is none (`saltata` stopped by the designer, `errore` failed). */
+    verifica?: RecordRiconoscimento['verifica'];
     adesso?: Date;
   }>,
 ): ProgettoRiconosciuto | undefined {
@@ -64,15 +74,31 @@ export function progettoRiconosciuto(
     risposte: {},
     scalaData: ingresso.scheda.scala.fonte !== 'stima',
     mainScritto: piano.main,
-    verifica: { stato: 'non_disponibile', motivo: 'modulo_assente' },
-    cronologia: [],
+    verifica: ingresso.verifica ?? { stato: 'non_disponibile', motivo: 'non_eseguita' },
+    cronologia:
+      ingresso.verifica?.stato === 'fatta' ? [{ quando: creato, iou: ingresso.verifica.iou, parametri: {} }] : [],
   };
-  const base = `riferimenti/${ingresso.schedaParte.parte.id.replaceAll(/[^\w-]/gu, '_') || 'parte'}`;
+  const base = percorsoMaschera(ingresso.schedaParte.parte.id).replace(/\.maschera\.png$/u, '');
+  const materiali = materialiPerPezzo(piano.famiglia, piano.parametri).filter(
+    (voce) => findPieceMaterial(voce.material) !== undefined,
+  );
   const files: Record<string, FileProgetto> = {
     'main.ts': { content: testo(piano.main) },
     [percorsoRiconoscimento]: { content: testo(serializzaRecordRiconoscimento(record)) },
     [`${base}.${estensioni[ingresso.immagine.tipo] ?? 'png'}`]: { content: ingresso.immagine.bytes },
-    ...(ingresso.maschera ? { [`${base}.maschera.png`]: { content: ingresso.maschera } } : {}),
+    ...(ingresso.maschera ? { [percorsoMaschera(ingresso.schedaParte.parte.id)]: { content: ingresso.maschera } } : {}),
+    ...(materiali.length > 0
+      ? {
+          [workbenchPaths.entries]: {
+            content: testo(
+              workbenchRecords.entries.serialize({
+                version: 1,
+                entries: { 'main.ts': { components: { hidden: [], isolated: [], opacity: [], materials: materiali } } },
+              }),
+            ),
+          },
+        }
+      : {}),
   };
   const nome = ingresso.schedaParte.parte.etichetta.trim() || ingresso.schedaParte.parte.nome.trim() || piano.famiglia;
   return { files, record, piano, nome: nome.slice(0, 80) };

@@ -81,21 +81,46 @@ export function pianoCostruzione(
   for (const parametro of riconosciuti.values()) {
     scriviParametro(grezzi, parametro.chiave, parametro.valore);
   }
-  const materiale = definizioni.get('costruzione.materiale');
-  if (
+  // Il materiale riconosciuto va alla famiglia: `costruzione.materiale`, o `lega` per anelli e pendenti.
+  const chiaveMateriale = ['costruzione.materiale', 'lega'].find(
+    (chiave) => definizioni.get(chiave)?.valori !== undefined,
+  );
+  const materiale = chiaveMateriale === undefined ? undefined : definizioni.get(chiaveMateriale);
+  const materialeVoluto =
     stessaFamiglia &&
+    chiaveMateriale !== undefined &&
     materiale?.valori?.includes(scheda.materiale.chiave) &&
-    !riconosciuti.has('costruzione.materiale') &&
+    !riconosciuti.has(chiaveMateriale) &&
     scheda.materiale.confidenza >= 0.5
-  ) {
-    scriviParametro(grezzi, 'costruzione.materiale', scheda.materiale.chiave);
+      ? scheda.materiale.chiave
+      : undefined;
+  if (chiaveMateriale !== undefined && materialeVoluto !== undefined) {
+    scriviParametro(grezzi, chiaveMateriale, materialeVoluto);
   }
   for (const [chiave, valore] of Object.entries(risposte)) {
     if (definizioni.has(chiave)) {
       scriviParametro(grezzi, chiave, valore);
     }
   }
-  const parametri = famiglia.normalizza(grezzi, { variante }) as ParametriAnnidati;
+  let parametri = famiglia.normalizza(grezzi, { variante }) as ParametriAnnidati;
+  // La famiglia può riportare il materiale a quello del processo (zama in pressofusione): se il materiale riconosciuto
+  // è un altro, è il processo a doversi adattare (ottone → lavorato o fuso), non il materiale a perdersi.
+  if (
+    chiaveMateriale !== undefined &&
+    materialeVoluto !== undefined &&
+    leggiParametro(parametri, chiaveMateriale) !== materialeVoluto
+  ) {
+    const processi = definizioni.get('costruzione.processo')?.valori ?? [];
+    for (const processo of processi) {
+      const prova = structuredClone(grezzi);
+      scriviParametro(prova, 'costruzione.processo', processo);
+      const normalizzati = famiglia.normalizza(prova, { variante }) as ParametriAnnidati;
+      if (leggiParametro(normalizzati, chiaveMateriale) === materialeVoluto) {
+        parametri = normalizzati;
+        break;
+      }
+    }
+  }
   const scalaStimata = scheda.scala.fonte === 'stima';
   const ipotesi: Record<string, string> = {};
   for (const definizione of famiglia.parametri) {

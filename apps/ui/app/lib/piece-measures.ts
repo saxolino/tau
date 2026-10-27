@@ -8,6 +8,20 @@ import { formatNumber } from '#i18n/translate.js';
 /** A piece and the top-level parameter keys that belong to it. Missing pieces stay in General. */
 export type PieceMeasureGroup = Readonly<{ id: string; node?: GeometryComponentNode; keys: readonly string[] }>;
 
+/**
+ * The name a parameter group is shown and matched under when its stored key is another word: the plate family keeps
+ * `piastra.*` in saved projects (renaming the key would break them) but the piece is called «Placca».
+ */
+const groupNameAliases: Readonly<Record<string, string>> = { piastra: 'placca' };
+
+/**
+ * The visible name of a parameter group's key.
+ *
+ * @param key - The stored key (`piastra`).
+ * @returns The name the designer sees and the piece is matched by (`placca`).
+ */
+export const visibleGroupName = (key: string): string => groupNameAliases[key] ?? key;
+
 /** Normalize a model name for matching without guessing by substrings (bezel and stone are distinct). */
 export const pieceNameKey = (name: string): string =>
   name
@@ -98,7 +112,7 @@ export const groupPieceMeasures = (
   const groups = pieces.map((node) => {
     const matching = [...remaining].filter(
       (key) =>
-        pieceNameKey(key) === pieceNameKey(node.name) ||
+        pieceNameKey(visibleGroupName(key)) === pieceNameKey(node.name) ||
         (isFlatValue(defaults[key]) && flatMeasurePiece(key, pieces)?.node.id === node.id),
     );
     for (const key of matching) {
@@ -110,7 +124,9 @@ export const groupPieceMeasures = (
   const paired = [...remaining].filter((key) => !isFlatValue(defaults[key]));
   for (const key of paired) {
     const sides = groups.filter(
-      ({ node }) => sidelessNameKey(node.name) === pieceNameKey(key) && pieceNameKey(node.name) !== pieceNameKey(key),
+      ({ node }) =>
+        sidelessNameKey(node.name) === pieceNameKey(visibleGroupName(key)) &&
+        pieceNameKey(node.name) !== pieceNameKey(visibleGroupName(key)),
     );
     for (const group of sides) {
       group.keys.push(key);

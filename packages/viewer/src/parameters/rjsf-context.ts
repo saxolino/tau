@@ -87,6 +87,11 @@ export type ParameterPresentation = Readonly<{
   inferredHint?: (kind: 'unit' | 'semantics') => string;
   /** Translate the tooltip of the button that resets one field. */
   resetLabel?: (fieldLabel: string) => string;
+  /**
+   * A host that edits an array its own way (SinopiaCAD: a plate's outline is «Outline · n points», not n rows of two
+   * numbers) renders it here. A node replaces the whole field (`null` hides it); `undefined` leaves the ordinary list.
+   */
+  arrayField?: (path: readonly string[], value: readonly unknown[]) => ReactNode | undefined;
 }>;
 
 /**

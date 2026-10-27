@@ -13,7 +13,12 @@ import type {
 import { emettiMainFamiglia } from '#famiglie/emetti-main.js';
 import { estrudiSformato, ovale } from '#famiglie/profili.js';
 import { aspettoMateriale } from '#famiglie/materiali.js';
-import { normalizzaConParametri, predefinitiDaParametri, schemaDaParametri } from '#famiglie/parametri.js';
+import {
+  leggiParametro,
+  normalizzaConParametri,
+  predefinitiDaParametri,
+  schemaDaParametri,
+} from '#famiglie/parametri.js';
 import { sogliaParete, sogliaSformo, soglieProcessi } from '#famiglie/processi.js';
 import {
   esitiPezzi,
@@ -60,7 +65,11 @@ export type ParametriFibbia = {
   };
   ardiglione: { diametro: number; gioco: number; materiale: 'acciaio' | 'inox' | 'ottone' };
   traversino: { abilitato: boolean; larghezza: number; profilo: 'piatto' | 'tondo' };
-  costruzione: { processo: 'pressofusione_zama' | 'fusione_cera_persa' | 'cnc'; sformo: number };
+  costruzione: {
+    processo: 'pressofusione_zama' | 'fusione_cera_persa' | 'cnc';
+    sformo: number;
+    materiale: 'zama' | 'ottone' | 'argento_925' | 'inox';
+  };
 };
 
 const varianti = ['rettangolare', 'ovale', 'a_d', 'doppia'] as const;
@@ -222,6 +231,14 @@ const parametri: readonly DefinizioneParametro[] = [
     descrizione: 'Processo produttivo del telaio',
   },
   {
+    chiave: 'costruzione.materiale',
+    unita: 'enum',
+    valori: ['zama', 'ottone', 'argento_925', 'inox'],
+    default: 'zama',
+    fonteDefault: 'mestiere',
+    descrizione: 'Materiale del telaio (zama in pressofusione, ottone o argento fuso, ottone o inox lavorato)',
+  },
+  {
     chiave: 'costruzione.sformo',
     unita: 'deg',
     min: 0.5,
@@ -245,6 +262,15 @@ const varianteDi = (opzioni?: OpzioniFamiglia): VarianteFibbia =>
 const predefiniti = (variante?: string): ParametriFibbia =>
   predefinitiDaParametri<ParametriFibbia>(parametri, sostituzioniVariante[varianteDi({ variante })]);
 
+/** Materiali che il processo lavora: lo zama si pressofonde, l'ottone e l'argento si fondono, ottone e inox si lavorano. */
+const materialiDelProcesso: Readonly<
+  Record<ParametriFibbia['costruzione']['processo'], ReadonlyArray<ParametriFibbia['costruzione']['materiale']>>
+> = {
+  pressofusione_zama: ['zama'],
+  fusione_cera_persa: ['ottone', 'argento_925'],
+  cnc: ['ottone', 'inox', 'argento_925'],
+};
+
 const vincoli = (p: ParametriFibbia): Array<{ chiave: string; messaggio: string }> => {
   const violati: Array<{ chiave: string; messaggio: string }> = [];
   const { telaio, ardiglione, traversino } = p;
@@ -264,12 +290,23 @@ const vincoli = (p: ParametriFibbia): Array<{ chiave: string; messaggio: string 
   if (traversino.abilitato && traversino.larghezza > telaio.altezzaInterna / 3) {
     violati.push({ chiave: 'traversino.larghezza', messaggio: 'Il traversino occupa più di un terzo dell’apertura.' });
   }
+  if (!materialiDelProcesso[p.costruzione.processo].includes(p.costruzione.materiale)) {
+    violati.push({ chiave: 'costruzione.materiale', messaggio: 'Materiale non adatto al processo.' });
+  }
   return violati;
 };
 
 const normalizza = (grezzi: unknown, opzioni?: OpzioniFamiglia): ParametriFibbia => {
   const p = normalizzaConParametri(parametri, grezzi, predefiniti(varianteDi(opzioni)));
   const { telaio, ardiglione, traversino } = p;
+  // I progetti scritti prima del parametro (nessun materiale) hanno il telaio che dà il processo, come allora.
+  const senzaMateriale = leggiParametro(grezzi, 'costruzione.materiale') === undefined;
+  if (senzaMateriale) {
+    p.costruzione.materiale = materialeTelaio(p.costruzione.processo);
+  }
+  if (!materialiDelProcesso[p.costruzione.processo].includes(p.costruzione.materiale)) {
+    p.costruzione.materiale = materialiDelProcesso[p.costruzione.processo][0]!;
+  }
   telaio.sezioneSpessore = Math.min(telaio.sezioneSpessore, telaio.sezioneLarghezza * 2);
   telaio.raggioAngoli = Math.min(telaio.raggioAngoli, Math.min(luceDi(p), telaio.altezzaInterna) / 2);
   ardiglione.diametro = Math.min(ardiglione.diametro, telaio.sezioneSpessore + 1);
@@ -278,8 +315,9 @@ const normalizza = (grezzi: unknown, opzioni?: OpzioniFamiglia): ParametriFibbia
   return p;
 };
 
-/** Materiale del telaio dal processo: zama pressofusa, ottone fuso o lavorato. */
-const materialeTelaio = (processo: Processo): string => (processo === 'pressofusione_zama' ? 'zama' : 'ottone');
+/** Materiale del telaio dal processo, per i progetti scritti prima del parametro: zama pressofusa, ottone altrimenti. */
+const materialeTelaio = (processo: Processo): ParametriFibbia['costruzione']['materiale'] =>
+  processo === 'pressofusione_zama' ? 'zama' : 'ottone';
 
 /** Il contorno esterno del telaio (schizzo su XY, centrato). */
 function sagomaEsterna(lib: Lib, variante: VarianteFibbia, p: ParametriFibbia): Smlib.Sketch {
@@ -490,7 +528,7 @@ function costruisciConEsiti(lib: Lib, p: ParametriFibbia, opzioni?: OpzioniFamig
   const variante = varianteDi(opzioni);
   const esiti: Esito[] = [];
   const pezzi: PezzoFamiglia[] = [];
-  const materiali = { telaio: materialeTelaio(p.costruzione.processo), ardiglione: p.ardiglione.materiale };
+  const materiali = { telaio: p.costruzione.materiale, ardiglione: p.ardiglione.materiale };
   try {
     const telaio = costruisciTelaio(lib, p, { variante, esiti });
     pezzi.push({
@@ -547,7 +585,7 @@ function verifiche(
 ): Esito[] {
   const esiti: Esito[] = [];
   const { telaio: t, ardiglione: a } = p;
-  const materialeT = materialeTelaio(processo);
+  const materialeT = processo === p.costruzione.processo ? p.costruzione.materiale : materialeTelaio(processo);
   const sezione = t.profilo === 'tondo' ? t.sezioneSpessore : Math.min(t.sezioneSpessore, t.sezioneLarghezza);
   esiti.push(
     esitoMinimo('PARETE_MIN', {
@@ -672,7 +710,7 @@ export const presetPilotaFibbia: { variante: VarianteFibbia; parametri: Parametr
     },
     ardiglione: { diametro: 2.5, gioco: 0.4, materiale: 'acciaio' },
     traversino: { abilitato: true, larghezza: 3.2, profilo: 'tondo' },
-    costruzione: { processo: 'cnc', sformo: 1 },
+    costruzione: { processo: 'cnc', sformo: 1, materiale: 'ottone' },
   },
 };
 

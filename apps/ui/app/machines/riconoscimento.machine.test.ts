@@ -32,6 +32,10 @@ const risposta = (iou: number, altezza: number): RispostaVerifica =>
     ricostruzioni: 80,
     tempoMs: 12_000,
     interrotto: false,
+    // The silhouette fixes the height in this view.
+    sensibilita: [{ chiave: 'tacco.altezza', sensibilita: 0.2, degrado: 0.1, osservabile: true, banda: [80, 90] }],
+    costoCostruzioneMs: 100,
+    lento: false,
     differenzaPng: Uint8Array.of(137, 80, 78, 71, iou * 100),
     maschera: { k: 0.3, origine: [10, 20], lato: 256 },
     tempoMascheraMs: 5,
@@ -82,6 +86,9 @@ describe('riconoscimentoMachine', () => {
     expect(fine.context.consegna?.esito).toBe('accettato');
     expect(fine.context.consegna?.parametri[0]).toMatchObject({ valore: 85.2, fonte: 'silhouette', confidenza: 0.9 });
     expect(fine.context.rientri).toBe(0);
+    // The sheet and the answer the delivery comes from travel with it (the pipeline builds the final sheet from them).
+    expect(fine.context.schedaConsegnata?.variante.id).toBe('stiletto');
+    expect(fine.context.rispostaConsegnata?.iou).toBe(0.95);
     expect(richieste[0]!.stima.parametri).toEqual({ tacco: { altezza: 84 }, anima: { diametro: 5 } });
     expect(richieste[0]!.maschera.png).toEqual(Uint8Array.of(1, 2, 3));
   });

@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { Button } from '@taucad/ui/components/button';
 import { catalogoFamiglie } from '@taucad/smlib/riconoscimento';
@@ -82,13 +82,37 @@ export function NuovoDaSinopia(): React.JSX.Element {
     () => leggiParametriNuovo(new URLSearchParams(query), { prove: import.meta.env.DEV }),
     [query],
   );
-  const { fase, scegliFamiglia, riprova } = useRiconoscimentoNuovo(lettura, language === 'en' ? 'en' : 'it');
+  const { fase, scegliFamiglia, riprova, saltaVerifica } = useRiconoscimentoNuovo(
+    lettura,
+    language === 'en' ? 'en' : 'it',
+  );
+  const staVerificando = fase.fase === 'verifico';
+  // Esc stops the check (and with it the worker): the piece is then built from the recognition alone.
+  useEffect(() => {
+    if (!staVerificando) {
+      return;
+    }
+    const alTasto = (evento: KeyboardEvent): void => {
+      if (evento.key === 'Escape') {
+        evento.preventDefault();
+        saltaVerifica();
+      }
+    };
+    document.addEventListener('keydown', alTasto);
+    return () => {
+      document.removeEventListener('keydown', alTasto);
+    };
+  }, [saltaVerifica, staVerificando]);
   const catalogo = useMemo(() => catalogoFamiglie(), []);
   const parte = 'parte' in fase ? fase.parte : undefined;
   const esito = 'esito' in fase ? fase.esito : undefined;
   const famiglia = esito
     ? catalogo.find(
-        (voce) => voce.id === (fase.fase === 'costruisco' && fase.famiglia ? fase.famiglia : esito.scheda.famiglia.id),
+        (voce) =>
+          voce.id ===
+          ((fase.fase === 'costruisco' || fase.fase === 'verifico') && fase.famiglia
+            ? fase.famiglia
+            : esito.scheda.famiglia.id),
       )
     : undefined;
   return (
@@ -110,7 +134,11 @@ export function NuovoDaSinopia(): React.JSX.Element {
         <div className='space-y-3' aria-live='polite'>
           {fase.fase === 'leggo' ? <Passo testo={t('riconoscimento.reading')} /> : null}
           {fase.fase === 'riconosco' ? <Passo testo={t('riconoscimento.recognizing')} /> : null}
-          {esito && (fase.fase === 'costruisco' || fase.fase === 'scegli_famiglia' || fase.fase === 'fermo') ? (
+          {esito &&
+          (fase.fase === 'verifico' ||
+            fase.fase === 'costruisco' ||
+            fase.fase === 'scegli_famiglia' ||
+            fase.fase === 'fermo') ? (
             <RecognitionCard
               scheda={esito.scheda}
               famiglia={famiglia}
@@ -124,8 +152,30 @@ export function NuovoDaSinopia(): React.JSX.Element {
                     },
                   }
                 : {})}
-              {...(fase.fase === 'costruisco' ? { stato: t('riconoscimento.building'), isBusy: true } : {})}
+              {...(fase.fase === 'verifico' ? { stato: t('riconoscimento.verifying'), isBusy: true } : {})}
+              {...(fase.fase === 'costruisco'
+                ? {
+                    stato: t('riconoscimento.building'),
+                    isBusy: true,
+                    ...(fase.iou === undefined ? {} : { verifica: { stato: 'fatta' as const, iou: fase.iou } }),
+                  }
+                : {})}
             />
+          ) : null}
+          {fase.fase === 'verifico' ? (
+            <div className='space-y-2 rounded-lg border border-border bg-background px-3 py-3'>
+              <p className='flex items-center gap-2 text-sm'>
+                <Spinner className='text-titanium-foreground' />
+                {t('riconoscimento.verifying')}
+              </p>
+              <p className='text-xs leading-relaxed text-muted-foreground'>{t('riconoscimento.verifyingHint')}</p>
+              <Button size='sm' variant='outline' onClick={saltaVerifica}>
+                {t('riconoscimento.skipCheck')}
+                <span className='ml-2 font-mono text-[10px] tracking-[0.12em] text-muted-foreground uppercase'>
+                  {t('riconoscimento.skipCheckKey')}
+                </span>
+              </Button>
+            </div>
           ) : null}
           {fase.fase === 'costruisco' ? <Passo testo={t('riconoscimento.building')} /> : null}
           {fase.fase === 'fermo' || fase.fase === 'errore' ? (

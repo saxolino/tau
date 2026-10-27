@@ -17,7 +17,7 @@ const impronta = (percorso: string): string => createHash('sha256').update(readF
  * entrambi in Sinopia e aggiorna le impronte nei DUE test.
  */
 const impronteGemelle = {
-  contratto: 'ab3115481f236fc1f2a7b16f0a1c0d7ffc5a3ae2d205fff6b4044ccd4433611f',
+  contratto: '05c58bbe033b47a23c996261a0eb1969e57c8da38abacdedae20ccd70fb86617',
   condiviso: 'e99749c95a17ad2e5de5bdc1ad490b2ae3339861fdb0a08abef9f47200cc381f',
 };
 

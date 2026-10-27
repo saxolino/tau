@@ -30,6 +30,8 @@ export type RiconoscimentoInput = {
   maschera: Uint8Array<ArrayBuffer>;
   /** Budget della prima verifica in ms (predefinito quello dell'ottimizzatore, 45 s). */
   budgetMs?: number;
+  /** Chiavi fissate dall'utente: l'ottimizzatore non le muove. */
+  bloccati?: readonly string[];
 };
 
 /** Ingresso dell'attore `riconosci` (D2). */
@@ -48,12 +50,16 @@ type RiconoscimentoContext = {
   parteId: string;
   maschera: Uint8Array<ArrayBuffer>;
   budgetMs: number | undefined;
+  bloccati: readonly string[];
   scheda: SchedaPerVerifica | undefined;
   /** Ultima verifica e la migliore finora, con la scheda che l'ha prodotta. */
   ultima: RispostaVerifica | undefined;
   migliore: { risposta: RispostaVerifica; scheda: SchedaPerVerifica } | undefined;
   rientri: number;
   consegna: Consegna | undefined;
+  /** La scheda e la risposta da cui nasce la consegna (la migliore dei due giri se c'è l'avviso). */
+  schedaConsegnata: SchedaPerVerifica | undefined;
+  rispostaConsegnata: RispostaVerifica | undefined;
   errore: string | undefined;
 };
 
@@ -86,11 +92,14 @@ export const riconoscimentoMachine = setup({
     parteId: input.parteId,
     maschera: input.maschera,
     budgetMs: input.budgetMs,
+    bloccati: input.bloccati ?? [],
     scheda: undefined,
     ultima: undefined,
     migliore: undefined,
     rientri: 0,
     consegna: undefined,
+    schedaConsegnata: undefined,
+    rispostaConsegnata: undefined,
     errore: undefined,
   }),
   initial: 'inattivo',
@@ -120,13 +129,18 @@ export const riconoscimentoMachine = setup({
       invoke: {
         src: 'verifica',
         input: ({ context }) => ({
-          richiesta: richiestaDaScheda(context.scheda!, context.maschera, {
-            ...(context.rientri > 0
-              ? { budgetMs: BUDGET_DOPO_RIENTRO_MS }
-              : context.budgetMs === undefined
-                ? {}
-                : { budgetMs: context.budgetMs }),
-          })!,
+          richiesta: richiestaDaScheda(
+            context.scheda!,
+            context.maschera,
+            {
+              ...(context.rientri > 0
+                ? { budgetMs: BUDGET_DOPO_RIENTRO_MS }
+                : context.budgetMs === undefined
+                  ? {}
+                  : { budgetMs: context.budgetMs }),
+            },
+            context.bloccati,
+          )!,
         }),
         onDone: ({ context, event }) => {
           const risposta = event.output;
@@ -146,6 +160,8 @@ export const riconoscimentoMachine = setup({
               ultima: risposta,
               migliore,
               consegna: consegnaVerifica(scelta.scheda, scelta.risposta, esito),
+              schedaConsegnata: scelta.scheda,
+              rispostaConsegnata: scelta.risposta,
             },
           };
         },

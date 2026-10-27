@@ -11,6 +11,16 @@ import { schedaParteSchema, schedaRiconoscimentoSchema } from '@taucad/smlib/ric
 /** Where the record lives, relative to the project root. */
 export const percorsoRiconoscimento = '.tau/workbench/riconoscimento.json';
 
+/**
+ * Where the part's mask is kept in the project (`riferimenti/<part>.maschera.png`), beside its picture: the D3 check
+ * runs again on it when the designer answers a chip.
+ *
+ * @param idParte - The part id of the part sheet.
+ * @returns The path, relative to the project root.
+ */
+export const percorsoMaschera = (idParte: string): string =>
+  `riferimenti/${idParte.replaceAll(/[^\w-]/gu, '_') || 'parte'}.maschera.png`;
+
 /** The record version this build writes. */
 export const versioneRecord = 1;
 
@@ -29,6 +39,14 @@ const verificaSchema = z.discriminatedUnion('stato', [
       cx: z.number(),
       cy: z.number(),
     }),
+    /** How the check ended: accepted, accepted with reserve, or kept with a warning (the best of the two rounds). */
+    esito: z.enum(['accettato', 'riserva', 'avviso']).optional(),
+    /** Parameters the optimiser moved that the photo's view does not fix: they stay assumptions (observability rule). */
+    nonOsservabili: z.array(z.string()).optional(),
+    /** A critical measure is not seen from this view: «Aggiungi una foto di lato». */
+    suggerimenti: z.array(z.enum(['foto_lato'])).optional(),
+    /** Times the model was asked again with the difference picture (0 or 1). */
+    rientri: z.number().int().min(0).optional(),
   }),
 ]);
 
