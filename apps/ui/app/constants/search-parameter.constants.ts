@@ -28,6 +28,8 @@ export const searchParameterName = {
   sinopiaProject: 'project',
   // The CAD model of the account to open (`cad_models.id`).
   sinopiaModel: 'model',
+  // With `model`: the section to open it on (`foto`: the sample photo, asked by Sinopia's «Fai lo shooting»).
+  sinopiaSection: 'sezione',
   // «/cad/nuovo» (a part isolated in Sinopia → recognised family): the image asset, the part, its mask, its type,
   // the library component and a measure the designer knows (`<mm>:<what>`).
   sinopiaAsset: 'asset',

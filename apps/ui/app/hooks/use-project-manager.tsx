@@ -80,7 +80,7 @@ import {
   getKernelProjectTemplate,
 } from '#utils/kernel.utils.js';
 import { encodeTextFile } from '#utils/filesystem.utils.js';
-import { defaultProjectName } from '#constants/project-names.js';
+import { defaultProjectName, projectNameOrDefault } from '#constants/project-names.js';
 import type { AppUiPreferences, CommitCancelledDraftRestoreInput } from '#types/storage.types.js';
 import type {
   PendingProjectOperation,
@@ -104,11 +104,15 @@ import { canReadSinopiaCadProject, sinopiaProjectListingKey } from '#services/si
 import { requireSinopiaUser } from '#lib/sinopia-data-client.js';
 import {
   createSinopiaCadLink,
+  ensureSinopiaCadModel,
   readSinopiaCadLink,
   sinopiaCadLinkPath,
   sinopiaCadLinkSchema,
   sinopiaCadLocalId,
+  sinopiaCadSourceHint,
+  withSinopiaCadSource,
 } from '#services/sinopia-cad.js';
+import type { SinopiaCadSource } from '#services/sinopia-cad.js';
 import type {
   PreparedWorkspaceCatalog,
   RegisteredWorkspace,
@@ -134,8 +138,13 @@ const attachmentSourceOf = (options: CreateProjectChatOptions): { attachmentSour
  * with `Chat.startupRequest`; plain pending messages are display state only.
  */
 type CreateProjectChatOptions = {
-  /** The owned Sinopia project selected with the reference images. */
+  /** The owned Sinopia project the model belongs to: the reference images' project, or the one the CAD started from. */
   sinopiaProjectId?: string;
+  /**
+   * The image (and part) of `sinopiaProjectId` the piece is built from (`/cad/nuovo`): the model is registered on
+   * Sinopia at once with its origin, so the project's Riepilogo shows it and «Apri nel CAD» on the same part reopens it.
+   */
+  sinopiaSource?: SinopiaCadSource;
   /** If provided, add to chat and seed a one-shot startup request. */
   initialMessage?: {
     content: string;
@@ -1534,12 +1543,12 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
              * project is still created, under the same default an empty
              * suggestion gets. */
             .catch((): string => '');
-          projectName = generated.trim() || defaultProjectName;
+          projectName = projectNameOrDefault(generated);
         }
         const mainFileName = getMainFile(options.kernel);
         const emptyCode = getEmptyCode(options.kernel);
         const result = createInitialProject({
-          projectName: projectName ?? defaultProjectName,
+          projectName: projectNameOrDefault(projectName ?? defaultProjectName),
           mainFileName,
           emptyCodeContent: encodeTextFile(emptyCode),
           ecosystem: getKernelOption(options.kernel).ecosystem,
@@ -1562,13 +1571,34 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
       if (account.status === 'signed-in') {
         const link =
           importedLink === undefined
-            ? await createSinopiaCadLink(projectData.name, options.sinopiaProjectId)
+            ? withSinopiaCadSource(
+                await createSinopiaCadLink(projectData.name, options.sinopiaProjectId),
+                options.sinopiaProjectId === undefined ? undefined : options.sinopiaSource,
+              )
             : sinopiaCadLinkSchema.parse(JSON.parse(new TextDecoder().decode(importedLink.content)));
         if (link.userId !== account.user.id) {
           throw new Error('SINOPIA_OWNER_MISMATCH');
         }
         files = { ...files, [sinopiaCadLinkPath]: { content: new TextEncoder().encode(JSON.stringify(link)) } };
         sinopiaCadLocalId.set(link.userId, link.modelId, projectId);
+        if (importedLink === undefined && link.sourceAssetId !== undefined) {
+          if (link.sourcePartId !== undefined) {
+            sinopiaCadSourceHint.set(
+              {
+                userId: link.userId,
+                projectId: link.projectId,
+                assetId: link.sourceAssetId,
+                partId: link.sourcePartId,
+              },
+              link.modelId,
+            );
+          }
+          /* The piece's main.ts is SMLib (`@sinopia/famiglie`). Registering now, not at the first save, is what makes
+             the model appear in the Sinopia project right away; a failure only defers it to that save. */
+          await ensureSinopiaCadModel(link, projectData.name, 'smlib').catch((error: unknown) => {
+            console.warn('[sinopia] the model will be registered at its first save', error);
+          });
+        }
       }
 
       const manifest = projectToManifest(projectData);

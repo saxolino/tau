@@ -20,10 +20,17 @@ import type { SinopiaReferenceSelection } from '#services/sinopia-references.js'
 import { useFileManager } from '#hooks/use-file-manager.js';
 import { homeProjectCreationLocation } from '#types/project-creation-location.types.js';
 
-/** The home hero and composer create through the same attachment-preserving first-turn flow. */
+/**
+ * The home hero and composer create through the same attachment-preserving first-turn flow.
+ *
+ * `originSinopiaProjectId` is the Sinopia project the CAD was opened from (`/cad/?project=`, Sinopia's «Apri nel CAD»):
+ * the new model belongs to it, as it belongs to the project of the reference images when those are chosen. Only
+ * without either does the model get a Sinopia project of its own.
+ */
 export function useNewProjectSubmit(
   enableLocationPicker: boolean,
   references?: SinopiaReferenceSelection,
+  originSinopiaProjectId?: string,
 ): {
   readonly onSubmit: ChatTextareaProperties['onSubmit'];
   readonly rememberReferences: (selection: SinopiaReferenceSelection) => Promise<SinopiaReferenceSelection>;
@@ -82,8 +89,10 @@ export function useNewProjectSubmit(
         const selection =
           references ?? (await restoreSinopiaReferenceSelection(recordFiles, attachments, attachmentSource));
         const referenceOptions = await prepareSinopiaReferenceSelection(selection, attachments);
+        const sinopiaProjectId = referenceOptions.sinopiaProjectId ?? originSinopiaProjectId;
         const created = await projectManager.createProject({
           ...referenceOptions,
+          ...(sinopiaProjectId === undefined ? {} : { sinopiaProjectId }),
           /* The empty starter file only: the chat pins no engine, and the agent chooses one for the job. */
           kernel: sinopiaStarterKernelId,
           /* The chip's value verbatim — not a Tau execution rebuilt from the
@@ -130,6 +139,7 @@ export function useNewProjectSubmit(
       execution,
       location,
       navigate,
+      originSinopiaProjectId,
       presentLocationError,
       projectManager,
       references,

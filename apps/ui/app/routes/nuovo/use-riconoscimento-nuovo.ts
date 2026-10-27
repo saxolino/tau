@@ -9,6 +9,8 @@ import {
 } from '@taucad/smlib/riconoscimento';
 import type { DomandaFamiglia, SchedaRiconoscimento } from '@taucad/smlib/riconoscimento';
 import { useProjectManager } from '#hooks/use-project-manager.js';
+import { useFileManager } from '#hooks/use-file-manager.js';
+import { useSinopiaSession } from '#hooks/use-sinopia-session.js';
 import type { PlainMessageKey } from '#i18n/translate.js';
 import { sinopiaStarterKernelId } from '#lib/sinopia-engines.js';
 import { homeProjectCreationLocation } from '#types/project-creation-location.types.js';
@@ -25,6 +27,9 @@ import { caricaSchedaPezzo } from '#services/sinopia-pezzo.js';
 import type { LetturaNuovo, ParteCaricata } from '#services/sinopia-parts.js';
 import { ErroreRiconoscimento, riconosciParte, riconoscimentoRegistrato } from '#services/sinopia-recognize.js';
 import type { EsitoRiconoscimento } from '#services/sinopia-recognize.js';
+import { readSinopiaCadLink } from '#services/sinopia-cad.js';
+import { cercaModelloEsistente } from '#services/sinopia-modello-esistente.js';
+import type { ModelloEsistente, OrigineSinopia } from '#services/sinopia-modello-esistente.js';
 
 /**
  * The flow of «/cad/nuovo»: read the part from Sinopia, recognise it, ask the family when the recognition is unsure,
@@ -33,13 +38,19 @@ import type { EsitoRiconoscimento } from '#services/sinopia-recognize.js';
  * its worker; the piece is then built from the recognition alone, said so in its record.
  */
 
-/** The part as the page shows it: the sheet, and object URLs of the picture and the mask. */
-export type ParteVista = ParteCaricata & Readonly<{ immagineUrl: string; mascheraUrl: string; prova: boolean }>;
+/**
+ * The part as the page shows it: the sheet, object URLs of the picture and the mask, and, for a part of a Sinopia
+ * project, where it comes from (the model will belong to that project, with that image and part as its origin).
+ */
+export type ParteVista = ParteCaricata &
+  Readonly<{ immagineUrl: string; mascheraUrl: string; prova: boolean; origine?: OrigineSinopia }>;
 
 /** Where the flow stands. */
 export type FaseNuovo =
   | Readonly<{ fase: 'leggo' }>
   | Readonly<{ fase: 'riconosco'; parte: ParteVista }>
+  /** The part already became a model: open it, or build it again from scratch (only on request: it costs again). */
+  | Readonly<{ fase: 'esiste'; parte: ParteVista; modello: ModelloEsistente }>
   | Readonly<{ fase: 'scegli_famiglia'; parte: ParteVista; esito: EsitoRiconoscimento; domanda: DomandaFamiglia }>
   | Readonly<{ fase: 'verifico'; parte: ParteVista; esito: EsitoRiconoscimento; famiglia?: string }>
   | Readonly<{
@@ -115,9 +126,18 @@ export function useRiconoscimentoNuovo(
   riprova: () => void;
   /** Stop the check (and its worker) and build the piece from the recognition alone. */
   saltaVerifica: () => void;
+  /** Open the model the part already has. */
+  apriEsistente: () => void;
+  /** Build the part again, as a new model in the same Sinopia project. */
+  rifaiDaCapo: () => void;
 }> {
   const navigate = useNavigate();
   const projectManager = useProjectManager();
+  const { recordFiles } = useFileManager();
+  const session = useSinopiaSession();
+  const userId = session.status === 'signed-in' ? session.user.id : undefined;
+  /** Set by «Rifallo da capo»: this visit no longer asks about the existing model. */
+  const rifai = useRef(false);
   const [fase, setFase] = useState<FaseNuovo>(
     lettura.stato === 'incompleto'
       ? { fase: 'errore', messaggio: 'riconoscimento.errors.incomplete', riprova: false }
@@ -210,11 +230,19 @@ export function useRiconoscimentoNuovo(
         return;
       }
       try {
+        const { origine } = parte;
         const creato = await projectManager.createProject({
           kernel: sinopiaStarterKernelId,
           projectName: progetto.nome,
           files: progetto.files,
           location: homeProjectCreationLocation,
+          // One project: a part of a Sinopia project builds a model OF that project, never a second project.
+          ...(origine === undefined
+            ? {}
+            : {
+                sinopiaProjectId: origine.projectId,
+                sinopiaSource: { assetId: origine.assetId, partId: origine.partId },
+              }),
         });
         await navigate(projectUrl(creato.slugs));
       } catch (error) {
@@ -228,9 +256,15 @@ export function useRiconoscimentoNuovo(
   // The flow runs once per address and per «Riprova»: the identity of the callbacks must not restart it.
   const costruisciCorrente = useRef(costruisci);
   const letturaCorrente = useRef(lettura);
+  const utenteCorrente = useRef(userId);
+  const projectManagerCorrente = useRef(projectManager);
+  const recordFilesCorrenti = useRef(recordFiles);
   useEffect(() => {
     costruisciCorrente.current = costruisci;
     letturaCorrente.current = lettura;
+    utenteCorrente.current = userId;
+    projectManagerCorrente.current = projectManager;
+    recordFilesCorrenti.current = recordFiles;
   });
   const chiave = JSON.stringify(lettura);
 
@@ -258,7 +292,21 @@ export function useRiconoscimentoNuovo(
         const immagineUrl = URL.createObjectURL(caricata.immagine);
         const mascheraUrl = URL.createObjectURL(caricata.mascheraPng);
         urls.current.push(immagineUrl, mascheraUrl);
-        parte = { ...caricata, immagineUrl, mascheraUrl, prova: lettura.stato === 'prova' };
+        parte = {
+          ...caricata,
+          immagineUrl,
+          mascheraUrl,
+          prova: lettura.stato === 'prova',
+          ...(lettura.stato === 'parte'
+            ? {
+                origine: {
+                  projectId: lettura.parametri.progetto.toLowerCase(),
+                  assetId: lettura.parametri.asset.toLowerCase(),
+                  partId: lettura.parametri.parte,
+                },
+              }
+            : {}),
+        };
       } catch (error) {
         if (annullato()) {
           return;
@@ -281,6 +329,23 @@ export function useRiconoscimentoNuovo(
       if (vincolo.vincolo === 'vincolata' && vincolo.famiglia === 'non_modellabile') {
         setFase({ fase: 'fermo', parte, messaggio: 'riconoscimento.errors.notModelable' });
         return;
+      }
+      // Before the recognition (which costs): a part that already became a model is reopened, not rebuilt.
+      const utente = utenteCorrente.current;
+      if (parte.origine !== undefined && utente !== undefined && !rifai.current) {
+        const modello = await cercaModelloEsistente({
+          origine: parte.origine,
+          userId: utente,
+          progettiLocali: async () => projectManagerCorrente.current.getProjects({ includeDeleted: false }),
+          leggiLink: async (localId) => readSinopiaCadLink(recordFilesCorrenti.current, `/projects/${localId}`),
+        });
+        if (annullato()) {
+          return;
+        }
+        if (modello !== undefined) {
+          setFase({ fase: 'esiste', parte, modello });
+          return;
+        }
       }
       setFase({ fase: 'riconosco', parte });
       let esito: EsitoRiconoscimento;
@@ -367,5 +432,19 @@ export function useRiconoscimentoNuovo(
   const riprova = useCallback((): void => {
     setGiro((numero) => numero + 1);
   }, []);
-  return { fase, scegliFamiglia, riprova, saltaVerifica };
+  const apriEsistente = useCallback((): void => {
+    if (fase.fase !== 'esiste') {
+      return;
+    }
+    const { modello } = fase;
+    // The device's copy opens directly; otherwise the home opens the saved model from Sinopia (`?model=`).
+    void navigate(
+      modello.slugs === undefined ? `/?model=${encodeURIComponent(modello.modelId)}` : projectUrl(modello.slugs),
+    );
+  }, [fase, navigate]);
+  const rifaiDaCapo = useCallback((): void => {
+    rifai.current = true;
+    setGiro((numero) => numero + 1);
+  }, []);
+  return { fase, scegliFamiglia, riprova, saltaVerifica, apriEsistente, rifaiDaCapo };
 }
