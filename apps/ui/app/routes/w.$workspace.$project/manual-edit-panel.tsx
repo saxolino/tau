@@ -709,11 +709,19 @@ export function ManualEditPanel({
       : draft.base.operations.map((operation) => (operation.id === draft.operation.id ? draft.operation : operation));
     if (await saveDocument({ version: 1, operations }, draft.commit)) {
       setDraft(undefined);
+      resumeTools();
+    }
+  };
+  /** A draft over, the piece tools come back: the inspector is never left without a selection tool. */
+  const resumeTools = (): void => {
+    if (directControls && !directControls.mode && !faceControls?.enabled) {
+      directControls.onModeChange('translate');
     }
   };
   const discardDraft = (): void => {
     setDraft(undefined);
     setLocalError(undefined);
+    resumeTools();
   };
   const mutateHistory = (operations: ManualOperation[]): void => {
     if (document && !busy && !draft) {
@@ -779,12 +787,17 @@ export function ManualEditPanel({
       directControls?.onCancel();
     }
   };
-  // Invio and Esc reach the operation from the model too, not only from inside the inspector.
-  const keys = useRef({ applyPending, cancelPending, pending, hasSelection: false });
-  const hasSelection =
-    pending !== undefined || faceControls?.selected !== undefined || directControls?.selected !== undefined;
+  /*
+   * Invio and Esc confirm and discard a previewed operation (a face, a hole, a fillet or chamfer), from the model too,
+   * not only from inside the inspector. A draft keeps its own buttons: its fields and profile points use those keys.
+   */
+  const isPreviewPending = pending === 'face' || pending === 'edge';
+  const keys = useRef({ applyPending, cancelPending, isPreviewPending, canCancel: false });
+  const canCancel =
+    draft === undefined &&
+    (isPreviewPending || faceControls?.selected !== undefined || directControls?.selected !== undefined);
   useLayoutEffect(() => {
-    keys.current = { applyPending, cancelPending, pending, hasSelection };
+    keys.current = { applyPending, cancelPending, isPreviewPending, canCancel };
   });
   useKeybinding(
     { key: 'Enter' },
@@ -792,7 +805,7 @@ export function ManualEditPanel({
       keys.current.applyPending();
     },
     {
-      enabled: () => keys.current.pending !== undefined,
+      enabled: () => keys.current.isPreviewPending,
       ignoreInputs: true,
       scope: 'global',
       priority: 1,
@@ -804,7 +817,7 @@ export function ManualEditPanel({
       keys.current.cancelPending();
     },
     {
-      enabled: () => keys.current.hasSelection,
+      enabled: () => keys.current.canCancel,
       ignoreInputs: true,
       scope: 'global',
       priority: 1,
@@ -837,7 +850,9 @@ export function ManualEditPanel({
           : [];
   const moreTools: readonly Tool[] = (
     ['sketch', 'extrude', 'mirror', 'hole', 'translate', 'rotate', 'scale', 'fillet', 'chamfer'] as const
-  ).filter((type) => type !== primary && !secondary.includes(type));
+  )
+    // Without a selection tool the main button is «Disegna profilo» (extrude), so the menu does not repeat it.
+    .filter((type) => type !== (primary ?? 'extrude') && !secondary.includes(type));
   const directBusy = busy || !document;
   const help = ((): string | undefined => {
     if (draft) {
@@ -961,13 +976,14 @@ export function ManualEditPanel({
       aria-label={t('manualEdit.title')}
       data-testid='manual-edit-panel'
       className='flex min-w-0 flex-col text-foreground'
-      onKeyDown={(event) => {
-        if (event.key === 'Enter' && pending !== undefined && pending !== 'draft' && isTextField(event.target)) {
+      onKeyDownCapture={(event) => {
+        // Before the field commits its value on Enter (it may stop the event), so the apply sees that value.
+        if (event.key === 'Enter' && isPreviewPending && isTextField(event.target)) {
           scheduleApply();
-        } else if (event.key === 'Enter' && pending !== undefined && !isTextField(event.target)) {
-          event.preventDefault();
-          applyPending();
-        } else if (event.key === 'Escape' && !isTextField(event.target) && hasSelection) {
+        }
+      }}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape' && !event.defaultPrevented && !isTextField(event.target) && canCancel) {
           event.preventDefault();
           cancelPending();
         }
@@ -1136,7 +1152,7 @@ export function ManualEditPanel({
                   </DropdownMenuItem>
                 );
               })}
-              {directControls?.mode && !edgeMode ? (
+              {directControls?.mode ? (
                 <DropdownMenuItem
                   disabled={choices.length === 0}
                   onSelect={() => {
@@ -1150,8 +1166,9 @@ export function ManualEditPanel({
                   {t('manualEdit.numericDraft')}
                 </DropdownMenuItem>
               ) : null}
-              {onShowProfiles !== undefined || onShowModel !== undefined ? <DropdownMenuSeparator /> : null}
-              {onShowProfiles ? (
+              {/* Switching the view mid-draft would hide what is being drawn: the view actions wait for it. */}
+              {!draft && (onShowProfiles !== undefined || onShowModel !== undefined) ? <DropdownMenuSeparator /> : null}
+              {onShowProfiles && !draft ? (
                 <DropdownMenuItem
                   onSelect={() => {
                     onShowProfiles();
@@ -1160,7 +1177,7 @@ export function ManualEditPanel({
                   {t('manualEdit.showProfiles')}
                 </DropdownMenuItem>
               ) : null}
-              {onShowModel ? (
+              {onShowModel && !draft ? (
                 <DropdownMenuItem
                   onSelect={() => {
                     onShowModel();
