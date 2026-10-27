@@ -29,7 +29,7 @@ describe('ChatErrorRateLimit', () => {
     const { container } = render(<ChatErrorRateLimit resumable retryAfterSeconds={30} />);
 
     expect(screen.getByText('Rate limit reached')).toBeInTheDocument();
-    expect(screen.getByText('The model provider asked Tau to wait.')).toBeInTheDocument();
+    expect(screen.getByText('The model provider asked SinopiaCAD to wait.')).toBeInTheDocument();
     expect(screen.getByText('Resume in 30 seconds.')).toBeInTheDocument();
     expect(screen.getByText('Everything up to here is saved.')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^retry$/i })).not.toBeInTheDocument();

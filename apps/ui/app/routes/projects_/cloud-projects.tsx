@@ -130,7 +130,7 @@ export function OnTauCloudMark(): React.JSX.Element {
   return (
     <span data-slot='on-tau-cloud' className='flex shrink-0 items-center'>
       <Cloud aria-hidden className='size-3 shrink-0' />
-      <span className='sr-only'>Also on Tau Cloud</span>
+      <span className='sr-only'>Also on SinopiaCAD Cloud</span>
     </span>
   );
 }
@@ -192,7 +192,7 @@ function CloudOnlyWhere({ entry }: { readonly entry: CloudProject }): React.JSX.
   return (
     <div className='flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground'>
       <Glyph aria-hidden className='size-3 shrink-0' />
-      <span className='truncate'>Tau Cloud</span>
+      <span className='truncate'>SinopiaCAD Cloud</span>
       {shared === undefined ? undefined : <Badge variant='secondary'>{shared.badge}</Badge>}
     </div>
   );
@@ -351,7 +351,7 @@ export const useMaterializeCloudProjects = ({
         /* Not created: nothing may point at it. Asked again once the listing's
            ids change, or on the library's next visit. */
         tauCloudIntent.set(entry.id, undefined);
-        console.error(`Error bringing ${entry.name} from Tau Cloud:`, error);
+        console.error(`Error bringing ${entry.name} from SinopiaCAD Cloud:`, error);
       }
     };
     /* One pass, in order, so two creations never race one directory allocation. */

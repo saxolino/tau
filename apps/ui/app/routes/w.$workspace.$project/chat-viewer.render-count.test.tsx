@@ -135,9 +135,20 @@ const editorStub = vi.hoisted(() => {
   };
 });
 
+// The viewer now reads the manual-edit manifest of its entry from the project's model-interaction actor
+// (no units yet, so no manual targets); the stub keeps one stable snapshot so it never causes a re-render.
+const modelInteractionStub = vi.hoisted(() => {
+  const snapshot = { context: { unitsById: {} } };
+  return {
+    getSnapshot: () => snapshot,
+    subscribe: () => ({ unsubscribe: () => undefined }),
+  };
+});
+
 vi.mock('#hooks/use-project.js', () => ({
   useProject: () => ({
     projectRef: editorStub,
+    modelInteractionRef: modelInteractionStub,
     editorRef: editorStub,
     viewGraphics: new Map([['view-1', actors.graphics]]),
     viewRecords: new Map(),

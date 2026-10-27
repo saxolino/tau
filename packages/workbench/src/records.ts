@@ -90,7 +90,7 @@ const codec = <Schema extends z.ZodType>(name: string, schema: Schema): Workbenc
       return {
         status: 'invalid-preserved',
         code: 'NEWER_RECORD',
-        message: `The ${name} record was written by a newer Tau. Update Tau to use it.`,
+        message: `The ${name} record was written by a newer SinopiaCAD. Update SinopiaCAD to use it.`,
       };
     }
     let result: z.ZodSafeParseResult<z.output<Schema>>;

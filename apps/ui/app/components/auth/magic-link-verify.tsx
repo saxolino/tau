@@ -110,9 +110,9 @@ export function MagicLinkVerify({ className }: MagicLinkVerifyProps): React.JSX.
 
         <CardDescription>
           {status === 'verified'
-            ? 'Opening Tau now.'
+            ? 'Opening SinopiaCAD now.'
             : status === 'verifying'
-              ? 'Hold tight while Tau confirms this sign-in link.'
+              ? 'Hold tight while SinopiaCAD confirms this sign-in link.'
               : status === 'missing-token'
                 ? 'Open the magic link from your email, or sign in to request a fresh link.'
                 : 'This link may have expired or already been used. Sign in to request a fresh link.'}

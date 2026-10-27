@@ -42,6 +42,8 @@ const fileLabel = (file: File, fallback: string, language: Language): string => 
  */
 export function useHomeImageIntake(): {
   readonly addImages: (files: Iterable<File>) => Promise<number>;
+  /** Whether the agent's model reads images at all; without it every picture is refused with a reason. */
+  readonly canReadImages: boolean;
 } {
   const {
     model: { model: selectedModel },
@@ -114,5 +116,5 @@ export function useHomeImageIntake(): {
     [addDraftAttachment, attachmentModel, canReadImages, language, t],
   );
 
-  return { addImages };
+  return { addImages, canReadImages };
 }

@@ -7,12 +7,20 @@ import { TooltipProvider } from '@taucad/ui/components/tooltip';
 import { KeyboardProvider } from '@taucad/ui/components/keyboard';
 
 const mobile = vi.hoisted(() => ({ value: false }));
+const cookieWrite = vi.hoisted(() => vi.fn());
 
 vi.mock('@taucad/ui/hooks/use-mobile', () => ({ useIsMobile: () => mobile.value }));
 vi.mock('#hooks/use-cookie.js', async () => {
   const React = await import('react');
   return {
-    useCookie: <Value,>(_name: string, defaultValue: Value) => React.useState(defaultValue),
+    useCookie: <Value,>(_name: string, defaultValue: Value) => {
+      const [value, setValue] = React.useState(defaultValue);
+      const write = React.useCallback((next: Value) => {
+        cookieWrite(next);
+        setValue(next);
+      }, []);
+      return [value, write];
+    },
   };
 });
 
@@ -50,10 +58,39 @@ const renderTrigger = (onSidebarResize = vi.fn()) =>
 describe('SidebarTrigger', () => {
   beforeEach(() => {
     mobile.value = false;
+    cookieWrite.mockClear();
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it('should keep a route override reversible without overwriting the general navigation preference', async () => {
+    const user = userEvent.setup();
+    const changeRouteOpen = vi.fn();
+    const tree = (isRouteOpen?: boolean) => (
+      <MemoryRouter>
+        <KeyboardProvider>
+          <TooltipProvider>
+            <SidebarProvider
+              isRouteOpen={isRouteOpen}
+              onOpenChange={isRouteOpen === undefined ? undefined : changeRouteOpen}
+            >
+              <SidebarTrigger />
+            </SidebarProvider>
+          </TooltipProvider>
+        </KeyboardProvider>
+      </MemoryRouter>
+    );
+    const view = render(tree(false));
+    const trigger = screen.getByRole('button', { name: 'Toggle Sidebar' });
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    await user.click(trigger);
+    expect(changeRouteOpen).toHaveBeenCalledWith(true);
+    expect(cookieWrite).not.toHaveBeenCalled();
+    view.rerender(tree());
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    expect(cookieWrite).not.toHaveBeenCalled();
   });
 
   it('keeps one structural icon while semantic state changes', async () => {

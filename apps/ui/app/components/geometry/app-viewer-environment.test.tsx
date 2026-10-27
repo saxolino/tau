@@ -26,6 +26,7 @@ function BackendProbe(): React.JSX.Element {
   return (
     <>
       <output aria-label='graphics backend'>{environment.graphicsBackend}</output>
+      <output aria-label='render FPS'>{String(environment.showRenderFps)}</output>
       <output aria-label='fullscreen control'>{String(environment.showFullscreenControl)}</output>
       <output aria-label='bar words'>
         {[labels.fitViewLabel, labels.sectionLabel, labels.measureLabel, labels.viewerSettings].join(' · ')}
@@ -68,6 +69,7 @@ describe('AppViewerEnvironment', () => {
 
     expect(await screen.findByLabelText('bar words')).toHaveTextContent(words);
     expect(screen.getByLabelText('fullscreen control')).toHaveTextContent('false');
+    expect(screen.getByLabelText('render FPS')).toHaveTextContent('false');
   });
 
   it('switches the backend when a client-side navigation adds the override', async () => {

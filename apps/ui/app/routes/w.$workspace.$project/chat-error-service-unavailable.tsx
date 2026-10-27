@@ -15,7 +15,7 @@ import { ChatErrorCard, turnSavedSentence } from '#routes/w.$workspace.$project/
 export const ChatErrorServiceUnavailable = memo(function ({
   className,
   resumable,
-  title = 'Unable to reach Tau',
+  title = 'Unable to reach SinopiaCAD',
   description,
 }: {
   readonly className?: string;
@@ -29,7 +29,7 @@ export const ChatErrorServiceUnavailable = memo(function ({
     description ??
     (resumable
       ? 'Check your connection.'
-      : "We couldn't connect to the Tau service. This could be due to a network issue or the service may be temporarily unavailable. Please check your connection and try again.");
+      : "We couldn't connect to the SinopiaCAD service. This could be due to a network issue or the service may be temporarily unavailable. Please check your connection and try again.");
 
   return (
     <ChatErrorCard

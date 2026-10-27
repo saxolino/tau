@@ -12,7 +12,7 @@ const statusCopy: Record<PersistentStorageStatus, { title: string; description: 
   },
   unknown: {
     title: 'Storage protection not confirmed',
-    description: 'Tau could not confirm whether Home projects are protected from automatic browser cleanup.',
+    description: 'SinopiaCAD could not confirm whether Home projects are protected from automatic browser cleanup.',
   },
   unavailable: {
     title: 'Storage protection unavailable',

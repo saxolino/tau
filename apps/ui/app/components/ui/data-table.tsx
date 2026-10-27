@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { useTranslation } from '#i18n/translate.js';
 import { useRef } from 'react';
 import type { Column, ColumnDef, Table as TanstackTable } from '@tanstack/react-table';
 import { flexRender } from '@tanstack/react-table';
@@ -293,6 +294,7 @@ type DataTablePaginationProps<Data> = {
   readonly table: TanstackTable<Data>;
   readonly pageSizeOptions?: number[];
   readonly withSelectedCount?: boolean;
+  /** Kept for callers that still name their rows; the sentence no longer repeats it. */
   readonly itemName?: string;
 };
 
@@ -302,10 +304,10 @@ export function DataTablePagination<Data>({
   table,
   pageSizeOptions = defaultPageSizeOptions,
   withSelectedCount = true,
-  itemName = 'row',
 }: DataTablePaginationProps<Data>): ReactNode {
   // TanStack keeps its state on a stable `table` object, so the React Compiler would cache these reads forever.
   'use no memo';
+  const { t } = useTranslation();
   const selectedCount = table.getFilteredSelectedRowModel().rows.length;
   const totalCount = table.getFilteredRowModel().rows.length;
   const { pageIndex, pageSize } = table.getState().pagination;
@@ -316,12 +318,12 @@ export function DataTablePagination<Data>({
     <div className='flex flex-wrap items-center justify-between gap-x-6 gap-y-2'>
       <div className='text-sm text-muted-foreground'>
         {withSelectedCount
-          ? `${selectedCount} of ${totalCount} ${itemName}(s) selected.`
-          : `${firstVisible}–${lastVisible} of ${totalCount} ${itemName}${totalCount === 1 ? '' : 's'}`}
+          ? t('library.tableSelected', { selected: selectedCount, total: totalCount })
+          : t('library.tableRange', { first: firstVisible, last: lastVisible, total: totalCount })}
       </div>
       <div className='flex flex-wrap items-center gap-x-6 gap-y-2 lg:gap-x-8'>
         <div className='flex items-center gap-2'>
-          <p className='hidden text-sm font-medium whitespace-nowrap sm:block'>Items per page</p>
+          <p className='hidden text-sm font-medium whitespace-nowrap sm:block'>{t('library.tablePerPage')}</p>
           <Select
             size='sm'
             value={`${pageSize}`}
@@ -329,7 +331,7 @@ export function DataTablePagination<Data>({
               table.setPageSize(Number(value));
             }}
           >
-            <SelectTrigger aria-label='Items per page'>
+            <SelectTrigger aria-label={t('library.tablePerPage')}>
               <SelectValue placeholder={pageSize} />
             </SelectTrigger>
             <SelectContent position='popper' side='top'>
@@ -342,7 +344,7 @@ export function DataTablePagination<Data>({
           </Select>
         </div>
         <div className='text-sm font-medium whitespace-nowrap'>
-          Page {pageIndex + 1} of {table.getPageCount()}
+          {t('library.tablePage', { page: pageIndex + 1, pages: table.getPageCount() })}
         </div>
         <div className='flex items-center gap-2'>
           <Button
@@ -354,7 +356,7 @@ export function DataTablePagination<Data>({
               table.setPageIndex(0);
             }}
           >
-            <span className='sr-only'>Go to first page</span>
+            <span className='sr-only'>{t('library.tableFirst')}</span>
             <ChevronsLeft />
           </Button>
           <Button
@@ -365,7 +367,7 @@ export function DataTablePagination<Data>({
               table.previousPage();
             }}
           >
-            <span className='sr-only'>Go to previous page</span>
+            <span className='sr-only'>{t('library.tablePrevious')}</span>
             <ChevronLeft />
           </Button>
           <Button
@@ -376,7 +378,7 @@ export function DataTablePagination<Data>({
               table.nextPage();
             }}
           >
-            <span className='sr-only'>Go to next page</span>
+            <span className='sr-only'>{t('library.tableNext')}</span>
             <ChevronRight />
           </Button>
           <Button
@@ -388,7 +390,7 @@ export function DataTablePagination<Data>({
               table.setPageIndex(table.getPageCount() - 1);
             }}
           >
-            <span className='sr-only'>Go to last page</span>
+            <span className='sr-only'>{t('library.tableLast')}</span>
             <ChevronsRight />
           </Button>
         </div>
@@ -414,6 +416,7 @@ export function DataTableColumnHeader<Data, Value>({
 }: DataTableColumnHeaderProps<Data, Value>): ReactNode {
   // TanStack keeps its state on a stable `table` object, so the React Compiler would cache these reads forever.
   'use no memo';
+  const { t } = useTranslation();
   if (!column.getCanSort()) {
     return <div className={cn('text-sm font-medium', className)}>{title}</div>;
   }
@@ -440,7 +443,7 @@ export function DataTableColumnHeader<Data, Value>({
             }}
           >
             <ArrowUp className='text-muted-foreground/70' />
-            Asc
+            {t('library.tableAsc')}
           </DropdownMenuItem>
           <DropdownMenuItem
             onClick={() => {
@@ -448,7 +451,7 @@ export function DataTableColumnHeader<Data, Value>({
             }}
           >
             <ArrowDown className='text-muted-foreground/70' />
-            Desc
+            {t('library.tableDesc')}
           </DropdownMenuItem>
           {column.getCanHide() && (
             <>
@@ -459,7 +462,7 @@ export function DataTableColumnHeader<Data, Value>({
                 }}
               >
                 <EyeOff className='text-muted-foreground/70' />
-                Hide
+                {t('library.tableHide')}
               </DropdownMenuItem>
             </>
           )}
@@ -480,6 +483,7 @@ type DataTableSortingDropdownProps<Data> = {
 export function DataTableSortingDropdown<Data>({ table }: DataTableSortingDropdownProps<Data>): ReactNode {
   // TanStack keeps its state on a stable `table` object, so the React Compiler would cache these reads forever.
   'use no memo';
+  const { t } = useTranslation();
   const sortingState = table.getState().sorting[0];
 
   // Dynamically get sortable columns from the table
@@ -512,12 +516,12 @@ export function DataTableSortingDropdown<Data>({ table }: DataTableSortingDropdo
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant='outline' size='icon' aria-label='Sort'>
+        <Button variant='outline' size='icon' aria-label={t('library.tableSort')}>
           <ArrowUpDown className='size-4' />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align='end'>
-        <DropdownMenuLabel>Sort by</DropdownMenuLabel>
+        <DropdownMenuLabel>{t('library.tableSortBy')}</DropdownMenuLabel>
         <DropdownMenuSeparator />
         {sortFields.map((field) => (
           <DropdownMenuItem
@@ -552,15 +556,16 @@ export function DataTableColumnVisibilityDropdown<Data>({
 }: DataTableColumnVisibilityDropdownProps<Data>): ReactNode {
   // TanStack keeps its state on a stable `table` object, so the React Compiler would cache these reads forever.
   'use no memo';
+  const { t } = useTranslation();
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant='outline' size='icon' aria-label='Toggle columns'>
+        <Button variant='outline' size='icon' aria-label={t('library.tableColumns')}>
           <List className='size-4' />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align='end'>
-        <DropdownMenuLabel>Toggle columns</DropdownMenuLabel>
+        <DropdownMenuLabel>{t('library.tableColumns')}</DropdownMenuLabel>
         <DropdownMenuSeparator />
         {table
           .getAllColumns()

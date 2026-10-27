@@ -54,7 +54,7 @@ const unversionedLabel = (path: string): Pick<FileProvenanceLabel, 'description'
     case 'records': {
       return {
         breadcrumbBadge: 'Artifact',
-        description: 'Supporting data used by Tau. Not included in revisions.',
+        description: 'Supporting data used by SinopiaCAD. Not included in revisions.',
       };
     }
     default: {

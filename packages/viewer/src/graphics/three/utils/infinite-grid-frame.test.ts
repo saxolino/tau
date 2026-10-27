@@ -102,16 +102,16 @@ describe('resolveInfiniteGridFrame', () => {
     });
 
     expect(far.gridDistance / near.gridDistance).toBe(100);
-    // The material's restored 0.05..0.2 radial band therefore fades from one
-    // to four visible spans, matching the pre-migration camera-relative look.
+    // SinopiaCAD's 0.025..0.1 radial band fades from half a visible span to two, so the floor
+    // stays close to the model at every zoom.
     expect(infiniteGridProxyDistanceVisibleSpans).toBe(20);
-    expect(infiniteGridFadeStartRatio).toBe(0.05);
-    expect(infiniteGridFadeEndRatio).toBe(0.2);
+    expect(infiniteGridFadeStartRatio).toBe(0.025);
+    expect(infiniteGridFadeEndRatio).toBe(0.1);
     expect(infiniteGridFadeEndVisibleSpans).toBe(infiniteGridProxyDistanceVisibleSpans * infiniteGridFadeEndRatio);
-    expect(near.gridDistance * infiniteGridFadeStartRatio).toBe(1);
+    expect(near.gridDistance * infiniteGridFadeStartRatio).toBe(0.5);
     expect(near.gridDistance * infiniteGridFadeEndRatio).toBe(infiniteGridFadeEndVisibleSpans);
-    expect(far.gridDistance * infiniteGridFadeStartRatio).toBe(100);
-    expect(far.gridDistance * infiniteGridFadeEndRatio).toBe(400);
+    expect(far.gridDistance * infiniteGridFadeStartRatio).toBe(50);
+    expect(far.gridDistance * infiniteGridFadeEndRatio).toBe(200);
     expect(near).not.toHaveProperty('proxyHalfExtent');
   });
 });

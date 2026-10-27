@@ -118,7 +118,9 @@ export const useCloudPaymentActionReturn = (): void => {
           }
           const added = `${formatCredits(BigInt(action.receipt.grantedCreditAtoms))} added to your ${action.purpose === 'subscription_checkout' ? 'monthly' : 'purchased'} credits.`;
           // A paid Pro subscription settles here with its first credits; billing never reports it as completed.
-          return toast.success(action.purpose === 'subscription_checkout' ? `Tau Pro is active. ${added}` : added);
+          return toast.success(
+            action.purpose === 'subscription_checkout' ? `SinopiaCAD Pro is active. ${added}` : added,
+          );
         }
         case 'completed': {
           // Only a card setup completes; every purchase settles as fulfilled, with its receipt.

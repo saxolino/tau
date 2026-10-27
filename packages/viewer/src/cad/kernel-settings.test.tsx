@@ -94,7 +94,7 @@ describe('kernel settings for a preset-or-explicit union', () => {
     const mode = screen.getByRole('group', { name: 'Tessellation mode' });
     expect(within(mode).getByRole('menuitemradio', { name: 'Custom' })).toHaveAttribute('aria-checked', 'true');
     expect(screen.queryByRole('group', { name: 'Tessellation preset' })).toBeNull();
-    expect(screen.getByRole('menuitem', { name: 'Linear tolerance, 0.5mm' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Linear tolerance, 0.5 mm' })).toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: 'Angular tolerance, 12°' })).toBeInTheDocument();
   });
 

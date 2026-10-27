@@ -738,7 +738,7 @@ describe('Home storage backend', () => {
     vi.resetModules();
     const { getHomeStorageBackend } = await import('#filesystem/handle-store.js');
 
-    await expect(getHomeStorageBackend()).rejects.toThrow('blocked by another Tau tab');
+    await expect(getHomeStorageBackend()).rejects.toThrow('blocked by another SinopiaCAD tab');
     older.close();
   });
 

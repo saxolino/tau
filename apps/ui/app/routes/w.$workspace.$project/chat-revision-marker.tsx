@@ -118,7 +118,7 @@ function useBackupException(): string | undefined {
   if (status === undefined || status.remote.kind === 'none') {
     return undefined;
   }
-  const to = status.remote.kind === 'tau' ? 'Tau Cloud' : 'your repository';
+  const to = status.remote.kind === 'tau' ? 'SinopiaCAD Cloud' : 'your repository';
   switch (status.sync.state) {
     case 'pending': {
       return `Backing up to ${to}…`;

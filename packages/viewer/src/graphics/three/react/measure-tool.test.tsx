@@ -333,8 +333,8 @@ describe('MeasureTool', () => {
     const start = describeMeasurementTarget(target(edges[0]!, 'start'), mesh);
     const end = describeMeasurementTarget(target(edges[0]!, 'end'), mesh);
     const nextEdge = describeMeasurementTarget(target(edges[1]!, 'start'), mesh);
-    expect(start).toMatch(/^Frame: Edge endpoint \d+ · start$/);
-    expect(end).toMatch(/^Frame: Edge endpoint \d+ · end$/);
+    expect(start).toMatch(/^Frame: Edge endpoint \d+ · inizio$/);
+    expect(end).toMatch(/^Frame: Edge endpoint \d+ · fine$/);
     expect(new Set([start, end, nextEdge]).size).toBe(3);
     expect(start).not.toContain('edge:');
   });

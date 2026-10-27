@@ -1,4 +1,5 @@
 import { Copy, EllipsisVertical, Pencil, Trash, ArrowUpRightSquare } from 'lucide-react';
+import { useTranslation } from '#i18n/translate.js';
 import type { ReactNode } from 'react';
 import { useState } from 'react';
 import type { ProjectListItem } from '#types/project-library.types.js';
@@ -27,6 +28,7 @@ type ProjectActionDropdownProps = {
 };
 
 export function ProjectActionDropdown({ project, actions, onRename }: ProjectActionDropdownProps): ReactNode {
+  const { t } = useTranslation();
   const isDeleted = Boolean(project.deletedAt);
   const [isRenaming, setIsRenaming] = useState(false);
   const [isConfirmingClose, setIsConfirmingClose] = useState(false);
@@ -41,7 +43,7 @@ export function ProjectActionDropdown({ project, actions, onRename }: ProjectAct
     try {
       const plan = await chatSessions.getProjectClosePlan(project.id);
       if (plan.continuingRuns.length > 0) {
-        toast.error(`Can’t move ${project.name} to Trash while work continues in another window or build.`);
+        toast.error(t('library.trashBusy', { name: project.name }));
         return;
       }
       if (plan.liveChatIds.length > 0) {
@@ -51,7 +53,7 @@ export function ProjectActionDropdown({ project, actions, onRename }: ProjectAct
       }
       await actions.handleDelete(project);
     } catch {
-      toast.error(`Couldn’t check running work in ${project.name}. Try again.`);
+      toast.error(t('library.trashCheckFailed', { name: project.name }));
     }
   };
 
@@ -73,7 +75,7 @@ export function ProjectActionDropdown({ project, actions, onRename }: ProjectAct
     <>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button variant='ghost' size='icon' aria-label={`Actions for ${project.name}`}>
+          <Button variant='ghost' size='icon' aria-label={t('library.actionsFor', { name: project.name })}>
             <EllipsisVertical className='size-4' />
           </Button>
         </DropdownMenuTrigger>
@@ -98,7 +100,7 @@ export function ProjectActionDropdown({ project, actions, onRename }: ProjectAct
                 }}
               >
                 <ArrowUpRightSquare />
-                <span>Restore</span>
+                <span>{t('library.restore')}</span>
               </DropdownMenuItem>
               <DropdownMenuItem
                 variant='destructive'
@@ -110,7 +112,7 @@ export function ProjectActionDropdown({ project, actions, onRename }: ProjectAct
                 }}
               >
                 <Trash />
-                <span>Delete permanently</span>
+                <span>{t('library.deletePermanently')}</span>
               </DropdownMenuItem>
             </>
           ) : (
@@ -138,7 +140,7 @@ export function ProjectActionDropdown({ project, actions, onRename }: ProjectAct
                 onClick={async () => actions.handleDuplicate(project)}
               >
                 <Copy />
-                <span>Duplicate</span>
+                <span>{t('library.duplicate')}</span>
               </DropdownMenuItem>
               <DropdownMenuItem
                 data-action='rename'
@@ -150,7 +152,7 @@ export function ProjectActionDropdown({ project, actions, onRename }: ProjectAct
                 }}
               >
                 <Pencil />
-                <span>Rename</span>
+                <span>{t('library.rename')}</span>
               </DropdownMenuItem>
               <DropdownMenuItem
                 variant='destructive'
@@ -162,7 +164,7 @@ export function ProjectActionDropdown({ project, actions, onRename }: ProjectAct
                 }}
               >
                 <Trash />
-                <span>Move to Trash</span>
+                <span>{t('library.moveToTrash')}</span>
               </DropdownMenuItem>
             </>
           )}

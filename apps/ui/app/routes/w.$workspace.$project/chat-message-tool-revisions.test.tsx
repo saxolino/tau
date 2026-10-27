@@ -162,7 +162,7 @@ describe('ChatMessageToolRevisions', () => {
       />,
     );
 
-    expect(rows()[0]).toContain('Tau agent');
+    expect(rows()[0]).toContain('SinopiaCAD agent');
     expect(rows()[1]).toContain('Another account');
     expect(screen.queryByText(/claude-opus-4|user_2abc|^agent$/u)).toBeNull();
   });

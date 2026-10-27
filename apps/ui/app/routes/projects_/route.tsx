@@ -20,6 +20,6 @@ export default function Projects(): React.JSX.Element {
     return <Outlet />;
   }
   /* One list (D20): the library lists this account's Tau Cloud projects beside
-     this device's own, so there is no second *From Tau Cloud* section. */
+     this device's own, so there is no second *From SinopiaCAD Cloud* section. */
   return <ProjectLibrary />;
 }

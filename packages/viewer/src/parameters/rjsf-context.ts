@@ -77,8 +77,21 @@ export type ParameterPresentation = Readonly<{
   embedFirstLevel?: boolean;
   fieldLabel?: (path: readonly string[], fallback: string) => string;
   fieldNote?: (path: readonly string[]) => ReactNode;
+  /** A plausible band (native unit) to draw on a numeric field's slider, e.g. a photo recognition's min–max. */
+  fieldBand?: (path: readonly string[]) => Readonly<{ min: number; max: number }> | undefined;
   /** Translate or replace a field description; an empty string hides it. */
   fieldDescription?: (path: readonly string[], description: string) => string;
+  /** A host that does not mark required fields (SinopiaCAD: every measure is required, so the star is noise). */
+  hideRequiredMark?: boolean;
+  /** Translate the hint of a field whose unit or meaning was guessed. */
+  inferredHint?: (kind: 'unit' | 'semantics') => string;
+  /** Translate the tooltip of the button that resets one field. */
+  resetLabel?: (fieldLabel: string) => string;
+  /**
+   * A host that edits an array its own way (SinopiaCAD: a plate's outline is «Outline · n points», not n rows of two
+   * numbers) renders it here. A node replaces the whole field (`null` hides it); `undefined` leaves the ordinary list.
+   */
+  arrayField?: (path: readonly string[], value: readonly unknown[]) => ReactNode | undefined;
 }>;
 
 /**

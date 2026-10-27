@@ -805,7 +805,7 @@ export function createRpcHandlers(deps: RpcHandlerDependencies): RpcHandlers {
       const stopped = 'so rendering stopped rather than assume a default render timeout.';
       throw new Error(
         read.code === 'NEWER_RECORD'
-          ? `${record} was written by a newer Tau, ${stopped} Update Tau to use it; do not rewrite it to work around this.`
+          ? `${record} was written by a newer version of SinopiaCAD, ${stopped} Update SinopiaCAD to use it; do not rewrite it to work around this.`
           : `${record} is not valid, ${stopped} The person can review it from the project's Settings not applied action; do not rewrite it to work around this. ${read.message}`,
       );
     }

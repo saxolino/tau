@@ -254,6 +254,8 @@ catalog:
   oxlint: ^1.80.0
   oxlint-tsgolint: ^0.16.0
   oxc-transform-react: 0.148.0
+  # Tavola PDF di SinopiaCAD (E3a): la stessa versione di Sinopia, MIT, senza dipendenze native.
+  pdf-lib: 1.17.1
   pdf-parse: 2.4.5
   polygon-clipping: ^0.15.7
   replicad: npm:@taulabs/replicad@1.1.0-taulabs.1
@@ -310,7 +312,7 @@ catalog:
   # Exact: @taucad/picovoxel's kernel version carries this release's build-time digests.
   picovoxel: 0.1.0
   # Exact: @taucad/smlib's kernel version and compute identity carry this release's WASM.
-  '@classcad/smlibwasm': 0.3.4
+  '@classcad/smlibwasm': 0.5.0
   n8ao: 1.10.2
   postprocessing: 6.39.1
   '@cfworker/json-schema': 4.1.1
@@ -440,6 +442,7 @@ minimumReleaseAgeExclude:
   - electron-builder-squirrel-windows@26.18.0
   - electron-builder@26.18.0
   - electron-publish@26.18.0
+  - '@classcad/smlibwasm@0.5.0'
 peerDependencyRules:
   allowedVersions:
     fumadocs-mdx>vite: ^8.0.0

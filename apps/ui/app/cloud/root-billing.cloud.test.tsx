@@ -318,14 +318,16 @@ describe('useCloudPaymentActionReturn', () => {
     }
   });
 
-  it('should say Tau Pro is active along with the credits a paid subscription added', async () => {
+  it('should say SinopiaCAD Pro is active along with the credits a paid subscription added', async () => {
     getPaymentAction.mockResolvedValue({
       ...checkoutAction('fulfilled', { grantedCreditAtoms: '20000000' }),
       purpose: 'subscription_checkout',
     });
     returnFromCheckout();
     await waitFor(() => {
-      expect(toast.success).toHaveBeenCalledWith('Tau Pro is active. 2,000 credits added to your monthly credits.');
+      expect(toast.success).toHaveBeenCalledWith(
+        'SinopiaCAD Pro is active. 2,000 credits added to your monthly credits.',
+      );
     });
     expect(toast.success).toHaveBeenCalledOnce();
   });

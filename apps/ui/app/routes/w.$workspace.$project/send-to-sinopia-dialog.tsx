@@ -25,11 +25,15 @@ import type {
   SinopiaSendReceipt,
   PendingSinopiaDelivery,
 } from '#services/sinopia-send.js';
+import { getSinopiaCadModel } from '#services/sinopia-cad.js';
 import type { SinopiaCadLink } from '#services/sinopia-cad.js';
+import type { PlainMessageKey } from '#i18n/translate.js';
 import type { SinopiaCadLinking } from '#hooks/use-sinopia-cad-sync.js';
 import { toast } from '#components/ui/sonner.js';
 
-const formats: SinopiaSendFormat[] = ['step', 'glb', 'photo'];
+const baseFormats: SinopiaSendFormat[] = ['step', 'glb', 'photo'];
+/** SMLib models also send the PDF sheet (E3a). */
+const deliveryFormats: SinopiaSendFormat[] = [...baseFormats, 'pdf'];
 const isAborted = (signal: AbortSignal): boolean => signal.aborted;
 
 /** The unlinked model's way in: the same project creation the save status starts when the model opens. */
@@ -186,10 +190,18 @@ function SendForm({
   const { t } = useTranslation();
   const { projectId: localProjectId } = useProject();
   const { recordFiles } = useFileManager();
-  const { prepareSinopia } = useProjectExport();
+  const { prepareSinopia, deliveryPieces, deliveryAvailable } = useProjectExport();
+  const formats = deliveryAvailable ? deliveryFormats : baseFormats;
   const [destinationId, setDestinationId] = useState(pending?.projectId ?? link.projectId);
   const [isChanging, setIsChanging] = useState(false);
   const [selected, setSelected] = useState<SinopiaSendFormat[]>(pending?.selected ?? formats);
+  // The model's own preview stands in for the photo when the photo is not sent (E3a: every version has a thumbnail).
+  const remoteModel = useQuery({
+    queryKey: ['sinopia-send-model', link.userId, link.modelId],
+    queryFn: async () => (await getSinopiaCadModel(link)) ?? null,
+    retry: false,
+    staleTime: 0,
+  });
   const [note, setNote] = useState(pending?.note ?? '');
   const [hasPending, setHasPending] = useState(pending !== undefined);
   const [isSending, setIsSending] = useState(false);
@@ -240,7 +252,7 @@ function SendForm({
         }
       }
       if (!sent) {
-        const files = await prepareSinopia(signal);
+        const files = await prepareSinopia(signal, version.data === undefined ? undefined : `v${String(version.data)}`);
         signal.throwIfAborted();
         setPrepared(files);
         if (!hasPending) {
@@ -264,6 +276,14 @@ function SendForm({
           note,
           signal,
           deliveryId: deliveryId.current,
+          pieces: deliveryPieces.map((piece) => ({
+            nome: piece.nome,
+            ...(piece.materiale ? { materiale: { chiave: piece.materiale.chiave, nome: piece.materiale.nome } } : {}),
+            ...(piece.processo ? { processo: piece.processo } : {}),
+            ...(piece.pesoGrammi === undefined ? {} : { pesoGrammi: piece.pesoGrammi }),
+            ...(piece.volumeMm3 === undefined ? {} : { volumeMm3: piece.volumeMm3 }),
+          })),
+          ...(remoteModel.data?.thumbnail_path ? { fallbackThumbnailPath: remoteModel.data.thumbnail_path } : {}),
         });
         signal.throwIfAborted();
         setReceipt(sent);
@@ -397,7 +417,7 @@ function SendForm({
                 </label>
                 {result?.status === 'needsFix' && selected.includes(format) ? (
                   <p role='alert' className='pl-7 text-sm text-muted-foreground'>
-                    {t(`export.errors.${result.problem}`)}
+                    {t(`export.errors.${result.problem}` as PlainMessageKey)}
                   </p>
                 ) : null}
               </div>

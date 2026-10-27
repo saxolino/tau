@@ -32,6 +32,11 @@ import {
   sinopiaImmagineCadSkillMarkdown,
   sinopiaImmagineCadSkillWhenToUse,
 } from '#lib/sinopia-immagine-cad-skill.js';
+import {
+  sinopiaVariantiSkillDescription,
+  sinopiaVariantiSkillMarkdown,
+  sinopiaVariantiSkillWhenToUse,
+} from '#lib/sinopia-varianti-skill.js';
 
 export type SystemSkill = {
   readonly slug: string;
@@ -232,6 +237,16 @@ If updating an existing artifact, inspect the current file first and preserve us
     priority: 60,
     whenToUse: sinopiaImmagineCadSkillWhenToUse,
     skillMarkdown: sinopiaImmagineCadSkillMarkdown,
+  },
+  {
+    slug: 'sinopia-varianti',
+    name: 'Sinopia Varianti',
+    description: sinopiaVariantiSkillDescription,
+    version: '1.0.0',
+    source: 'system',
+    priority: 60,
+    whenToUse: sinopiaVariantiSkillWhenToUse,
+    skillMarkdown: sinopiaVariantiSkillMarkdown,
   },
   ...packageSkills,
 ];

@@ -31,6 +31,10 @@ const workerUrlPlugin = {
 const baseConfig: UserConfig = {
   entry: [
     'src/cad/cad-viewer.tsx',
+    'src/graphics/three/react/planar-face-tool.ts',
+    'src/graphics/three/react/direct-edit-tool.ts',
+    'src/graphics/three/react/sketch-tool.ts',
+    'src/graphics/three/react/sketch-geometry.ts',
     'src/cad/fit-view-control.tsx',
     'src/cad/fullscreen-view-control.tsx',
     'src/cad/grid-control.tsx',
@@ -41,6 +45,7 @@ const baseConfig: UserConfig = {
     'src/cad/part-preview-image.tsx',
     'src/cad/part-properties-panel.tsx',
     'src/cad/part-quantities.ts',
+    'src/cad/piece-materials.ts',
     'src/cad/part-thumbnail-state.ts',
     'src/cad/section-tool-row.tsx',
     'src/cad/section-view-control.tsx',
@@ -64,6 +69,7 @@ const baseConfig: UserConfig = {
     'src/graphics/three/post-processing-settings.ts',
     'src/graphics/three/react/exact-measurement.tsx',
     'src/graphics/three/react/gltf-mesh.tsx',
+    'src/graphics/three/react/producibility-overlay.types.ts',
     'src/graphics/three/render-frame-timing.ts',
     'src/graphics/three/render-loop-observer.ts',
     'src/graphics/three/renderer.ts',

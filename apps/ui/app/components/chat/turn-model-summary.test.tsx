@@ -12,8 +12,13 @@ import { TurnModelSummary } from '#components/chat/turn-summary-card.js';
 import { setLanguage } from '#i18n/language.js';
 const compare = vi.hoisted(() => vi.fn());
 vi.mock('#hooks/use-project.js', () => ({ useProject: () => ({ projectId: 'project', modelInteractionRef: actor }) }));
-vi.mock('#hooks/use-revision-status.js', () => ({ useRevisionClient: () => ({ compare }) }));
+vi.mock('#hooks/use-revision-status.js', () => ({
+  useRevisionClient: () => ({ compare }),
+  useRevisionStatus: () => undefined,
+  useRevisionCommands: () => ({ undoOperation: vi.fn() }),
+}));
 vi.mock('#hooks/use-revisions.js', () => ({
+  useRevisions: () => ({ headRevisionId: undefined, isDirty: false }),
   useTurnRevision: () => ({ revisionId: 'revision', n: 3 }),
   useRevisionChanges: () => [
     { path: '.tau/parameters/a.ts.json', kind: 'modified' },

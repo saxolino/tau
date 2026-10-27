@@ -197,7 +197,7 @@ describe('native browser viewport lifetime', () => {
   it('should explain the desktop requirement when the native bridge is absent', () => {
     vi.stubGlobal('tauBrowser', undefined);
     render(<BrowserPane />);
-    expect(screen.getByRole('heading', { name: 'Browse in Tau desktop' })).toBeVisible();
+    expect(screen.getByRole('heading', { name: 'Browse in SinopiaCAD desktop' })).toBeVisible();
     expect(command).not.toHaveBeenCalled();
   });
 });

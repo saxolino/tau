@@ -124,6 +124,7 @@ describe('graphics GLTF presentation projection', () => {
       });
       expect(actor.getSnapshot().context.gltfPresentation.phase).toBe('awaiting-analysis');
       actor.send({ type: 'gltfAnalysisReady', revision: 2, key: 'b' });
+      expect(actor.getSnapshot().context.gltfPresentation.phase).toBe('preparing');
       actor.send({
         type: 'gltfPresentationCommitted',
         revision: 2,
@@ -137,6 +138,39 @@ describe('graphics GLTF presentation projection', () => {
         phase: 'presented',
       });
       expect(actor.getSnapshot().context.modelInteractionUnitId).toBe('unit:b');
+    } finally {
+      actor.stop();
+    }
+  });
+
+  it('should keep the committed presentation ready when deferred section analysis completes after section toggles', () => {
+    const actor = createGraphicsActor();
+    actor.start();
+    try {
+      actor.send({ type: 'updateArtifact', artifact: artifact(), hash: 'same-model' });
+      actor.send({ type: 'gltfPresentationCommitted', revision: 1, key: 'same-model', unitId: 'unit:model', manifest });
+      const presented = actor.getSnapshot().context.gltfPresentation;
+      expect(presented.phase).toBe('presented');
+      actor.send({ type: 'setSectionViewActive', payload: true });
+      actor.send({ type: 'gltfAnalysisReady', revision: 1, key: 'same-model' });
+      expect(actor.getSnapshot().context.gltfPresentation).toBe(presented);
+      actor.send({ type: 'setSectionViewActive', payload: false });
+      expect(actor.getSnapshot().context.gltfPresentation).toBe(presented);
+      expect(actor.getSnapshot().context.isSectionViewActive).toBe(false);
+
+      // An analysis result from this displayed model must not settle a newer candidate.
+      actor.send({ type: 'updateArtifact', artifact: artifact(), hash: 'next-model' });
+      actor.send({ type: 'gltfDisplayReady', revision: 2, key: 'next-model', barrier: 'analysis-ready' });
+      actor.send({ type: 'gltfAnalysisReady', revision: 1, key: 'same-model' });
+      expect(actor.getSnapshot().context.gltfPresentation).toMatchObject({
+        requestedRevision: 2,
+        requestedKey: 'next-model',
+        presentedRevision: 1,
+        presentedKey: 'same-model',
+        phase: 'awaiting-analysis',
+      });
+      actor.send({ type: 'gltfAnalysisReady', revision: 2, key: 'next-model' });
+      expect(actor.getSnapshot().context.gltfPresentation.phase).toBe('preparing');
     } finally {
       actor.stop();
     }

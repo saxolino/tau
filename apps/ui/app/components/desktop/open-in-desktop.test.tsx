@@ -38,10 +38,10 @@ describe('OpenInDesktop', () => {
   it('offers the desktop app and hands it the link the shell admits', async () => {
     mountAt('/invitations/tok_abcdef');
 
-    await userEvent.click(screen.getByRole('button', { name: 'Open in Tau Desktop' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Open in SinopiaCAD Desktop' }));
 
     expect(assign).toHaveBeenCalledWith('tau://invitations/tok_abcdef');
-    expect(screen.getByText('Opening Tau Desktop')).toBeInTheDocument();
+    expect(screen.getByText('Opening SinopiaCAD Desktop')).toBeInTheDocument();
   });
 
   it('opens the staging handler for a Windows browser, including the saved automatic preference', () => {
@@ -58,25 +58,27 @@ describe('OpenInDesktop', () => {
   it('shows the way out of opening straight away, with no timer', async () => {
     mountAt('/invitations/tok_abcdef');
 
-    await userEvent.click(screen.getByRole('button', { name: 'Open in Tau Desktop' }));
-    await userEvent.click(screen.getByRole('button', { name: 'Tau Desktop didn’t open' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Open in SinopiaCAD Desktop' }));
+    await userEvent.click(screen.getByRole('button', { name: 'SinopiaCAD Desktop didn’t open' }));
 
-    expect(screen.getByText('Tau Desktop didn’t open')).toBeInTheDocument();
+    expect(screen.getByText('SinopiaCAD Desktop didn’t open')).toBeInTheDocument();
     expect(
-      screen.getByText('Tau Desktop may not be installed on this computer, or the browser did not offer to open it.'),
+      screen.getByText(
+        'SinopiaCAD Desktop may not be installed on this computer, or the browser did not offer to open it.',
+      ),
     ).toBeInTheDocument();
     /* No non-prerelease desktop release yet (Q56, DSK-7): `releases/latest` would answer 404. */
-    expect(screen.queryByRole('link', { name: 'Get Tau Desktop' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Get SinopiaCAD Desktop' })).not.toBeInTheDocument();
   });
 
   it('offers the download once the build says a non-prerelease desktop release exists', async () => {
     vi.stubEnv('TAU_DESKTOP_RELEASED', 'true');
     mountAt('/invitations/tok_abcdef');
 
-    await userEvent.click(screen.getByRole('button', { name: 'Open in Tau Desktop' }));
-    await userEvent.click(screen.getByRole('button', { name: 'Tau Desktop didn’t open' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Open in SinopiaCAD Desktop' }));
+    await userEvent.click(screen.getByRole('button', { name: 'SinopiaCAD Desktop didn’t open' }));
 
-    expect(screen.getByRole('link', { name: 'Get Tau Desktop' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: 'Get SinopiaCAD Desktop' })).toHaveAttribute(
       'href',
       'https://github.com/taucad/tau/releases/latest',
     );
@@ -85,13 +87,13 @@ describe('OpenInDesktop', () => {
   it('opens the same link again on Try again', async () => {
     mountAt('/invitations/tok_abcdef');
 
-    await userEvent.click(screen.getByRole('button', { name: 'Open in Tau Desktop' }));
-    await userEvent.click(screen.getByRole('button', { name: 'Tau Desktop didn’t open' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Open in SinopiaCAD Desktop' }));
+    await userEvent.click(screen.getByRole('button', { name: 'SinopiaCAD Desktop didn’t open' }));
     assign.mockClear();
     await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
 
     expect(assign).toHaveBeenCalledWith('tau://invitations/tok_abcdef');
-    expect(screen.getByText('Opening Tau Desktop')).toBeInTheDocument();
+    expect(screen.getByText('Opening SinopiaCAD Desktop')).toBeInTheDocument();
   });
 
   /* The canvas's landing carries the browser continuation beside the offer:
@@ -101,38 +103,38 @@ describe('OpenInDesktop', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Accept in the browser' }));
 
-    expect(screen.queryByRole('button', { name: 'Open in Tau Desktop' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Open in SinopiaCAD Desktop' })).not.toBeInTheDocument();
     expect(assign).not.toHaveBeenCalled();
   });
 
   it('puts the offer away when the person continues in the browser', async () => {
     mountAt('/invitations/tok_abcdef');
 
-    await userEvent.click(screen.getByRole('button', { name: 'Open in Tau Desktop' }));
-    await userEvent.click(screen.getByRole('button', { name: 'Tau Desktop didn’t open' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Open in SinopiaCAD Desktop' }));
+    await userEvent.click(screen.getByRole('button', { name: 'SinopiaCAD Desktop didn’t open' }));
     await userEvent.click(screen.getByRole('button', { name: 'Accept in the browser' }));
 
-    expect(screen.queryByRole('button', { name: 'Open in Tau Desktop' })).not.toBeInTheDocument();
-    expect(screen.queryByText('Tau Desktop didn’t open')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Open in SinopiaCAD Desktop' })).not.toBeInTheDocument();
+    expect(screen.queryByText('SinopiaCAD Desktop didn’t open')).not.toBeInTheDocument();
   });
 
   it('remembers the preference and hands off on load, still showing the fallback', async () => {
     const first = mountAt('/invitations/tok_abcdef');
-    await userEvent.click(screen.getByRole('checkbox', { name: 'Always open Tau links in the desktop app' }));
+    await userEvent.click(screen.getByRole('checkbox', { name: 'Always open SinopiaCAD links in the desktop app' }));
     expect(globalThis.localStorage.getItem('tau.open-links-in-desktop')).toBe('true');
     first.unmount();
 
     mountAt('/import/github.com/taucad/tau-examples');
 
     expect(assign).toHaveBeenCalledWith('tau://i/github.com/taucad/tau-examples');
-    expect(screen.getByRole('button', { name: 'Tau Desktop didn’t open' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'SinopiaCAD Desktop didn’t open' })).toBeInTheDocument();
   });
 
   it('hands off nothing on load while the preference is unset', () => {
     mountAt('/invitations/tok_abcdef');
 
     expect(assign).not.toHaveBeenCalled();
-    expect(screen.getByRole('button', { name: 'Open in Tau Desktop' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Open in SinopiaCAD Desktop' })).toBeInTheDocument();
   });
 
   /* An import that needs its `?ref=` cannot be represented as a `tau://` link
@@ -145,7 +147,7 @@ describe('OpenInDesktop', () => {
   ])('offers nothing for %s', (_label, path) => {
     mountAt(path);
 
-    expect(screen.queryByRole('button', { name: 'Open in Tau Desktop' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Open in SinopiaCAD Desktop' })).not.toBeInTheDocument();
   });
 
   it('renders nothing at all on the desktop build', () => {
@@ -153,6 +155,6 @@ describe('OpenInDesktop', () => {
 
     mountAt('/invitations/tok_abcdef');
 
-    expect(screen.queryByRole('button', { name: 'Open in Tau Desktop' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Open in SinopiaCAD Desktop' })).not.toBeInTheDocument();
   });
 });

@@ -3,5 +3,14 @@
   "$schema": "../../../node_modules/nx/schemas/project-schema.json",
   "sourceRoot": "packages/plugins/smlib",
   "projectType": "library",
-  "tags": ["scope:shared", "type:package"]
+  "tags": ["scope:shared", "type:package"],
+  "targets": {
+    "set-di-prova": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "command": "node --import @oxc-node/core/register packages/plugins/smlib/scripts/set-di-prova.mts"
+      }
+    }
+  }
 }

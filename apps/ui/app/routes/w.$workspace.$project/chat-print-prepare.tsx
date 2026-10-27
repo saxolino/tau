@@ -1826,7 +1826,7 @@ function EngineStatus({ studio }: { readonly studio: BambuStudioMode }): React.J
       // Whether the machine takes this slicer's files is its own check, shown once the slice exists.
       return (
         <PrintNotice tone='neutral' role='status'>
-          Slicing with Tau&apos;s reference slicer: Bambu Studio is not available here.
+          Slicing with SinopiaCAD&apos;s reference slicer: Bambu Studio is not available here.
         </PrintNotice>
       );
     }
@@ -1846,7 +1846,7 @@ export const slicerName = (studio: BambuStudioMode): string | undefined => {
       return studio.version === undefined ? 'Bambu Studio' : `Bambu Studio ${studio.version}`;
     }
     case 'unavailable': {
-      return 'Tau reference slicer';
+      return 'SinopiaCAD reference slicer';
     }
     default: {
       return undefined;

@@ -1,7 +1,8 @@
 import { cn } from '@taucad/ui/utils/cn';
+import { publicAsset } from '#lib/base-path.js';
 
 /** Sinopia's mark, served from `public/brand/sinopia-mark.png` (Sinopia's own red logo, 201 px). */
-export const sinopiaMarkUrl = '/brand/sinopia-mark.png';
+export const sinopiaMarkUrl = publicAsset('brand/sinopia-mark.png');
 
 /** The product name shown beside the mark and in the help menu. */
 export const productName = 'SinopiaCAD';

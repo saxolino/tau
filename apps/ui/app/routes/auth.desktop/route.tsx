@@ -81,24 +81,24 @@ type HandoffStatus = 'invalid-request' | 'awaiting-consent' | 'minting' | 'openi
 /** One sentence per state, so the card is a lookup rather than a ternary chain. */
 const handoffTitle: Record<HandoffStatus, string> = {
   'invalid-request': 'This sign-in link is not valid',
-  'awaiting-consent': 'Connect to Tau Desktop?',
-  minting: 'Signing you in to Tau Desktop',
-  opening: 'Opening Tau Desktop',
-  'not-opened': 'Tau Desktop didn’t open',
+  'awaiting-consent': 'Connect to SinopiaCAD Desktop?',
+  minting: 'Signing you in to SinopiaCAD Desktop',
+  opening: 'Opening SinopiaCAD Desktop',
+  'not-opened': 'SinopiaCAD Desktop didn’t open',
   failed: "We couldn't complete the sign-in",
 };
 
 const handoffDescription: Record<HandoffStatus, React.ReactNode> = {
-  'invalid-request': 'Start sign-in from Tau Desktop rather than opening this page directly.',
-  'awaiting-consent': 'Only continue if you just started sign-in from Tau Desktop on this computer.',
-  minting: 'Hold tight while Tau hands your session to the desktop app.',
+  'invalid-request': 'Start sign-in from SinopiaCAD Desktop rather than opening this page directly.',
+  'awaiting-consent': 'Only continue if you just started sign-in from SinopiaCAD Desktop on this computer.',
+  minting: 'Hold tight while SinopiaCAD hands your session to the desktop app.',
   opening: (
     <>
-      Your browser asks whether to open Tau. Choose <strong>Open</strong> to continue there.
+      Your browser asks whether to open SinopiaCAD. Choose <strong>Open</strong> to continue there.
     </>
   ),
-  'not-opened': 'Tau Desktop may not be installed on this computer, or the browser did not offer to open it.',
-  failed: 'Return to Tau Desktop and start sign-in again.',
+  'not-opened': 'SinopiaCAD Desktop may not be installed on this computer, or the browser did not offer to open it.',
+  failed: 'Return to SinopiaCAD Desktop and start sign-in again.',
 };
 
 /**
@@ -213,7 +213,7 @@ export default function AuthDesktopRoute(): React.JSX.Element {
                 void handOff();
               }}
             >
-              Connect to Tau Desktop
+              Connect to SinopiaCAD Desktop
             </Button>
             <p className='text-xs text-muted-foreground'>This request expires in 5 minutes.</p>
           </CardContent>
@@ -228,7 +228,7 @@ export default function AuthDesktopRoute(): React.JSX.Element {
                 setStatus('not-opened');
               }}
             >
-              Tau Desktop didn’t open
+              SinopiaCAD Desktop didn’t open
             </Button>
           </CardContent>
         )}
@@ -243,14 +243,14 @@ export default function AuthDesktopRoute(): React.JSX.Element {
               <Button asChild variant='outline' className='w-full'>
                 <a href={tauDesktopDownloadUrl} target='_blank' rel='noreferrer'>
                   <Download aria-hidden='true' />
-                  Get Tau Desktop
+                  Get SinopiaCAD Desktop
                 </a>
               </Button>
             )}
             {/* Sign-in is the one flow with no browser continuation: the
                 session being handed over is the desktop app's, not this tab's. */}
             <p className='text-sm text-muted-foreground'>
-              To sign in without the desktop app, close this tab and use Tau in the browser.
+              To sign in without the desktop app, close this tab and use SinopiaCAD in the browser.
             </p>
           </CardContent>
         )}

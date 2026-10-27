@@ -184,7 +184,7 @@ export const actorOf = (
 ): string => {
   /* The actor id of an agent turn is a model id: a person reads who did it, not which model. */
   if (row.source === 'agent') {
-    return 'Tau agent';
+    return 'SinopiaCAD agent';
   }
   if (row.actor.startsWith('anon:')) {
     return `Anonymous · ${row.actor.slice('anon:'.length)}`;

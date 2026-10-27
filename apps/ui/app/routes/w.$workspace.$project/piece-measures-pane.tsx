@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSelector } from '@xstate/react';
 import { ChevronDown, ChevronRight, Eye, EyeOff, LockKeyhole } from 'lucide-react';
 import { getActiveGroupValues } from '@taucad/types';
+import { catalogoFamiglie } from '@taucad/smlib/riconoscimento';
 import type { ParameterManifest } from '@taucad/parameters';
 import type { ParametersSource } from '@taucad/workbench-panes/parameters/parameters-source';
 import { Parameters } from '@taucad/viewer/parameters/parameters';
@@ -17,6 +18,7 @@ import { useProject } from '#hooks/use-project.js';
 import { formatNumber, useTranslation } from '#i18n/translate.js';
 import { languageLocales } from '#i18n/language.js';
 import {
+  assumptionState,
   flatMeasurePiece,
   groupPieceMeasures,
   modelMeasureSummary,
@@ -28,8 +30,23 @@ import {
   valueAtPath,
 } from '#lib/piece-measures.js';
 import type { PieceMeasureGroup } from '#lib/piece-measures.js';
+import { modelWeight } from '#lib/piece-weight.js';
+import { PieceMaterialRow } from '#routes/w.$workspace.$project/piece-material-row.js';
 
 const units = { length: { displaySymbol: 'mm' } } as const;
+
+/**
+ * The parameters that are a list of points (unit `contorno`: the plate's outline), by dotted key. The Measures show
+ * them as a line, «Outline · n points», with the way back to the plain shape; they have no point editor.
+ */
+const outlineKeys: ReadonlySet<string> = new Set(
+  catalogoFamiglie().flatMap((family) =>
+    family.parametri.filter((parameter) => parameter.unita === 'contorno').map((parameter) => parameter.chiave),
+  ),
+);
+
+const pointerOf = (path: readonly string[]): string =>
+  `/${path.map((part) => part.replaceAll('~', '~0').replaceAll('/', '~1')).join('/')}`;
 
 /** Counts all physical pieces, including hidden ones; unavailable mass is omitted. */
 export function ModelSummaryRow(): React.JSX.Element {
@@ -38,38 +55,53 @@ export function ModelSummaryRow(): React.JSX.Element {
   const { t, language } = useTranslation();
   const pieces = context.unitOrder.flatMap((id) => modelPieces(context.unitsById[id]?.manifest));
   const summary = modelMeasureSummary(pieces);
+  const materials = Object.fromEntries(
+    context.unitOrder.flatMap((id) => Object.entries(context.unitsById[id]?.materialByComponentId ?? {})),
+  );
+  const weight = modelWeight(pieces, materials);
+  const mass = (grams: number): string => formatNumber(grams, language, { maximumFractionDigits: 2 });
   return (
-    <p className='px-3 py-2 text-xs text-muted-foreground tabular-nums'>
+    <p className='px-3 py-3 text-xs text-muted-foreground tabular-nums'>
       {t('measures.counts', {
         pieces: t(summary.pieces === 1 ? 'measures.onePiece' : 'measures.manyPieces', { count: summary.pieces }),
         stones: t(summary.stones === 1 ? 'measures.oneStone' : 'measures.manyStones', { count: summary.stones }),
       })}
-      {summary.goldMass === undefined
-        ? null
-        : ` · ${t('measures.goldMass', { mass: formatNumber(summary.goldMass, language, { maximumFractionDigits: 2 }) })}`}
+      {weight?.material
+        ? ` · ${t('materials.weightOf', { material: t(`materials.names.${weight.material}`), mass: mass(weight.grams) })}`
+        : summary.goldMass === undefined
+          ? weight
+            ? ` · ${t('materials.weight', { mass: mass(weight.grams) })}`
+            : null
+          : ` · ${t('measures.goldMass', { mass: mass(summary.goldMass) })}`}
     </p>
   );
 }
 
-const PieceGroup = memo(function PieceGroup({
+/**
+ * One piece's measures. In the list it is a row that opens with the selection; in the inspector it is the selected
+ * piece's editable measures only, under the inspector's own title.
+ */
+export const PieceGroup = memo(function PieceGroup({
   group,
   source,
   entryPath,
   manifest,
   filterTerm,
+  variant = 'list',
 }: {
   readonly group: PieceMeasureGroup;
   readonly source: ParametersSource;
   readonly entryPath: string;
   readonly manifest: ParameterManifest | undefined;
   readonly filterTerm: string;
+  readonly variant?: 'list' | 'inspector';
 }): React.JSX.Element | undefined {
   const { modelInteractionRef } = useProject();
   const unitId = createSourceModelInteractionUnitId(entryPath);
   const unit = useSelector(modelInteractionRef, (state) => getModelInteractionUnitState(state.context, unitId));
   const { entry } = source.useEntry(entryPath);
   const { t, language } = useTranslation();
-  const [isGeneralOpen, setIsGeneralOpen] = useState(true);
+  const [isGeneralOpen, setIsGeneralOpen] = useState(false);
   const element = useRef<HTMLDivElement>(null);
   const selected = unit.selectedComponentIds.at(-1);
   const isSelected = selected === group.node?.id && selected !== undefined;
@@ -114,30 +146,115 @@ const PieceGroup = memo(function PieceGroup({
     () => ({
       locale: languageLocales[language],
       embedFirstLevel: true,
-      fieldDescription: (_path, description) => (description.startsWith('[sinopia:assumed]') ? '' : description),
+      hideRequiredMark: true,
+      inferredHint: (kind) => t(kind === 'unit' ? 'measures.inferredUnit' : 'measures.inferredSemantics'),
+      resetLabel: (name) => t('measures.reset', { name }),
+      // The assumption marker travels in the description; its words show in the note's tooltip, never raw.
+      fieldDescription: (_path, description) => (description.startsWith('[sinopia:assumed') ? '' : description),
       // A flat measure inside its piece drops the piece's name: «Larghezza» under Marquise, not «Marquise larghezza».
       fieldLabel: (path, fallback) => {
         const key = path.at(-1) ?? fallback;
         const measure = group.node && path.length === 1 ? flatMeasurePiece(key, [group.node])?.measure : undefined;
         return readablePieceName(measure ?? key, language);
       },
+      // A plate's outline is a line with its way back, not rows of numbers.
+      arrayField: (path, points) => {
+        if (!outlineKeys.has(path.join('.'))) {
+          return undefined;
+        }
+        if (points.length === 0 || !manifest || !activeGroup) {
+          return null;
+        }
+        const back = async (): Promise<void> => {
+          const sibling = [...path.slice(0, -1), 'forma'];
+          const steps: ReadonlyArray<readonly [readonly string[], string | never[]]> = [
+            [path, []],
+            [sibling, 'rettangolo'],
+          ];
+          for (const [target, value] of steps) {
+            const outcome = await source.commitValue(entryPath, manifest, {
+              pointer: pointerOf(target),
+              value,
+              group: activeGroup,
+            });
+            if (outcome?.status !== 'committed') {
+              source.reportError?.(t('measures.failure'));
+              return;
+            }
+          }
+        };
+        return (
+          <div
+            className='flex items-center justify-between gap-2 py-1.5 text-xs'
+            data-slot='piece-outline'
+            data-path={path.join('.')}
+          >
+            <span className='text-muted-foreground tabular-nums'>
+              {t('measures.outline', { count: points.length })}
+            </span>
+            <Button
+              type='button'
+              size='sm'
+              variant='outline'
+              onClick={() => {
+                void back();
+              }}
+            >
+              {t('measures.outlineBackToRectangle')}
+            </Button>
+          </div>
+        );
+      },
       fieldNote: (path) => {
         const locked = valueAtPath(values, path) !== undefined;
         const assumption = parameterAssumption(schema, path);
-        return locked ? (
+        const state = assumptionState(assumption);
+        if (locked) {
           // A note, not an alarm: small, neutral, the lock in the selection's titanium (UI-UX-SinopiaCAD §3.2).
-          <span className='flex items-center gap-1 text-[11px] leading-[15px] text-muted-foreground'>
-            <LockKeyhole aria-hidden='true' className='size-3 text-accent-foreground' />
-            {t('measures.locked')}
-          </span>
-        ) : assumption === undefined ? null : (
-          <span title={assumption || undefined} className='text-[11px] leading-[15px] text-muted-foreground'>
-            {t('measures.assumed')}
+          return (
+            <span className='flex items-center gap-1 text-xs leading-4 text-muted-foreground'>
+              <LockKeyhole aria-hidden='true' className='size-3 text-accent-foreground' />
+              {t('measures.locked')}
+            </span>
+          );
+        }
+        if (assumption === undefined || state === undefined) {
+          return null;
+        }
+        const confidence =
+          assumption.confidence === undefined
+            ? undefined
+            : formatNumber(assumption.confidence, language, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        const band =
+          assumption.min !== undefined && assumption.max !== undefined
+            ? t('measures.plausibleBand', {
+                min: formatNumber(assumption.min, language, { maximumFractionDigits: 2 }),
+                max: formatNumber(assumption.max, language, { maximumFractionDigits: 2 }),
+              })
+            : undefined;
+        const title = [assumption.reason, band].filter(Boolean).join(' · ') || undefined;
+        return (
+          <span title={title} data-assumption={state} className='text-xs leading-4 text-muted-foreground'>
+            {state === 'estimated' && confidence !== undefined
+              ? t('measures.estimated', { confidence })
+              : confidence === undefined
+                ? t('measures.assumed')
+                : t('measures.assumedFromPhoto', { confidence })}
           </span>
         );
       },
+      // A recognition's plausible range, drawn as a darker stretch of the slider until the value is the designer's.
+      fieldBand: (path) => {
+        if (valueAtPath(values, path) !== undefined) {
+          return undefined;
+        }
+        const assumption = parameterAssumption(schema, path);
+        return assumption?.min !== undefined && assumption.max !== undefined
+          ? { min: assumption.min, max: assumption.max }
+          : undefined;
+      },
     }),
-    [group.node, language, schema, t, values],
+    [activeGroup, entryPath, group.node, language, manifest, schema, source, t, values],
   );
   const changeParameters = useCallback(
     (next: Record<string, unknown>) => {
@@ -159,14 +276,35 @@ const PieceGroup = memo(function PieceGroup({
     [manifest, values, group.keys, source, entryPath, t],
   );
   useEffect(() => {
-    if (!isSelected) {
+    if (!isSelected || variant === 'inspector') {
       return;
     }
     const frame = requestAnimationFrame(() => element.current?.scrollIntoView({ block: 'nearest' }));
     return () => {
       cancelAnimationFrame(frame);
     };
-  }, [isSelected]);
+  }, [isSelected, variant]);
+  if (variant === 'inspector') {
+    return group.keys.length > 0 && manifest && edit ? (
+      <div data-slot='inspector-piece-measures'>
+        <Parameters
+          parameters={values}
+          defaultParameters={defaults}
+          jsonSchema={groupSchema}
+          parameterManifest={manifest}
+          parameterGroup={entry?.groups[entry.activeGroup]}
+          parameterEdit={edit}
+          units={units}
+          presentation='embedded'
+          presentationOptions={presentationOptions}
+          enableSearch={false}
+          isAllExpanded
+          filterTerm=''
+          onParametersChange={changeParameters}
+        />
+      </div>
+    ) : undefined;
+  }
   const query = filterTerm.trim().toLocaleLowerCase();
   const nameMatches = name.toLocaleLowerCase().includes(query);
   const fieldsMatch = JSON.stringify(groupSchema?.properties ?? {})
@@ -179,6 +317,7 @@ const PieceGroup = memo(function PieceGroup({
     <div
       ref={element}
       className={cn('border-b border-border', isSelected && 'bg-accent/30')}
+      data-slot='piece-measures-group'
       data-piece={group.node?.id}
     >
       <div className='flex min-h-11 items-center gap-1 pr-1'>
@@ -215,7 +354,7 @@ const PieceGroup = memo(function PieceGroup({
           <span className='min-w-0 flex-1 truncate text-left text-xs' title={name}>
             {name}
           </span>
-          <span className='shrink-0 font-mono text-[11px] leading-[15px] tabular-nums'>
+          <span className='shrink-0 text-xs leading-4 tabular-nums'>
             {pieceKeyValue({ group, defaults, values, language })}
           </span>
         </Button>
@@ -243,6 +382,7 @@ const PieceGroup = memo(function PieceGroup({
           </Button>
         ) : null}
       </div>
+      {isOpen && group.node ? <PieceMaterialRow unitId={unitId} node={group.node} name={name} /> : null}
       {(isOpen || query) && group.keys.length > 0 && manifest && edit ? (
         <Parameters
           parameters={values}
@@ -278,10 +418,10 @@ const PieceEntry = memo(function PieceEntry({
   const unitId = createSourceModelInteractionUnitId(entryPath);
   const componentManifest = useSelector(modelInteractionRef, (state) => state.context.unitsById[unitId]?.manifest);
   const { manifest, failure } = source.useEntry(entryPath);
-  const groups = useMemo(
-    () => groupPieceMeasures(componentManifest, manifest?.defaults ?? {}),
-    [componentManifest, manifest],
-  );
+  const groups = useMemo(() => {
+    const groups = groupPieceMeasures(componentManifest, manifest?.defaults ?? {});
+    return [...groups.filter((group) => group.node), ...groups.filter((group) => !group.node)];
+  }, [componentManifest, manifest]);
   if (failure) {
     return (
       <div role='alert' className='p-3 text-sm'>
@@ -340,7 +480,7 @@ export function PieceMeasuresPane({ source }: { readonly source: ParametersSourc
       }}
     >
       <ModelSummaryRow />
-      <div className='px-2 pb-2'>
+      <div className='px-3 pb-3'>
         <SearchInput
           aria-label={t('measures.search')}
           placeholder={t('measures.search')}
@@ -364,4 +504,48 @@ export function PieceMeasuresPane({ source }: { readonly source: ParametersSourc
       </div>
     </div>
   );
+}
+
+/**
+ * The selected piece's own editable measures, for the inspector: the same authority and editor as the list, without
+ * its row. Nothing when the model writes no measures for the piece.
+ *
+ * @param props - The piece's entry and component.
+ * @returns The measures, or undefined.
+ */
+export function InspectorPieceMeasures({
+  source,
+  entryPath,
+  pieceId,
+  frame,
+}: {
+  readonly source: ParametersSource;
+  readonly entryPath: string;
+  readonly pieceId: string;
+  /** The section around the measures, drawn only when the piece has some. */
+  readonly frame: (measures: React.ReactNode) => React.JSX.Element;
+}): React.JSX.Element | undefined {
+  const { modelInteractionRef } = useProject();
+  const unitId = createSourceModelInteractionUnitId(entryPath);
+  const componentManifest = useSelector(modelInteractionRef, (state) => state.context.unitsById[unitId]?.manifest);
+  const { manifest } = source.useEntry(entryPath);
+  const group = useMemo(
+    () =>
+      groupPieceMeasures(componentManifest, manifest?.defaults ?? {}).find(
+        (candidate) => candidate.node?.id === pieceId,
+      ),
+    [componentManifest, manifest, pieceId],
+  );
+  return group && group.keys.length > 0
+    ? frame(
+        <PieceGroup
+          group={group}
+          source={source}
+          entryPath={entryPath}
+          manifest={manifest}
+          filterTerm=''
+          variant='inspector'
+        />,
+      )
+    : undefined;
 }

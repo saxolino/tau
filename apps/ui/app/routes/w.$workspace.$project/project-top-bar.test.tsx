@@ -73,9 +73,9 @@ vi.mock('#routes/w.$workspace.$project/project-workspace-context.js', async (imp
   }),
 }));
 /* The two lane toggles have their own suites; here they only have to stand at the bar's two ends. */
-vi.mock('#routes/w.$workspace.$project/chat-lane-toggle.js', () => ({
-  ChatLaneToggle: ({ place }: { readonly place: string }) => (
-    <button type='button' data-testid='agent-toggle' data-place={place} />
+vi.mock('#routes/w.$workspace.$project/inspector-lane.js', () => ({
+  InspectorLaneToggle: ({ place }: { readonly place: string }) => (
+    <button type='button' data-testid='inspector-toggle' data-place={place} />
   ),
 }));
 vi.mock('#routes/w.$workspace.$project/workbench-toggle.js', () => ({
@@ -137,9 +137,38 @@ describe('ProjectTopBar', () => {
     expect(screen.getByRole('button', { name: text.versions })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: text.export })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: text.send })).toBeEnabled();
-    // Misure at the start, the agent at the end: the lanes' toggles frame the bar.
+    // Misure at the start, the inspector at the end: the lanes' toggles frame the bar.
     expect(bar.firstElementChild).toBe(screen.getByTestId('measures-toggle'));
-    expect(screen.getByTestId('agent-toggle')).toHaveAttribute('data-place', 'viewer');
+    expect(screen.getByTestId('inspector-toggle')).toHaveAttribute('data-place', 'viewer');
+  });
+
+  it('has one work mode and one filled action: no Assistente/Modifica switch, only «Invia a Sinopia» is primary', () => {
+    setLanguage('it');
+    renderBar();
+    expect(screen.getByRole('link', { name: 'Progetti' })).toHaveTextContent('SinopiaCAD');
+    expect(screen.queryByRole('button', { name: 'Modifica' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Assistente' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: 'Strumenti di progettazione' })).not.toBeInTheDocument();
+    const filled = screen
+      .getAllByRole('button')
+      .filter((button) => button.className.split(/\s+/u).includes('primary-action'));
+    expect(filled).toEqual([screen.getByRole('button', { name: 'Invia a Sinopia' })]);
+    // Versions and Export are glyphs; their names are their labels and tooltips, not text in the bar.
+    expect(screen.getByRole('button', { name: 'Versioni' })).not.toHaveTextContent('Versioni');
+    expect(screen.getByRole('button', { name: 'Esporta' })).not.toHaveTextContent('Esporta');
+  });
+
+  it('reads the project’s name and where it is saved side by side', () => {
+    setLanguage('it');
+    renderBar();
+    const name = screen.getByRole('button', { name: 'Collana con marquise' });
+    const status = screen.getByRole('status');
+    expect(status).toHaveTextContent('Salvato su Sinopia · 14:02');
+    // The status follows the path, before the actions.
+    const order = [...screen.getByRole('region', { name: 'Progetto' }).querySelectorAll('*')];
+    const actions = screen.getByRole('group', { name: 'Azioni del progetto' });
+    expect(order.indexOf(name)).toBeLessThan(order.indexOf(status));
+    expect(order.indexOf(status)).toBeLessThan(order.indexOf(actions));
   });
 
   it('keeps Tau’s branch, Share and file names out of the bar', () => {

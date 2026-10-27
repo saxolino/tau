@@ -156,7 +156,7 @@ describe('selectRevisionFacts', () => {
       'Needs your decision on main',
     ],
     [
-      'Tau Cloud asking for sign-in',
+      'SinopiaCAD Cloud asking for sign-in',
       status({ remote: tauRemote, sync: sync({ state: 'failed', reason: 'unauthorized', pendingCount: 1 }) }),
       onMain,
       CloudAlert,
@@ -263,7 +263,11 @@ describe('selectRevisionFacts', () => {
     });
 
     it.each([
-      ['the agent on Tau Cloud', card('Tau agent'), 'Rev 14 arrived from Tau agent on Tau Cloud'],
+      [
+        'the agent on SinopiaCAD Cloud',
+        card('SinopiaCAD agent'),
+        'Rev 14 arrived from SinopiaCAD agent on SinopiaCAD Cloud',
+      ],
       [
         'the viewer’s own other session, claiming no device (RV-W5b F11)',
         card('You'),
@@ -280,7 +284,11 @@ describe('selectRevisionFacts', () => {
 
     it('lets work in progress speak first', () => {
       expect(
-        selectRevisionFacts({ ...arrivedStatus, minting: true }, { ...onMain, isDirty: true }, card('Tau agent')),
+        selectRevisionFacts(
+          { ...arrivedStatus, minting: true },
+          { ...onMain, isDirty: true },
+          card('SinopiaCAD agent'),
+        ),
       ).toMatchObject({ mark: 'running', sentence: 'Saving…' });
     });
   });
@@ -430,7 +438,7 @@ describe('RevisionStatusAction', () => {
 
   /* Before the first save of a project backed up by default, the card agrees with the pane (W10-L B-3). */
   it.each([
-    ['noticed', 'Backs up to Tau Cloud automatically after your first save'],
+    ['noticed', 'Backs up to SinopiaCAD Cloud automatically after your first save'],
     [undefined, 'No backup connected'],
   ] as const)('reads the Backup row of a project whose backup intent is %s', async (intent, backup) => {
     const user = userEvent.setup();

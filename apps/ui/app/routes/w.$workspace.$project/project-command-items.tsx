@@ -320,7 +320,7 @@ function ProjectCommandPaletteItemsReady({ match }: { readonly match: UIMatch })
         : [
             {
               id: 'connect-tau-cloud',
-              label: 'Connect Tau Cloud',
+              label: 'Connect SinopiaCAD Cloud',
               group: 'Revisions',
               icon: <Cloud />,
               action: handleOpenSync,

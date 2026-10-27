@@ -43,7 +43,19 @@
     },
     "./agent/*": "./agent/*",
     "./package.json": "./package.json",
-    "./model": "./src/model.ts"
+    "./model": "./src/model.ts",
+    "./manual-operations": "./src/manual-operations.ts",
+    "./famiglie": "./src/famiglie/index.ts",
+    "./riconoscimento": "./src/riconoscimento/index.ts",
+    "./verifica": "./src/verifica/index.ts",
+    "./verifica/worker": "./src/verifica/verifica.worker.ts",
+    "./varianti": "./src/varianti/index.ts",
+    "./varianti/worker": "./src/varianti/varianti.worker.ts",
+    "./serie": "./src/serie/index.ts",
+    "./producibilita": "./src/producibilita/index.ts",
+    "./producibilita/worker": "./src/producibilita/producibilita.worker.ts",
+    "./consegna": "./src/consegna/index.ts",
+    "./consegna/worker": "./src/consegna/consegna.worker.ts"
   },
   "publishConfig": {
     "access": "public",
@@ -63,6 +75,66 @@
         "types": "./dist/model.d.mts",
         "import": "./dist/model.mjs",
         "default": "./dist/model.mjs"
+      },
+      "./manual-operations": {
+        "types": "./dist/manual-operations.d.mts",
+        "import": "./dist/manual-operations.mjs",
+        "default": "./dist/manual-operations.mjs"
+      },
+      "./famiglie": {
+        "types": "./dist/famiglie/index.d.mts",
+        "import": "./dist/famiglie/index.mjs",
+        "default": "./dist/famiglie/index.mjs"
+      },
+      "./riconoscimento": {
+        "types": "./dist/riconoscimento/index.d.mts",
+        "import": "./dist/riconoscimento/index.mjs",
+        "default": "./dist/riconoscimento/index.mjs"
+      },
+      "./verifica": {
+        "types": "./dist/verifica/index.d.mts",
+        "import": "./dist/verifica/index.mjs",
+        "default": "./dist/verifica/index.mjs"
+      },
+      "./verifica/worker": {
+        "types": "./dist/verifica/verifica.worker.d.mts",
+        "import": "./dist/verifica/verifica.worker.mjs",
+        "default": "./dist/verifica/verifica.worker.mjs"
+      },
+      "./varianti": {
+        "types": "./dist/varianti/index.d.mts",
+        "import": "./dist/varianti/index.mjs",
+        "default": "./dist/varianti/index.mjs"
+      },
+      "./varianti/worker": {
+        "types": "./dist/varianti/varianti.worker.d.mts",
+        "import": "./dist/varianti/varianti.worker.mjs",
+        "default": "./dist/varianti/varianti.worker.mjs"
+      },
+      "./serie": {
+        "types": "./dist/serie/index.d.mts",
+        "import": "./dist/serie/index.mjs",
+        "default": "./dist/serie/index.mjs"
+      },
+      "./producibilita": {
+        "types": "./dist/producibilita/index.d.mts",
+        "import": "./dist/producibilita/index.mjs",
+        "default": "./dist/producibilita/index.mjs"
+      },
+      "./producibilita/worker": {
+        "types": "./dist/producibilita/producibilita.worker.d.mts",
+        "import": "./dist/producibilita/producibilita.worker.mjs",
+        "default": "./dist/producibilita/producibilita.worker.mjs"
+      },
+      "./consegna": {
+        "types": "./dist/consegna/index.d.mts",
+        "import": "./dist/consegna/index.mjs",
+        "default": "./dist/consegna/index.mjs"
+      },
+      "./consegna/worker": {
+        "types": "./dist/consegna/consegna.worker.d.mts",
+        "import": "./dist/consegna/consegna.worker.mjs",
+        "default": "./dist/consegna/consegna.worker.mjs"
       }
     },
     "imports": {}

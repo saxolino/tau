@@ -26,6 +26,7 @@ import {
 } from '@taucad/ui/components/dropdown-menu';
 import { cn } from '@taucad/ui/utils/cn';
 import { AxisLabel } from '#cad/section-tool-row.jsx';
+import { ModelMaterialMenuRows } from '#cad/model-material-menu.jsx';
 import { InfoTooltip } from '@taucad/ui/components/info-tooltip';
 import {
   DropdownMenuSelectItem,
@@ -34,6 +35,7 @@ import {
 } from '@taucad/ui/components/menu-slider-item';
 import { useCameraRig, useCameraSelector, useGraphics, useGraphicsSelector } from '#hooks/use-graphics.jsx';
 import { useViewerLabels } from '#environment/viewer-environment.jsx';
+import type { SettingsLabels } from '#environment/viewer-environment.jsx';
 import { clamp } from '@taucad/ui/utils/number';
 
 // Up direction options
@@ -45,14 +47,14 @@ type TimeoutOption = {
   label: string;
 };
 
-const timeoutOptions: TimeoutOption[] = [
-  { value: 0, label: 'Disabled' },
-  { value: 15_000, label: '15s' },
-  { value: 30_000, label: '30s' },
-  { value: 60_000, label: '1 min' },
-  { value: 180_000, label: '3 min' },
-  { value: 300_000, label: '5 min' },
-  { value: 600_000, label: '10 min' },
+const timeoutOptionsOf = (settings: SettingsLabels): TimeoutOption[] => [
+  { value: 0, label: settings.timeoutDisabled },
+  { value: 15_000, label: settings.seconds(15) },
+  { value: 30_000, label: settings.seconds(30) },
+  { value: 60_000, label: settings.minutes(1) },
+  { value: 180_000, label: settings.minutes(3) },
+  { value: 300_000, label: settings.minutes(5) },
+  { value: 600_000, label: settings.minutes(10) },
 ];
 
 const upDirectionOptions: Array<{ value: UpDirection; label: React.ReactNode; ariaLabel: string }> = [
@@ -114,6 +116,7 @@ function SliderRowTrigger({
  * only this row.
  */
 function FieldOfViewRow(): React.JSX.Element {
+  const { settings } = useViewerLabels();
   const cameraRig = useCameraRig();
   const fieldOfView = useCameraSelector((state) => state.context.view.requestedVerticalFieldOfView);
 
@@ -145,21 +148,19 @@ function FieldOfViewRow(): React.JSX.Element {
             max={maxVerticalFieldOfView}
             step={1}
             trailingAdornment='°'
-            aria-label='Field of view, 0° is orthographic'
+            aria-label={settings.fieldOfViewAria}
             onValueChange={setFieldOfView}
             onStep={stepFieldOfView}
           >
             <Aperture />
-            {fieldOfView === 0 ? 'Orthographic' : 'Field of view'}
+            {fieldOfView === 0 ? settings.orthographic : settings.fieldOfView}
           </DropdownMenuSliderItem>
         </SliderRowTrigger>
       </TooltipTrigger>
       <TooltipContent side='right' sideOffset={12}>
-        Drag for field of view · 0° is orthographic
+        {settings.fieldOfViewDrag}
         <br />
-        <span className='text-xs opacity-70'>
-          Click or Enter to type · ←→ step 1° · Shift 5° · P toggles orthographic
-        </span>
+        <span className='text-xs opacity-70'>{settings.fieldOfViewKeys}</span>
       </TooltipContent>
     </Tooltip>
   );
@@ -179,7 +180,8 @@ export function ViewerSettings({
   operationTimeout,
 }: ViewerSettingsProps): React.ReactNode {
   const graphicsRef = useGraphics();
-  const { viewerSettings } = useViewerLabels();
+  const { viewerSettings, settings } = useViewerLabels();
+  const timeoutOptions = useMemo(() => timeoutOptionsOf(settings), [settings]);
 
   const [isOpen, setIsOpen] = useState(false);
   // A press outside leaves focus with the pointer; a keyboard close returns it to the trigger.
@@ -267,7 +269,7 @@ export function ViewerSettings({
       timeoutOptions.find((option) => option.value === operationTimeoutValue) ??
       timeoutOptions.find((option) => option.value === operationTimeoutDefault) ??
       timeoutOptions[0]!,
-    [operationTimeoutDefault, operationTimeoutValue],
+    [operationTimeoutDefault, operationTimeoutValue, timeoutOptions],
   );
 
   const getTimeoutValue = useCallback((option: TimeoutOption): string => String(option.value), []);
@@ -302,89 +304,81 @@ export function ViewerSettings({
       >
         {!is2dGeometry && (
           <>
-            <DropdownMenuLabel>Model</DropdownMenuLabel>
+            <DropdownMenuLabel>{settings.model}</DropdownMenuLabel>
             <DropdownMenuSwitchItem isChecked={enableSurfaces} onIsCheckedChange={handleMeshToggle}>
               <Box />
-              Surfaces
+              {settings.surfaces}
             </DropdownMenuSwitchItem>
             <DropdownMenuSwitchItem isChecked={enableLines} onIsCheckedChange={handleLinesToggle}>
               <PenLine />
-              Lines
+              {settings.lines}
             </DropdownMenuSwitchItem>
             <DropdownMenuSwitchItem
               icon={<Sparkles />}
-              description={`Lighting effects are ${enableMatcap ? 'inactive' : 'active'}`}
+              description={enableMatcap ? settings.lightingInactive : settings.lightingActive}
               isChecked={enableMatcap}
               onIsCheckedChange={handleMatcapToggle}
             >
-              Matcap{' '}
-              <InfoTooltip>
-                A material that gives models a consistent appearance independent of scene lighting.
-                <br /> Rendering performance is improved with this enabled.
-              </InfoTooltip>
+              {settings.matcap} <InfoTooltip>{settings.matcapInfo}</InfoTooltip>
             </DropdownMenuSwitchItem>
             <DropdownMenuSwitchItem
               icon={<Layers />}
-              description={`Ambient occlusion is ${enablePostProcessing ? 'active' : 'inactive'}`}
+              description={enablePostProcessing ? settings.occlusionActive : settings.occlusionInactive}
               isChecked={enablePostProcessing}
               onIsCheckedChange={handlePostProcessingToggle}
             >
-              Post-processing{' '}
-              <InfoTooltip>
-                Enables screen-space ambient occlusion for more realistic depth and contact shadows.
-              </InfoTooltip>
+              {settings.postProcessing} <InfoTooltip>{settings.postProcessingInfo}</InfoTooltip>
             </DropdownMenuSwitchItem>
+            <ModelMaterialMenuRows />
             <DropdownMenuSeparator />
           </>
         )}
-        <DropdownMenuLabel>Viewport</DropdownMenuLabel>
+        <DropdownMenuLabel>{settings.viewport}</DropdownMenuLabel>
         <DropdownMenuSwitchItem
           className={cn(is2dGeometry && 'hidden')}
           isChecked={enableGizmo}
           onIsCheckedChange={handleGizmoToggle}
         >
           <Rotate3D />
-          Gizmo
+          {settings.gizmo}
         </DropdownMenuSwitchItem>
         <DropdownMenuSwitchItem isChecked={enableGrid} onIsCheckedChange={handleGridToggle}>
           <Grid3X3 />
-          Grid
+          {settings.grid}
         </DropdownMenuSwitchItem>
         <DropdownMenuSwitchItem isChecked={enableAxes} onIsCheckedChange={handleAxesHelperToggle}>
           <Axis3D />
-          Axes
+          {settings.axes}
         </DropdownMenuSwitchItem>
         {!is2dGeometry && (
           <>
             <DropdownMenuToggleGroupItem
               value={upDirection}
-              options={upDirectionOptions}
+              options={upDirectionOptions.map((option) => ({
+                ...option,
+                ariaLabel: settings.upAria(option.value.toUpperCase()),
+              }))}
               onValueChange={handleUpDirectionChange}
             >
               <ArrowUp />
-              Up Direction
+              {settings.upDirection}
             </DropdownMenuToggleGroupItem>
             <FieldOfViewRow />
           </>
         )}
         <DropdownMenuSeparator />
-        <DropdownMenuLabel>Rendering</DropdownMenuLabel>
+        <DropdownMenuLabel>{settings.rendering}</DropdownMenuLabel>
         {operationTimeout ? (
           <DropdownMenuSelectItem
             value={currentTimeoutOption}
             options={timeoutOptions}
             getOptionValue={getTimeoutValue}
             getOptionLabel={getTimeoutLabel}
-            infoTooltip={
-              <InfoTooltip>
-                Maximum time to wait for CAD rendering before timing out.
-                <br /> Set to &quot;Disabled&quot; to turn off timeout.
-              </InfoTooltip>
-            }
+            infoTooltip={<InfoTooltip>{settings.timeoutInfo}</InfoTooltip>}
             onValueChange={handleOperationTimeoutChange}
           >
             <Timer />
-            Timeout
+            {settings.renderTimeout}
           </DropdownMenuSelectItem>
         ) : undefined}
         {kernelSettings}

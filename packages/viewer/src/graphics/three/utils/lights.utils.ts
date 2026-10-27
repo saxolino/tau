@@ -40,7 +40,11 @@ export const environmentBaseIntensity = 1;
  * @public
  */
 export type StudioLightingSettings = {
-  environment: 'studio' | 'room' | 'white' | 'none';
+  /**
+   * `jewelry`: a light tent for metals (bright crown, dark floor, soft boxes and strips), drawn in view space so the
+   * highlights stay put while the model turns. `studio`: product cards on black. `room`: three's neutral room.
+   */
+  environment: 'jewelry' | 'studio' | 'room' | 'white' | 'none';
   ambientIntensity: number;
   headlampIntensity: number;
   environmentIntensity: number;
@@ -53,12 +57,12 @@ export type StudioLightingSettings = {
 };
 
 /**
- * Default studio lighting settings: the room environment with the base headlamp, ambient and environment intensities.
+ * Default studio lighting settings: the jewellery light tent with the base headlamp, ambient and environment intensities.
  *
  * @public
  */
 export const defaultStudioLighting: StudioLightingSettings = {
-  environment: 'room',
+  environment: 'jewelry',
   ambientIntensity: ambientBaseIntensity,
   headlampIntensity: headlampBaseIntensity,
   environmentIntensity: environmentBaseIntensity,

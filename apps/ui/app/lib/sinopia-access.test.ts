@@ -48,105 +48,52 @@ afterEach(async () => {
 });
 
 describe('checkSinopiaAccess', () => {
-  describe('accounts sinopialab.com lets in', () => {
+  describe('the reserved preview: administrators only', () => {
     it.each<{ name: string; account: SinopiaTestAccount }>([
-      { name: 'a complete designer in the beta', account: {} },
-      {
-        name: 'a designer from before the beta door',
-        account: { beta: 'not_applicable' },
-      },
-      {
-        name: 'a supplier, whose beta status does not count',
-        account: { role: 'supplier', beta: 'needs_profile' },
-      },
-      {
-        name: 'a superadmin',
-        account: { role: 'superadmin', beta: 'not_applicable' },
-      },
-      {
-        name: 'a Google designer the beta door has taken',
-        account: { needsProfession: true, beta: 'active' },
-      },
-      {
-        name: 'an account that accepted later Terms',
-        account: { terms: '2026-11-02' },
-      },
-      {
-        name: 'a designer with Terms on file whose beta status cannot be read',
-        account: { failing: ['beta'], terms: '2026-08-17' },
-      },
+      { name: 'a superadmin', account: { role: 'superadmin', beta: 'not_applicable' } },
+      { name: 'a superadmin whose beta status is anything', account: { role: 'superadmin', beta: 'needs_profile' } },
+      { name: 'a superadmin that accepted later Terms', account: { role: 'superadmin', terms: '2026-11-02' } },
     ])('should let in $name', async ({ account }) => {
       await expect(check(account)).resolves.toEqual({ verdict: 'allowed' });
     });
+
+    it.each<{ name: string; account: SinopiaTestAccount }>([
+      { name: 'a complete designer in the beta', account: { role: 'designer' } },
+      { name: 'a supplier', account: { role: 'supplier', beta: 'needs_profile' } },
+      { name: 'a supervisor', account: { role: 'supervisor' } },
+      { name: 'a legacy designer role', account: { role: 'pro' } },
+      { name: 'no profile row', account: { withoutProfile: true } },
+      { name: 'a role that is not an account role', account: { role: 'lookbook_guest' } },
+    ])('should answer reserved for $name', async ({ account }) => {
+      await expect(check(account)).resolves.toEqual({ verdict: 'reserved' });
+    });
   });
 
-  describe('accounts sinopialab.com keeps out', () => {
+  describe('administrators sinopialab.com keeps out', () => {
     it.each<{ name: string; account: SinopiaTestAccount; reason: string }>([
       {
-        name: 'no profile row',
-        account: { withoutProfile: true },
-        reason: 'no-profile',
-      },
-      {
-        name: 'a role that is not an account role',
-        account: { role: 'lookbook_guest' },
-        reason: 'no-profile',
-      },
-      {
-        name: 'a beta profile still to complete',
-        account: { beta: 'needs_profile' },
-        reason: 'beta-profile',
-      },
-      {
-        name: 'a legacy designer role still to join',
-        account: { role: 'pro', beta: 'needs_profile' },
-        reason: 'beta-profile',
-      },
-      {
-        name: 'a place on the waiting list',
-        account: { beta: 'waitlisted' },
-        reason: 'waitlisted',
-      },
-      {
         name: 'a profession still to choose outside the beta',
-        account: { needsProfession: true, beta: 'not_applicable' },
+        account: { role: 'superadmin', needsProfession: true, beta: 'not_applicable' },
         reason: 'profession',
       },
-      {
-        name: 'Terms never accepted',
-        account: { withoutTerms: true },
-        reason: 'terms',
-      },
+      { name: 'Terms never accepted', account: { role: 'superadmin', withoutTerms: true }, reason: 'terms' },
       {
         name: 'Terms older than the current ones',
-        account: { terms: '2026-07-01' },
+        account: { role: 'superadmin', terms: '2026-07-01' },
         reason: 'terms',
       },
     ])('should keep out $name', async ({ account, reason }) => {
-      await expect(check(account)).resolves.toEqual({
-        verdict: 'refused',
-        reason,
-      });
+      await expect(check(account)).resolves.toEqual({ verdict: 'refused', reason });
     });
   });
 
   describe('reads that fail', () => {
     it.each<{ name: string; account: SinopiaTestAccount }>([
-      { name: 'the profile', account: { failing: ['profile'] } },
-      { name: 'the profession step', account: { failing: ['profession'] } },
-      { name: 'the Terms consent', account: { failing: ['terms'] } },
-      {
-        name: 'the beta status of a designer without Terms on file',
-        account: { failing: ['beta'], withoutTerms: true },
-      },
-      {
-        name: 'both the beta status and the Terms consent',
-        account: { failing: ['beta', 'terms'] },
-      },
-    ])('should answer unverified, never refused, when $name cannot be read', async ({ account }) => {
-      await expect(check(account)).resolves.toEqual({
-        verdict: 'unverified',
-      });
+      { name: 'the profile', account: { role: 'superadmin', failing: ['profile'] } },
+      { name: 'the profession step', account: { role: 'superadmin', failing: ['profession'] } },
+      { name: 'the Terms consent', account: { role: 'superadmin', failing: ['terms'] } },
+    ])('should answer unverified, never allowed or reserved, when $name cannot be read', async ({ account }) => {
+      await expect(check(account)).resolves.toEqual({ verdict: 'unverified' });
       expect(console.error).toHaveBeenCalledWith(
         expect.stringMatching(/^\[sinopia] could not read /),
         expect.anything(),
@@ -165,7 +112,7 @@ describe('checkSinopiaAccess', () => {
     });
 
     it('should go on once this session has confirmed it', async () => {
-      scriptSinopiaBackend();
+      scriptSinopiaBackend({}, { role: 'superadmin' });
 
       await expect(
         checkSinopiaAccess(await signedInClient({ factors: [sinopiaTestFactor], aal: 'aal2' }), sinopiaTestUser.id),

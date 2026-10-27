@@ -842,3 +842,155 @@ rendile personalizzabili»), modifiche a file di Tau (Apache-2.0 §4(b)):
 - **Sinopia.** Modelli senza progetto collegati da soli e una volta sola (`sinopia-cad.ts`,
   `use-sinopia-cad-sync.ts`, `send-to-sinopia-dialog.tsx`, `project-save-status.tsx`); copertine «Da Sinopia»
   (`sinopia-references.ts`); il progetto Sinopia del modello prende l'anteprima come copertina se non ne ha una.
+
+## 26 ottobre 2026 — una sola modalità: ispettore contestuale e assistente sempre presente
+
+Blocchi C1, C2, C5 e D4 del piano di Claude (`PIANO-CLAUDE-2026-10-26.md`), dalla valutazione Fable del 26 ottobre
+(§2.1, §2.3, §2.5, §2.8). Modifiche a file di Tau (Apache-2.0 §4(b)):
+
+- **Una sola modalità.** Via l'interruttore Assistente/Modifica e le corsie che si chiudevano da sole
+  (`project-workspace-context.tsx`, `chat-interface-desktop.tsx`, `project-top-bar.tsx`). La corsia destra è
+  `inspector-lane.tsx`: l'ispettore della selezione (modello, pezzo, faccia, spigoli) con l'ingombro L × P × A letto dal
+  solido e modificabile in proporzione, gli strumenti del visore montati lì con un portale (`chat-viewer.tsx`), le misure
+  del pezzo (`piece-measures-pane.tsx`, `chat-parameters.tsx`) e la cronologia; sotto, l'assistente sempre presente
+  (`components/chat/assistant-dock.tsx`), che si apre nella conversazione con ⌃J (`chat-history.tsx` variante `dock`,
+  `chat-title-bar.tsx`). Su tablet la corsia è un foglio richiudibile che lascia usabile il modello sotto
+  (`tablet-lane.tsx`).
+- **Strumenti per la selezione.** `manual-edit-panel.tsx`: filtro Pezzo · Faccia · Spigolo sempre visibile, strumento
+  principale e secondari con icona, «Altri strumenti» nel menu, Applica (Invio) e Annulla (Esc) unici, cronologia che
+  dice cosa, quanto e su quale pezzo (`lib/inspector-selection.ts`). La selezione è una sola: un pezzo preso con uno
+  strumento diventa la selezione del modello e viceversa (`use-manual-direct-tool.ts`, `use-manual-face-tool.ts`).
+- **Selezione visibile e anteprima.** Nel visore (`packages/viewer`): velo e contorno titanio sulla faccia scelta,
+  spigoli in titanio, fantasma dell'estrusione di faccia (prisma), del foro (cilindro) e della portata di raccordo e
+  smusso (tubo) prima di Applica (`manual-preview-geometry.ts`, `planar-face-controls.tsx`, `direct-edit-controls.tsx`,
+  `planar-face-tool.ts`, `direct-edit-tool.ts`, `gltf-mesh.tsx`, `overlay-colors.constants.ts`); la distanza trascinata
+  resta in anteprima fino a Invio, con la quota accanto al cursore (`gesture-quota.tsx`). Foro posizionato con un clic
+  sulla faccia (`manual-face-draft.ts`, operazione `hole` esistente).
+- **Assistente che conosce la selezione.** «Parla di: …» con faccia o spigoli (`selected-piece-chip.tsx`), suggerimenti
+  dalla geometria che riempiono il compositore senza inviare (`assistant-suggestions.tsx`, al posto di
+  `agent-suggestions.tsx`, rimosso con il suo test), stato vuoto con tre partenze (`chat-history-empty.tsx`,
+  `use-home-image-intake.ts`).
+- **Versioni parlanti.** Ogni versione dice la misura cambiata con pezzo e valori prima → dopo e le operazioni manuali
+  aggiunte, tolte o modificate (`revision-history.ts`, `chat-revisions.tsx`).
+- **Tema.** Token `--titanium` e `--titanium-foreground` (`packages/ui/src/styles/tokens.css`, registrati in
+  `docs/policy/color-policy.md`); occhielli in mono maiuscolo (`components/ui/eyebrow.tsx`).
+
+## 27 ottobre 2026 — riconoscimento da foto (D2): dalla parte isolata in Sinopia al pezzo di famiglia
+
+- **Contratto con Sinopia.** Modulo nuovo `packages/plugins/smlib/src/riconoscimento/` (esportato come
+  `@taucad/smlib/riconoscimento`, `package.json`, `tsdown.config.ts`): scheda della parte e scheda di riconoscimento
+  (zod → schema JSON per l'uscita strutturata e limiti a parte), soglie e domande, stima della scala, tabella
+  `part_type` → famiglia, prompt e convalida condivisi (`condiviso.ts`, copiato byte per byte nella funzione
+  `sinopiacad` di Sinopia con `riconoscimento.contratto.json`), piano di costruzione con il registro delle famiglie,
+  aggancio della verifica D3 (`verifica-silhouette.ts`).
+- **Marcatore delle ipotesi esteso.** `[sinopia:assumed c= f= min= max=]` con confidenza, fonte e banda plausibile,
+  retrocompatibile (`packages/plugins/smlib/src/parameter-assumptions.ts`); le Misure mostrano «stimata ◐» e
+  «ipotesi ○» e la banda sul cursore (`apps/ui/app/lib/piece-measures.ts`,
+  `apps/ui/app/routes/w.$workspace.$project/piece-measures-pane.tsx`, `packages/ui/src/components/slider-input.tsx`,
+  `packages/viewer/src/parameters/{rjsf-context,parameters-widget,parameters-number,parameters-number-field}.ts(x)`).
+  I gruppi di una coppia (`tacco` per `Tacco DX`/`Tacco SX`) si agganciano a entrambi i lati.
+- **«/cad/nuovo».** Rotta nuova `apps/ui/app/routes/nuovo/` (lettura dei parametri, immagine e maschera da
+  `creator-private`, riconoscimento, chip della famiglia, costruzione del progetto), servizi
+  `apps/ui/app/services/{sinopia-parts,sinopia-recognize,riconoscimento-immagini,riconoscimento-record,riconoscimento-progetto}.ts`,
+  nomi dei parametri in `apps/ui/app/constants/search-parameter.constants.ts`.
+- **Ispettore.** Card «Riconosciuto» con parametri, confidenze e domande una alla volta
+  (`apps/ui/app/components/riconoscimento/recognition-card.tsx`,
+  `apps/ui/app/routes/w.$workspace.$project/{inspector-recognition,inspector-lane}.tsx`); testi in
+  `apps/ui/app/i18n/messages/{riconoscimento,measures}.ts` e `catalog.ts`; la skill dell'agente conosce
+  `@sinopia/famiglie` e il marcatore esteso (`apps/ui/app/lib/sinopia-immagine-cad-skill.ts`).
+
+## 27 ottobre 2026 — foto del campione (D6) e crediti delle rotte del CAD (E5)
+
+- **Mappe gratis nel browser.** Modulo nuovo `apps/ui/app/lib/foto-campione/`: lettura del GLB presentato in
+  triangoli, normali e spigoli B-rep nel telaio di Tau (`glb-mesh.ts`); z-buffer in TypeScript con camera e luce fisse
+  per vista (fronte — dall'alto per un pezzo piatto —, 3/4, dettaglio) che dà ombreggiato neutro, profondità, normali,
+  bordi e sagoma (`mappe.ts`); impronta SHA-256 di hash del modello + vista + materiale + livello (`impronta.ts`);
+  galleria con stati «Pronta»/«Da rifare» e cache per impronta (`galleria.ts`); IoU della sagoma della foto contro
+  quella del render, soglia 0,95 (`sagoma.ts`); finto della prova di sviluppo `?prova=foto` (`prova.ts`).
+- **Ispettore.** Sezione «Foto del campione» (`apps/ui/app/routes/w.$workspace.$project/{inspector-photos,inspector-lane}.tsx`):
+  vista, materiale del pezzo con finitura, livello Standard o Fedele, costo prima del clic, galleria con stato,
+  sagoma e «Rigenera»; testi in `apps/ui/app/i18n/messages/foto-campione.ts` e `catalog.ts`.
+- **Sinopia.** Client di `POST /v1/photo`, prezzi da `credit_costs`, foto del modello dagli `assets` e scaricamento
+  (`apps/ui/app/services/{sinopia-foto,foto-campione-immagini}.ts`); il riconoscimento manda `requestId` e il costo
+  mostrato e non chiama finché il prezzo `cad_recognize` non è attivo (`apps/ui/app/services/sinopia-recognize.ts`,
+  `apps/ui/app/routes/nuovo/use-riconoscimento-nuovo.ts`, `apps/ui/app/i18n/messages/riconoscimento.ts`).
+
+## 27 ottobre 2026 — schizzo sul modello (E4)
+
+- **Profili su un piano qualsiasi, rivoluzione e sweep.** `packages/plugins/smlib/src/manual-operations.ts`: profilo
+  con `frame` (X e normale della faccia scelta) e profilo `path` di linee, archi per tre punti e spline per punti;
+  sformo facoltativo dell'estrusione; operazioni `revolve` (asse nel piano dello schizzo) e `sweep` (percorso
+  disegnato in un secondo schizzo o spigolo esatto di un pezzo). `manual-evaluator.ts` le costruisce con SMLib;
+  test con i volumi attesi in `manual-sketch.test.ts`.
+- **Visore.** Geometria pura dello schizzo (snap, spigoli del modello proiettati, chiusura del profilo, rettangolo
+  raccordato, arco tangente) in `packages/viewer/src/graphics/three/react/sketch-geometry.ts` con test; contratto
+  `sketch-tool.ts`; piano, griglia in mm, entità, regioni chiuse, fantasma e aggancio in `sketch-controls.tsx` e
+  `sketch-ghost-geometry.ts`; `gltf-mesh.tsx` e `cad/cad-viewer.tsx` ricevono `sketchTool` (aggiunta); esportati in
+  `package.json` e `tsdown.config.ts`.
+- **Interfaccia.** Sessione dello schizzo `apps/ui/app/hooks/use-manual-sketch-tool.ts` e logica pura
+  `apps/ui/app/services/manual-sketch.ts` (test, e prova sulla fibbia `manual-sketch-buckle.test.ts`); riga dello
+  schizzo nella barra del visore `manual-sketch-bar.tsx`, sezione dell'ispettore `manual-sketch-panel.tsx`, quota
+  digitabile nel campo della quota al gesto `gesture-quota.tsx`; collegamenti in `chat-viewer.tsx`,
+  `manual-edit-panel.tsx` (pulsanti, doppio clic sulla cronologia), `use-manual-face-tool.ts` (faccia scelta),
+  `apps/ui/app/lib/inspector-selection.ts` (cronologia), `apps/ui/app/services/manual-profile-editor.ts`; testi in
+  `apps/ui/app/i18n/messages/{sketch,manual-edit}.ts` e `catalog.ts`.
+
+## 27 ottobre 2026 — consegna (E3a): STEP, IGES, DXF, GLB con i materiali, tavola PDF, Libreria e preventivo
+
+- **Consegna con SMLib, senza OpenCASCADE.** Modulo nuovo `packages/plugins/smlib/src/consegna/` (esportato come
+  `@taucad/smlib/consegna` e `@taucad/smlib/consegna/worker`, `package.json`, `tsdown.config.ts`): worker SMLib suo
+  (`consegna.worker.ts`, `client.ts`), STEP riscritto con un prodotto per pezzo (pezzo e materiale nel nome, colore
+  del materiale) e riletto con confronto di nomi, solidi, validità stretta e volume contro le Misure (`funzioni.ts`),
+  rilettura dell'IGES, DXF (contorno in vera grandezza dei pezzi piani, altrimenti tre viste con le nascoste),
+  disegni della tavola (`drawingViews` di smlibwasm 0.5) e percorsi alleggeriti (`percorsi.ts`). Nel kernel
+  (`smlib.kernel.ts`) i nomi STEP passano così come sono: smlibwasm 0.5 li codifica da sé.
+- **OpenCASCADE: cosa resta.** Solo la conversione STEP → IGES (smlibwasm 0.5 legge l'IGES ma non lo scrive), nello
+  stesso worker usa e getta di prima (`apps/ui/app/services/project-export-iges.ts`,
+  `apps/ui/app/workers/project-export.{worker,client}.ts`); l'IGES si consegna solo dopo la rilettura SMLib. Il
+  controllo OCCT dello STEP (`project-export-step.ts`) resta per i kernel diversi da SMLib (replicad, opencascade).
+  Il controllo indipendente di un secondo motore lato server (DESIGN §4.7, Fable §4e) non è in questo blocco.
+- **Esporta.** Righe compatte STEP, IGES, DXF, STL, GLB, Foto, Tavola PDF e sezione «Consegna»
+  (`apps/ui/app/routes/w.$workspace.$project/project-export-dialog{,-view}.tsx`, `project-delivery-section.tsx`),
+  preparazione in `apps/ui/app/services/project-export{,.types,-glb}.ts`, legame col progetto in
+  `apps/ui/app/hooks/use-project-{export,delivery}.ts` e `apps/ui/app/lib/consegna.ts`, worker
+  `apps/ui/app/workers/consegna.worker.ts`; tavola A4 in `apps/ui/app/services/tavola-pdf.ts` con **pdf-lib** 1.17.1
+  (MIT, la stessa versione di Sinopia; `pnpm-workspace.yaml`, `apps/ui/package.json`).
+- **Verso Sinopia.** «Invia a Sinopia» porta la tavola PDF, materiale/processo/peso di ogni pezzo
+  (`metadata.pezzi`) e la miniatura del modello quando la foto non si invia (`apps/ui/app/services/sinopia-send.ts`,
+  `send-to-sinopia-dialog.tsx`); «Salva in Libreria» e «Chiedi preventivo» in
+  `apps/ui/app/services/sinopia-consegna.ts`. Testi in `apps/ui/app/i18n/messages/{consegna,export,sinopia-send}.ts`.
+
+## 27 ottobre 2026 — OpenCASCADE solo per l'IGES, con l'avviso di licenza; STEP allegato a «Chiedi preventivo»
+
+- **Scrivere l'IGES senza OpenCASCADE non si può oggi.** smlibwasm 0.5 e smlibpy 0.5 (Apache-2.0/MIT) leggono l'IGES
+  ma non lo scrivono: l'elenco dei formati di `exporters` dice «IGES … read», e il nucleo ha solo scrittori interni di
+  NLib non esposti. Nel repository le altre librerie IGES sono build di OpenCASCADE (`libcascade`,
+  `replicad-opencascadejs`, `occt-import-js`). L'IGES resta quindi su OpenCASCADE.
+- **Come lo si usa.** Il modulo è `libcascade` 3.1.0 da npm, non costruito in questo repository: licenza
+  `LGPL-2.1-only WITH Open-CASCADE-Exception-1.0`, costruito da `taucad/opencascade.js` (commit 341fa789…) su OCCT
+  (commit b8f597c6…) con emscripten 6.0.5, come dice il suo `opencascade_single.provenance.json`. Nella build il glue
+  (`opencascade_single.js`) e il WebAssembly (`opencascade_single.wasm`) escono come file a parte, identici byte per
+  byte a quelli del pacchetto (SHA-256 confrontati su una build di produzione), caricati per URL dal worker usa e getta
+  `apps/ui/app/workers/project-export.worker.ts` (6,5 KB): non modificati e sostituibili. In Esporta la riga IGES ora
+  si prepara solo a richiesta («Prepara IGES»), quindi aprire Esporta non carica OpenCASCADE
+  (`routes/w.$workspace.$project/project-export-dialog-view.tsx`, `i18n/messages/export.ts`). I motori OpenCASCADE e
+  Replicad di Tau e l'import BREP restano come in Tau.
+- **Avviso.** «Informazioni» ha la sezione «Componenti di terzi» con l'avviso Open CASCADE (eccezione LGPL), i link
+  al sorgente di OCCT e del modulo ai commit della build, alla LGPL 2.1 e all'eccezione, più SMLib e pdf-lib
+  (`apps/ui/app/components/nav/about-sinopiacad.tsx`, `i18n/messages/shell.ts`).
+- **STEP nella posta.** «Chiedi preventivo» allega lo STEP verificato quando la posta di Sinopia ammette i file CAD
+  (`network_cad_attachments_enabled`, rilevamento fail-closed) e il server ne ha letto il contenuto
+  (`verifica-allegato-cad`); altrimenti il messaggio di prima (`apps/ui/app/services/sinopia-consegna.ts`,
+  `routes/w.$workspace.$project/project-delivery-section.tsx`, `i18n/messages/consegna.ts`).
+
+## 27 ottobre 2026 — foto del campione resa da Sinopia dalla versione inviata (D6, provenienza)
+
+- **Codice gemello delle mappe.** `apps/ui/app/lib/foto-campione/mappe-condivise.ts` (nuovo, al posto di `glb-mesh.ts` e
+  `mappe.ts`): lettura del GLB con tetti contro i file ostili, z-buffer, PNG e impronta della foto; lo stesso file vive
+  nella funzione `sinopiacad` di Sinopia, che rende le mappe dal GLB inviato. Confronto «modello a schermo = versione
+  inviata» per forma (`confronto.ts`).
+- **Ispettore.** La foto ritrae l'ultima versione inviata con il GLB; senza invio, o con il modello cambiato dopo
+  l'invio, il pulsante chiede «Invia a Sinopia» (`routes/w.$workspace.$project/inspector-photos.tsx`,
+  `services/sinopia-foto.ts`, `services/foto-campione-immagini.ts`, `i18n/messages/foto-campione.ts`).
+- **Consegna.** Il GLB di un modello SMLib porta la topologia B-rep (`services/project-export.ts`): Sinopia considera
+  «generato» solo un pezzo che la porta.

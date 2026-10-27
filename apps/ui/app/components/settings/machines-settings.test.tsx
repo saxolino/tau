@@ -387,7 +387,7 @@ describe('MachinesSettings', () => {
   /* The host says which providers it cannot serve (no serial driver yet, C2-6): named with its reason, never offered. */
   it("should say why the host can't serve a machine, and ask only the providers it can", async () => {
     const facet = facetWith([]);
-    const reason = 'This Tau cannot reach serial ports yet, so it cannot find or connect a machine on one.';
+    const reason = 'This SinopiaCAD cannot reach serial ports yet, so it cannot find or connect a machine on one.';
     facet.listProviders.mockResolvedValue([
       x1cProvider,
       { ...grblProvider, unavailable: { reason } },
@@ -622,7 +622,7 @@ describe('MachinesSettings', () => {
     ).toBeInTheDocument();
   });
 
-  it('should say another Tau app holds the printers when the machine store is owned elsewhere', async () => {
+  it('should say another SinopiaCAD app holds the printers when the machine store is owned elsewhere', async () => {
     const client = facetWith([]);
     client.list.mockRejectedValue(
       Object.assign(new Error('MACHINE_STORE_OWNED_ELSEWHERE'), { code: 'MACHINE_STORE_OWNED_ELSEWHERE' }),
@@ -779,7 +779,7 @@ describe('MachinesSettings', () => {
       expect(remove).toHaveAttribute('aria-expanded', 'true');
       const confirmation = screen.getByRole('alertdialog', { name: 'Remove Workshop X1C?' });
       expect(confirmation).toHaveAccessibleDescription(
-        'Tau stops watching it and forgets its saved access code. A job in progress keeps running on the printer.',
+        'SinopiaCAD stops watching it and forgets its saved access code. A job in progress keeps running on the printer.',
       );
       expect(within(confirmation).getByRole('button', { name: 'Cancel' })).toHaveFocus();
       expect(facet.removeBinding).not.toHaveBeenCalled();

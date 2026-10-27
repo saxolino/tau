@@ -1,5 +1,6 @@
 /* oxlint-disable typescript/no-restricted-types -- Supabase nullable heads and paths are part of its wire contract. */
 import { z } from 'zod';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { classify } from '@taucad/filesystem/path-registry';
 import { archive, archiveByteCeiling } from '@taucad/filesystem/content-ops';
 import { MemoryProvider } from '@taucad/filesystem/backend';
@@ -95,6 +96,28 @@ export function inferSinopiaCadEngine(source: string): SinopiaCadEngine | undefi
   );
 }
 
+/** The Sinopia project verticals (`projects_vertical_check`) a CAD-born project may take. */
+const sinopiaVerticals = new Set(['footwear', 'leather_goods', 'atelier', 'accessories']);
+
+/**
+ * The vertical the person is working in on Sinopia (`profiles.current_vertical`): a heel is born in a footwear
+ * project. Falls back to accessories, SinopiaCAD's own trade, when the profile has none or cannot be read.
+ */
+async function currentSinopiaVertical(client: SupabaseClient, userId: string): Promise<string> {
+  try {
+    const { data, error } = await client.from('profiles').select('current_vertical').eq('id', userId).maybeSingle();
+    if (error === null) {
+      const vertical: unknown = (data as { current_vertical?: unknown } | null)?.current_vertical;
+      if (typeof vertical === 'string' && sinopiaVerticals.has(vertical)) {
+        return vertical;
+      }
+    }
+  } catch {
+    /* Falls back below: the vertical is a convenience, never a reason to lose the model. */
+  }
+  return 'accessories';
+}
+
 /** Mint a recoverable local identity first; the chosen engine registers its model on the first authored save. */
 export async function createSinopiaCadLink(
   name: string,
@@ -107,10 +130,11 @@ export async function createSinopiaCadLink(
   let isExisting = projectId !== undefined;
   if (projectId === undefined) {
     projectId = named?.projectId ?? randomUuid();
+    const vertical = await currentSinopiaVertical(client, userId);
     const { error } = await client
       .from('projects')
       // eslint-disable-next-line @typescript-eslint/naming-convention -- Supabase project wire columns.
-      .insert({ id: projectId, user_id: userId, name, vertical: 'accessories' });
+      .insert({ id: projectId, user_id: userId, name, vertical });
     if (error !== null) {
       // A named identity that already exists is an earlier attempt's project: verify it as an owned origin.
       if (error.code !== uniqueViolation) {

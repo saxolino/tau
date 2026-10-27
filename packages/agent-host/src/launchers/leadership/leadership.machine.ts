@@ -330,7 +330,7 @@ const forward = (context: LeadershipContext, enq: unknown, actions: Effects, hol
         answer: refused(
           write.command,
           'LEADER_VERSION_MISMATCH',
-          'Another tab is running a different version of Tau and is writing this chat. Your message is kept and is sent once that tab finishes its run; reload that tab to update it.',
+          'Another tab is running a different version of SinopiaCAD and is writing this chat. Your message is kept and is sent once that tab finishes its run; reload that tab to update it.',
           holder.epoch,
         ),
       });
@@ -466,7 +466,7 @@ const serveFrame = (
         refused(
           message.command,
           'LEADER_VERSION_MISMATCH',
-          `Chat ${context.chatId} is led by a tab running another version of Tau. Your message is kept and is sent once that tab finishes its run; reload that tab to update it.`,
+          `Chat ${context.chatId} is led by a tab running another version of SinopiaCAD. Your message is kept and is sent once that tab finishes its run; reload that tab to update it.`,
           context.epoch,
         ),
       );

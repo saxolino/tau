@@ -51,7 +51,7 @@ export const formatIosTrustBanner = (
     '  Trust the mkcert dev CA on iOS / iPadOS (one time, ~30 s)',
     dividerLine,
     '',
-    '  Why?  Tau runs CAD kernels and geometry transports through',
+    '  Why?  SinopiaCAD runs CAD kernels and geometry transports through',
     '        SharedArrayBuffer for zero-copy speed. Browsers only',
     '        expose SharedArrayBuffer when the page is cross-origin',
     '        isolated, which requires HTTPS on every non-loopback',

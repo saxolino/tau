@@ -45,8 +45,11 @@ export const ChatErrorProviderAccount = memo(function ({
       title={title}
       description={
         <div className='space-y-1'>
-          <p>Tau could not run this turn on {name}. You were not charged for it.</p>
-          <p>Switch to another model to keep going, or try again in a few minutes. Tau&apos;s team has been alerted.</p>
+          <p>SinopiaCAD could not run this turn on {name}. You were not charged for it.</p>
+          <p>
+            Switch to another model to keep going, or try again in a few minutes. SinopiaCAD&apos;s team has been
+            alerted.
+          </p>
         </div>
       }
       actions={

@@ -68,11 +68,11 @@ export class RemoteHostApiError extends Error {
  */
 const refusalMessages: Readonly<Record<string, string>> = {
   agentNotFound: 'That computer is no longer paired with your account.',
-  busy: 'That computer is already running another Tau session. Try again in a moment.',
-  childUnavailable: 'That computer could not start its Tau runtime.',
-  cloudHostUnavailable: 'Tau Cloud is unavailable.',
+  busy: 'That computer is already running another SinopiaCAD session. Try again in a moment.',
+  childUnavailable: 'That computer could not start its SinopiaCAD runtime.',
+  cloudHostUnavailable: 'SinopiaCAD Cloud is unavailable.',
   deviceOffline: 'That computer is offline. Start `tau serve` on it and try again.',
-  versionMismatch: 'That computer runs a different Tau version. Update it and try again.',
+  versionMismatch: 'That computer runs a different SinopiaCAD version. Update it and try again.',
 };
 
 /**
@@ -89,7 +89,7 @@ const reasonedRefusals: ReadonlySet<string> = new Set(['CLOUD_HOST_UNAVAILABLE']
 
 const refusalMessage = (code: string, reason: string | undefined): string => {
   const key = code.toLowerCase().replaceAll(/_(?<letter>[a-z])/gu, (_match, letter: string) => letter.toUpperCase());
-  const phrase = refusalMessages[key] ?? `Tau Host refused the request (${code}).`;
+  const phrase = refusalMessages[key] ?? `SinopiaCAD Host refused the request (${code}).`;
   return reason && reasonedRefusals.has(code) ? `${phrase.replace(/\.$/u, '')}: ${reason}` : phrase;
 };
 

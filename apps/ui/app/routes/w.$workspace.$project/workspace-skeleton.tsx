@@ -95,8 +95,8 @@ export function WorkspaceSkeleton({
         {/* SinopiaCAD's lanes: Misure on the left, the model, the agent on the right. */}
         <div
           data-slot='workspace-skeleton-workbench'
-          /* 1024px is `compactWorkspaceWidth` in `chat-interface-desktop.tsx`; Tailwind needs the literal. */
-          className='hidden h-full shrink-0 flex-col border-r border-border @min-[1024px]:flex'
+          /* 1360px is `compactWorkspaceWidth` in `chat-interface-desktop.tsx`; Tailwind needs the literal. */
+          className='hidden h-full shrink-0 flex-col border-r border-border @min-[1360px]:flex'
           style={{ width: workbenchWidth }}
         >
           <div className='flex h-9 shrink-0 items-center gap-2 px-3'>

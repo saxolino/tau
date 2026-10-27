@@ -193,7 +193,7 @@ export function UsageTable({
         <DataTable
           table={table}
           columns={columns}
-          emptyMessage='No Tau-funded actions in this range.'
+          emptyMessage='No SinopiaCAD-funded actions in this range.'
           onRowClick={(row) => {
             const id = usageEventId(row);
             onOpenEventChange(id === openEventId ? undefined : id);

@@ -19,7 +19,7 @@ describe('@taucad/smlib', () => {
     expect(importedPlugin).toBe(plugin);
     const { capabilities } = plugin();
     expect(capabilities.kernels.map(({ id }) => id)).toEqual(['smlib']);
-    expect(capabilities.middleware.map(({ id }) => id)).toEqual([]);
+    expect(capabilities.middleware.map(({ id }) => id)).toEqual(['smlibManualSidecar']);
     expect(capabilities.bundlers.map(({ id }) => id)).toEqual([]);
     expect(capabilities.transcoders.map(({ id }) => id)).toEqual([]);
     expect(capabilities.jobs.map(({ id }) => id)).toEqual([]);
@@ -40,6 +40,8 @@ describe('@taucad/smlib', () => {
     [`/** @typedef {import('@classcad/smlibwasm').Part} Part */`, true],
     [`import { Box } from '@classcad/smlibwasm-extra';`, false],
     [`import { makeBox } from 'replicad';`, false],
+    [`import { tacco } from '@sinopia/famiglie';`, true],
+    [`import { tacco } from '@sinopia/famiglie-extra';`, false],
   ])('detects %s as SMLib: %s', (source, expected) => {
     expect(smlibDetectPattern.test(source)).toBe(expected);
   });

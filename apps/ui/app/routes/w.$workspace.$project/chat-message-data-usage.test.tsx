@@ -135,7 +135,7 @@ describe('ChatMessageDataUsage', () => {
     renderUsage([usagePart({ operationId: 'op1', attemptId: 'att_1', billingStatus: 'terminal' })]);
 
     await waitFor(() => {
-      expect(screen.getByLabelText(/Tau credits: 1$/)).toBeInTheDocument();
+      expect(screen.getByLabelText(/SinopiaCAD credits: 1$/)).toBeInTheDocument();
     });
     expect(recordBillingRevisionMinimum).toHaveBeenCalledWith({
       environment: 'development',
@@ -151,7 +151,7 @@ describe('ChatMessageDataUsage', () => {
     renderUsage([usagePart({ operationId: 'op1', billingStatus: 'pending' })]);
 
     await waitFor(() => {
-      expect(screen.getByLabelText(/Tau credits: Pending/)).toBeInTheDocument();
+      expect(screen.getByLabelText(/SinopiaCAD credits: Pending/)).toBeInTheDocument();
     });
   });
 
@@ -160,7 +160,7 @@ describe('ChatMessageDataUsage', () => {
     renderUsage([usagePart({ operationId: 'op1' }), usagePart({ id: 'dat_2', operationId: 'op2' })]);
 
     await waitFor(() => {
-      expect(screen.getByLabelText(/Tau credits: 1 · 1 pending/)).toBeInTheDocument();
+      expect(screen.getByLabelText(/SinopiaCAD credits: 1 · 1 pending/)).toBeInTheDocument();
     });
   });
 
@@ -176,9 +176,9 @@ describe('ChatMessageDataUsage', () => {
     renderUsage([usagePart({ operationId: 'op1' })]);
 
     await waitFor(() => {
-      expect(screen.getByLabelText(/Tau credits: Pending/)).toBeInTheDocument();
+      expect(screen.getByLabelText(/SinopiaCAD credits: Pending/)).toBeInTheDocument();
     });
-    expect(screen.queryByLabelText(/Tau credits: 1/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/SinopiaCAD credits: 1/)).not.toBeInTheDocument();
   });
 
   /* V6: the transcript is history. An external agent's turn names that agent
@@ -188,7 +188,7 @@ describe('ChatMessageDataUsage', () => {
     renderUsage([usagePart({ agent: 'codex', model: 'gpt-5.3-codex' })]);
 
     const trigger = screen.getByRole('button', {
-      name: 'Usage: codex · gpt-5.3-codex, 14 tokens, Tau credits: Not billed',
+      name: 'Usage: codex · gpt-5.3-codex, 14 tokens, SinopiaCAD credits: Not billed',
     });
     expect(fetch).not.toHaveBeenCalled();
 
@@ -224,7 +224,7 @@ it.each([
   [{ costUsdTicks: 1, costIsPartial: false, usageIsIncomplete: false }, '$0.0000000001'],
   [{ costUsdTicks: 0, costIsPartial: false, usageIsIncomplete: false }, '$0.00'],
   [{ costIsPartial: true, usageIsIncomplete: true }, 'Unavailable or partial'],
-])('shows vendor cost separately from Tau receipts: %j', async (vendorReport, expected) => {
+])('shows vendor cost separately from SinopiaCAD receipts: %j', async (vendorReport, expected) => {
   stubReceipts({});
   renderUsage([usagePart({ agent: 'grok', model: 'Actual Grok', vendorReport })]);
   act(() => {

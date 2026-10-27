@@ -353,7 +353,7 @@ function InlinePresence({ control }: { readonly control: MachineControl }): Reac
         label='I am at the machine'
         description={
           control.attended
-            ? 'Tau asks again after 10 minutes without a control being used.'
+            ? 'SinopiaCAD asks again after 10 minutes without a control being used.'
             : 'These controls need someone who can see the machine.'
         }
       >
@@ -911,7 +911,7 @@ function SpindleGroup({
     check.status === 'unavailable'
       ? check.message
       : spindle.control === 'switched'
-        ? `${descriptor.consequence ?? 'Tau switches it; the speed is set on its own dial.'} It stops by itself after ${String(spindleSeconds)} s.`
+        ? `${descriptor.consequence ?? 'SinopiaCAD switches it; the speed is set on its own dial.'} It stops by itself after ${String(spindleSeconds)} s.`
         : `Runs at ${speed === undefined ? 'its set speed' : `${speed.toLocaleString()} rpm`} for ${String(spindleSeconds)} s, then stops by itself.`;
   return group(
     spindle.label,
@@ -1497,7 +1497,7 @@ function CalibrationResults({
         {usable.length > 0
           ? 'Nothing changes on the machine until you save a result.'
           : results.some((result) => result.confidence !== 'failed')
-            ? 'Tau can’t keep this result yet. Enter it in your slicer’s filament settings.'
+            ? 'SinopiaCAD can’t keep this result yet. Enter it in your slicer’s filament settings.'
             : 'No result is good enough to keep.'}
       </p>
     </div>
@@ -1662,21 +1662,21 @@ const rebind = 'bind the machine again in Settings under Machines';
 const stillFailures: ReadonlyMap<string, string> = new Map([
   [
     'MACHINE_STILL_FFMPEG_MISSING',
-    'Tau could not find ffmpeg, which capturing a still needs; install it (with Homebrew on macOS: brew install ffmpeg; on Windows: winget install ffmpeg), then capture again.',
+    'SinopiaCAD could not find ffmpeg, which capturing a still needs; install it (with Homebrew on macOS: brew install ffmpeg; on Windows: winget install ffmpeg), then capture again.',
   ],
   [
     'MACHINE_STILL_FFMPEG_FAILED',
-    'Tau could not start ffmpeg; reinstall it (with Homebrew on macOS: brew reinstall ffmpeg), then capture again.',
+    'SinopiaCAD could not start ffmpeg; reinstall it (with Homebrew on macOS: brew reinstall ffmpeg), then capture again.',
   ],
   ['MACHINE_STILL_AUTH_REJECTED', `The camera refused the machine's saved credentials; ${rebind}.`],
-  ['MACHINE_SECRET_UNKNOWN', `Tau no longer has this machine's credentials; ${rebind}.`],
+  ['MACHINE_SECRET_UNKNOWN', `SinopiaCAD no longer has this machine's credentials; ${rebind}.`],
   [
     'MACHINE_TLS_PIN_MISMATCH',
-    `The camera presented a different certificate from the one saved when the machine was bound, so Tau did not connect; if the machine was reset or replaced, ${rebind}.`,
+    `The camera presented a different certificate from the one saved when the machine was bound, so SinopiaCAD did not connect; if the machine was reset or replaced, ${rebind}.`,
   ],
   [
     'MACHINE_CONNECT_FAILED',
-    'Tau could not connect to the camera; check that the machine is on and on this network, then capture again.',
+    'SinopiaCAD could not connect to the camera; check that the machine is on and on this network, then capture again.',
   ],
   [
     'MACHINE_CONNECT_TIMEOUT',
@@ -1694,17 +1694,23 @@ const stillFailures: ReadonlyMap<string, string> = new Map([
     'MACHINE_STILL_CAPTURE_FAILED',
     "The camera's stream ended without a picture, which can happen while the camera wakes up; capture again in a moment.",
   ],
-  ['MACHINE_STILL_TOO_LARGE', 'The camera sent a picture larger than Tau accepts, so it was discarded; capture again.'],
-  ['MACHINE_STILL_INVALID', 'The camera sent a picture Tau could not accept; capture again.'],
+  [
+    'MACHINE_STILL_TOO_LARGE',
+    'The camera sent a picture larger than SinopiaCAD accepts, so it was discarded; capture again.',
+  ],
+  ['MACHINE_STILL_INVALID', 'The camera sent a picture SinopiaCAD could not accept; capture again.'],
   [
     'MACHINE_STILL_PROXY_FAILED',
-    'Tau could not open its local connection to the camera on this computer; capture again, and restart Tau if it keeps failing.',
+    'SinopiaCAD could not open its local connection to the camera on this computer; capture again, and restart SinopiaCAD if it keeps failing.',
   ],
   [
     'MACHINE_STILL_REQUEST_INVALID',
-    'Tau built an invalid request for this camera, so nothing was sent; report this as a bug.',
+    'SinopiaCAD built an invalid request for this camera, so nothing was sent; report this as a bug.',
   ],
-  ['MACHINE_STILL_UNAVAILABLE', 'Tau is not connected to this machine right now; capture again once it reconnects.'],
+  [
+    'MACHINE_STILL_UNAVAILABLE',
+    'SinopiaCAD is not connected to this machine right now; capture again once it reconnects.',
+  ],
   ['MACHINE_STILL_RATE_LIMITED', 'Stills are limited to one every 5 seconds; wait a moment, then capture again.'],
 ]);
 

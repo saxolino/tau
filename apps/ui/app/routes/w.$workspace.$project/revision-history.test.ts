@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { bindTranslate } from '#i18n/translate.js';
+import type { GeometryComponentManifest } from '@taucad/types';
 import {
   groupVersionDays,
   parameterChangeSentence,
+  versionChangeLine,
+  versionChangeSentences,
   versionSummary,
 } from '#routes/w.$workspace.$project/revision-history.js';
 
@@ -66,5 +69,77 @@ describe('readable versions', () => {
     expect(versionSummary({ summary: '', trigger: 'restore', restoredFrom: 'old' }, bindTranslate('it'), 2)).toBe(
       'Ripristinata la Rev 2',
     );
+  });
+});
+
+describe('speaking versions', () => {
+  const capabilities = {
+    canHide: true,
+    canIsolate: true,
+    canFocus: true,
+    canAdjustOpacity: true,
+    hasDrawings: false,
+    hasPreciseTopology: true,
+    exports: [],
+  };
+  const manifest: GeometryComponentManifest = {
+    schemaVersion: 1,
+    sourceFile: 'main.ts',
+    rootId: 'frame',
+    nodeOrder: ['frame'],
+    capabilities,
+    nodesById: {
+      frame: {
+        id: 'frame',
+        name: 'Telaio fibbia',
+        kind: 'part',
+        selector: 'frame',
+        childIds: [],
+        depth: 0,
+        path: [],
+        meshNodeIndices: [],
+        primitiveIndices: [],
+        materialIndices: [],
+        capabilities,
+      },
+    },
+  };
+  const parameters = (spessore: number): string =>
+    JSON.stringify({
+      activeGroup: 'default',
+      groups: { default: { values: { telaioFibbia: { spessore } }, units: { '/telaioFibbia/spessore': 'mm' } } },
+    });
+  const manual = (size: number): string =>
+    JSON.stringify({
+      version: 1,
+      operations: [{ id: 'f1', type: 'fillet', target: { name: 'Telaio fibbia' }, size, edges: { kind: 'all' } }],
+    });
+
+  it('should name the piece and the measure with its values before → after, then each manual operation', () => {
+    const sentences = versionChangeSentences({
+      files: [
+        { path: '.tau/parameters/main.ts.json', original: parameters(4), modified: parameters(5) },
+        { path: 'main.ts.manual.json', original: manual(0.5), modified: manual(0.8) },
+        { path: 'main.ts', original: 'a', modified: 'b' },
+      ],
+      manifests: new Map([['main.ts', manifest]]),
+      language: 'it',
+    });
+    expect(sentences).toEqual([
+      'Telaio fibbia · spessore: 4 mm → 5 mm',
+      'Raccordo r 0,8 mm · tutti gli spigoli · Telaio fibbia (prima: Raccordo r 0,5 mm · tutti gli spigoli · Telaio fibbia)',
+    ]);
+    expect(versionChangeLine(sentences, 'it')).toBe('Telaio fibbia · spessore: 4 mm → 5 mm · e un’altra modifica');
+    expect(versionChangeLine([], 'it')).toBeUndefined();
+  });
+
+  it('should describe a first manual operation even without an earlier history', () => {
+    expect(
+      versionChangeSentences({
+        files: [{ path: 'main.ts.manual.json', original: '', modified: manual(0.5) }],
+        manifests: new Map(),
+        language: 'en',
+      }),
+    ).toEqual(['Fillet r 0.5 mm · all edges · Telaio fibbia']);
   });
 });

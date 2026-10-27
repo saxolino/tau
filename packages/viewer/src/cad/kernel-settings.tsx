@@ -3,6 +3,8 @@ import { DropdownMenuItem, DropdownMenuSwitchItem } from '@taucad/ui/components/
 import { DropdownMenuDisclosureItem } from '@taucad/ui/components/menu-disclosure-item';
 import { DropdownMenuSliderItem } from '@taucad/ui/components/menu-slider-item';
 import { MenuSegmentedControl } from '#cad/menu-segmented-control.jsx';
+import { useViewerLabels } from '#environment/viewer-environment.jsx';
+import type { SettingsLabels } from '#environment/viewer-environment.jsx';
 
 /** A JSON Schema node, as far as the kernel settings read one. */
 type SchemaNode = Readonly<{
@@ -59,10 +61,10 @@ type ChoiceField = Readonly<{
 
 type ChoiceMode = 'preset' | 'custom';
 
-const choiceModes = [
-  { value: 'preset', label: 'Preset' },
-  { value: 'custom', label: 'Custom' },
-] as const satisfies ReadonlyArray<{ value: ChoiceMode; label: string }>;
+const choiceModesOf = (settings: SettingsLabels): ReadonlyArray<{ value: ChoiceMode; label: string }> => [
+  { value: 'preset', label: settings.kernelPreset },
+  { value: 'custom', label: settings.kernelCustom },
+];
 
 /**
  * A run of settings under an optional heading: the schema's top-level leaves, or one object's leaves.
@@ -293,6 +295,7 @@ export function KernelSettings({
   onChange,
   onReset,
 }: KernelSettingsProps): React.JSX.Element {
+  const { settings } = useViewerLabels();
   const changedCount = countChangedSettings(groups, values, defaults);
   const valueAt = (path: readonly string[]): unknown => readPath(values, path) ?? readPath(defaults, path);
   const renderNumber = (field: NumberField, value: unknown, onValue: (next: number) => void): React.JSX.Element => (
@@ -331,16 +334,16 @@ export function KernelSettings({
     return (
       <div key={field.path.join('.')} className='flex flex-col gap-1'>
         <MenuSegmentedControl
-          label={`${field.label} mode`}
+          label={settings.kernelModeOf(field.label)}
           value={mode}
-          segments={choiceModes}
+          segments={choiceModesOf(settings)}
           onValueChange={(next) => {
             replace(next === 'custom' ? { ...field.explicitSeed } : field.presetSeed);
           }}
         />
         {mode === 'preset' ? (
           <MenuSegmentedControl
-            label={`${field.label} preset`}
+            label={settings.kernelPresetOf(field.label)}
             value={typeof current === 'string' ? current : ''}
             segments={field.presets.map((preset) => ({ value: preset, label: humanize(preset) }))}
             onValueChange={replace}
@@ -359,15 +362,11 @@ export function KernelSettings({
   return (
     <DropdownMenuDisclosureItem
       icon={<Cpu />}
-      label='Kernel settings'
-      description={
-        changedCount === 0
-          ? 'Using kernel defaults'
-          : `${changedCount} changed from ${changedCount === 1 ? 'its default' : 'defaults'}`
-      }
+      label={settings.kernelSettings}
+      description={changedCount === 0 ? settings.kernelDefaults : settings.kernelChanged(changedCount)}
       isDefaultOpen={isDefaultOpen}
     >
-      <div role='group' aria-label='Kernel settings' className='flex flex-col gap-1 pt-0.5'>
+      <div role='group' aria-label={settings.kernelSettings} className='flex flex-col gap-1 pt-0.5'>
         {groups.map((group) => (
           <div key={group.label ?? ''} role='group' aria-label={group.label} className='flex flex-col gap-1'>
             {group.label ? (
@@ -406,7 +405,7 @@ export function KernelSettings({
             onReset();
           }}
         >
-          Reset to defaults
+          {settings.kernelReset}
         </DropdownMenuItem>
       </div>
     </DropdownMenuDisclosureItem>

@@ -1,3 +1,5 @@
+import { manualEdgeGeometry } from '#manual-edge.js';
+import { manualFaceGeometry } from '#manual-evaluator.js';
 import type * as SmlibModule from '@classcad/smlibwasm';
 import type { GeometrySvg, KernelIssue, RuntimeSpanTracer, TessellationReport } from '@taucad/runtime/types';
 import {
@@ -11,6 +13,8 @@ import type { GlbMaterial } from '@taucad/geometry-core';
 
 import type { ShapeConfig, SmlibShape } from '#model.js';
 import type { GeometrySmlib } from '#smlib.types.js';
+import type { ManualShapeInfo } from '#manual-evaluator.js';
+import type { ManualProfile } from '#manual-operations.js';
 import { normalizeColor } from '#utils/normalize-color.js';
 import { projectSurfaceCoordinates } from '#utils/surface-coordinates.js';
 
@@ -30,7 +34,14 @@ type RenderOptions = {
 export type InputShape = { [Key in keyof ShapeConfig]: ShapeConfig[Key] };
 
 /** An input shape whose display name has been resolved and de-duplicated. @public */
-export type NamedInputShape = InputShape & { name: string };
+export type NamedInputShape = InputShape & {
+  name: string;
+  /** Original explicit name, before display de-duplication; absence disables stable manual targeting. */
+  manualTargetName?: string;
+  manual?: ManualShapeInfo;
+  /** Authored principal plane for manual sketch projection; native samples remain in world coordinates. */
+  manualDrawingPlane?: ManualProfile['plane'];
+};
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
 
@@ -153,7 +164,8 @@ export function normalizeRenderShapes(library: SmlibLibrary, output: unknown, de
       resolveShapeName({ index, name: config.name ?? ownName(config.shape) ?? defaultName, source: 'authored' }),
       usedNames,
     );
-    return { ...normalized, name };
+    const manualTargetName = config.name ?? ownName(config.shape);
+    return { ...normalized, name, ...(manualTargetName ? { manualTargetName } : {}) };
   });
 }
 
@@ -452,21 +464,30 @@ function countOpenEdges(meshes: readonly FaceMesh[]): number {
   return open;
 }
 
+/** A body's enclosed volume in mm³, or nothing when the kernel cannot measure it (an open or degenerate body). */
+function readVolume(shape: { readonly volume: number }): number | undefined {
+  try {
+    return shape.volume;
+  } catch {
+    return undefined;
+  }
+}
+
 function emptyGeometry(config: NamedInputShape): GeometrySmlib {
   const { name, color, opacity, metalness, roughness, material, density, shape } = config;
-  const volume = density !== undefined && 'volume' in shape ? shape.volume : undefined;
+  // The solid's exact volume travels with every piece, so the interface can weigh it in any material the person picks;
+  // a density from the model adds the authored mass.
+  const volume = 'volume' in shape ? readVolume(shape) : undefined;
   const physical =
-    typeof density === 'number' &&
-    Number.isFinite(density) &&
-    density > 0 &&
-    typeof volume === 'number' &&
-    Number.isFinite(volume) &&
-    volume > 0
-      ? { volumeMm3: volume, density, massGrams: (volume * density) / 1000 }
+    typeof volume === 'number' && Number.isFinite(volume) && volume > 0
+      ? typeof density === 'number' && Number.isFinite(density) && density > 0
+        ? { volumeMm3: volume, density, massGrams: (volume * density) / 1000 }
+        : { volumeMm3: volume }
       : undefined;
   return {
     format: 'smlib',
     ...(physical ? { physical } : {}),
+    ...(config.manual ? { manual: config.manual } : {}),
     name,
     color,
     opacity,
@@ -499,6 +520,7 @@ function renderMesh(config: NamedInputShape, options: RenderOptions): GeometrySm
     collectBrepEdges,
   };
 
+  const faceMapping = { trusted: false };
   withSpan({ tracer, name: 'smlib.tessellate.faces', attributes: { ...attributes, output: 'faces' } }, () => {
     if (shape instanceof library.Mesh) {
       appendFaceMesh(geometry.faces, shape, 0);
@@ -513,6 +535,7 @@ function renderMesh(config: NamedInputShape, options: RenderOptions): GeometrySm
         library.tessellate(face, tessellation.linearTolerance, tessellation.angularTolerance),
       );
       if (countOpenEdges(faceMeshes) < countOpenEdges([mesh])) {
+        faceMapping.trusted = true;
         for (const [faceId, faceMesh] of faceMeshes.entries()) {
           appendFaceMesh(geometry.faces, faceMesh, faceId);
         }
@@ -529,10 +552,21 @@ function renderMesh(config: NamedInputShape, options: RenderOptions): GeometrySm
       appendFaceMesh(geometry.faces, mesh, 0);
       return;
     }
+    faceMapping.trusted = true;
     for (const run of runs) {
       appendFaceMesh(geometry.faces, sliceFaceMesh(mesh, run), run.faceId);
     }
   });
+
+  if (faceMapping.trusted && config.manual && shape instanceof library.Part) {
+    geometry.manualFaces = [...shape.faces()].flatMap((face, index): NonNullable<GeometrySmlib['manualFaces']> => {
+      if (!face.isPlanar) {
+        return [];
+      }
+      const descriptor = manualFaceGeometry(face);
+      return [{ index, isPlanar: true, center: descriptor.center, normal: descriptor.normal, geometry: descriptor }];
+    });
+  }
 
   if (needsSurfaceCoordinates(config.material) && geometry.faces.triangles.length > 0) {
     const projected = projectSurfaceCoordinates({
@@ -550,9 +584,24 @@ function renderMesh(config: NamedInputShape, options: RenderOptions): GeometrySm
     };
   }
 
+  if (config.manual && shape instanceof library.Part) {
+    const bounds = shape.bbox();
+    geometry.manualBounds = {
+      min: [bounds.min.x, bounds.min.y, bounds.min.z],
+      max: [bounds.max.x, bounds.max.y, bounds.max.z],
+    };
+  }
+
   if (collectBrepEdges && !(shape instanceof library.Mesh)) {
     withSpan({ tracer, name: 'smlib.tessellate.edges', attributes: { ...attributes, output: 'edges' } }, () => {
-      appendEdges(geometry.edges, [...shape.edges()], tessellation);
+      const nativeEdges = [...shape.edges()];
+      appendEdges(geometry.edges, nativeEdges, tessellation);
+      if (config.manual?.replayWitness && shape instanceof library.Part) {
+        geometry.manualEdges = nativeEdges.flatMap((edge, index) => {
+          const descriptor = manualEdgeGeometry(edge);
+          return descriptor ? [{ index, geometry: descriptor }] : [];
+        });
+      }
     });
   }
 
@@ -605,7 +654,8 @@ export function sampleDrawing(library: SmlibLibrary, config: NamedInputShape): D
 }
 
 /**
- * Render drawings as one SVG of the model's XY plane (Y up, as on paper).
+ * Render drawings as one SVG, projecting manual sketches onto their authored principal plane.
+ * Source drawings without explicit projection keep the model's XY plane.
  *
  * @param entries - Sampled drawing entries.
  * @returns The SVG drawing, in millimetres.
@@ -621,7 +671,9 @@ export function renderDrawing(entries: readonly DrawingEntry[]): GeometrySvg {
   const paths = entries.map((entry) => {
     const segments = entry.polylines.map((polyline) =>
       polyline
-        .map(([x = 0, y = 0], index) => {
+        .map(([worldX = 0, worldY = 0, worldZ = 0], index) => {
+          const x = entry.manualDrawingPlane === 'yz' ? worldY : worldX;
+          const y = entry.manualDrawingPlane === 'xy' || entry.manualDrawingPlane === undefined ? worldY : worldZ;
           minX = Math.min(minX, x);
           maxX = Math.max(maxX, x);
           minY = Math.min(minY, -y);

@@ -89,7 +89,7 @@ describe('useCameraFraming portable camera events', () => {
     };
     expect(new Vector3(...setView.direction).cross(new Vector3(...setView.up)).lengthSq()).toBeGreaterThan(1e-8);
     expect(send).toHaveBeenCalledWith({ type: 'setBounds', bounds: { min: [-10, -5, -2], max: [10, 5, 2] } });
-    expect(send).toHaveBeenLastCalledWith({ type: 'frame', margin: 0.1 });
+    expect(send).toHaveBeenLastCalledWith({ type: 'frame', margin: 0.06 });
     expect(framing.firstFrameView).toEqual(rig.actorRef.getSnapshot().context.view);
   });
 
@@ -151,14 +151,14 @@ describe('useCameraFraming portable camera events', () => {
     framing.initialized = false;
     hook.rerender({ radius: 4.5 });
 
-    expect(send).toHaveBeenCalledWith({ type: 'frame', margin: 0.1 });
+    expect(send).toHaveBeenCalledWith({ type: 'frame', margin: 0.06 });
     expect(send).toHaveBeenLastCalledWith({ type: 'setView', ...cameraView });
     expect(framing.initialized).toBe(true);
 
     send.mockClear();
     hook.rerender({ radius: 9 });
 
-    expect(send).toHaveBeenCalledWith({ type: 'frame', margin: 0.1 });
+    expect(send).toHaveBeenCalledWith({ type: 'frame', margin: 0.06 });
     expect(send).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'setView', target: cameraView.target }));
   });
 
@@ -217,7 +217,7 @@ describe('useCameraFraming portable camera events', () => {
     ]);
     expect(send).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'setView' }));
     expect(send).not.toHaveBeenCalledWith({ type: 'reset' });
-    expect(send).toHaveBeenLastCalledWith({ type: 'frame', margin: 0.1 });
+    expect(send).toHaveBeenLastCalledWith({ type: 'frame', margin: 0.06 });
     hook.unmount();
     expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
@@ -226,7 +226,7 @@ describe('useCameraFraming portable camera events', () => {
     const bounds = new Box3(new Vector3(-1, -1, -1), new Vector3(1, 1, 1));
     renderHook(() => useCameraFraming({ geometryRadius: 2, geometryBounds: bounds }));
     expect(send.mock.calls[0]).toEqual([{ type: 'setViewport', viewport: { width: 800, height: 600, pixelRatio: 2 } }]);
-    expect(send).toHaveBeenCalledWith({ type: 'frame', margin: 0.1 });
+    expect(send).toHaveBeenCalledWith({ type: 'frame', margin: 0.06 });
   });
 
   it('does not frame empty geometry', () => {

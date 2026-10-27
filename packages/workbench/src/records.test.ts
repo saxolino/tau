@@ -339,7 +339,7 @@ describe('approved record grammar', () => {
     expect(workbenchRecords.layout.read(bytes('{"version":2}'))).toMatchObject({
       status: 'invalid-preserved',
       code: 'NEWER_RECORD',
-      message: 'The layout record was written by a newer Tau. Update Tau to use it.',
+      message: 'The layout record was written by a newer SinopiaCAD. Update SinopiaCAD to use it.',
     });
     expect(workbenchRecords.view.read(new Uint8Array(65 * 1024))).toMatchObject({
       message: 'The view record is invalid: it exceeds 64 KiB.',

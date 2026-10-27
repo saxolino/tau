@@ -1,5 +1,6 @@
 import type { LinkDescriptor } from 'react-router';
 import { isDesktopTarget } from '#lib/build-target.js';
+import { publicAsset } from '#lib/base-path.js';
 
 /**
  * `<link rel="manifest">` descriptors for the document head.
@@ -15,4 +16,4 @@ import { isDesktopTarget } from '#lib/build-target.js';
  */
 export const webManifestLinks: LinkDescriptor[] = isDesktopTarget()
   ? []
-  : [{ rel: 'manifest', href: '/manifest.webmanifest' }];
+  : [{ rel: 'manifest', href: publicAsset('manifest.webmanifest') }];

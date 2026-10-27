@@ -23,6 +23,13 @@ import { createAssetIntegrity } from '../asset-integrity.vite-plugin';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // oxlint-disable-next-line eslint/dot-notation -- ProcessEnv is index-signature-only with noPropertyAccessFromIndexSignature.
 const tauCloudEnabled = resolveTauCloudBuildEnabled(process.env['TAU_CLOUD_ENABLED']);
+/*
+ * SinopiaCAD: the statically served build can live under a sub-path (`SINOPIACAD_BASE=/cad/` on sinopialab.com). Vite
+ * rewrites every asset, chunk, worker and `public/` URL in the CSS with it; the React Router `basename` is the same
+ * path (see `react-router.config.ts`). Unset, the build stays at the root exactly as before.
+ */
+// oxlint-disable-next-line eslint/dot-notation -- ProcessEnv is index-signature-only with noPropertyAccessFromIndexSignature.
+const sinopiaCadBase = process.env['SINOPIACAD_BASE'] ?? '/';
 const mtAssets = createGeoSpecMtAssets(process.env['GEOSPEC_MT_STAGED_PACKAGE_ROOT']);
 
 /**
@@ -42,6 +49,7 @@ const mtAssets = createGeoSpecMtAssets(process.env['GEOSPEC_MT_STAGED_PACKAGE_RO
  */
 export default defineConfig({
   root: __dirname,
+  base: sinopiaCadBase,
   // `publicDir` is resolved against `root`, which moved down one directory.
   publicDir: '../public',
   cacheDir: '../../../node_modules/.vite/apps/ui-serve',
@@ -55,6 +63,9 @@ export default defineConfig({
      * bundle takes the Electron preload's ENV and IPC paths in a plain tab. */
     // oxlint-disable-next-line @typescript-eslint/naming-convention -- Vite define key is a member expression.
     'import.meta.env.TAU_TARGET': '"web"',
+    // SinopiaCAD under a sub-path of sinopialab.com: no Tau agent host sits at that origin's `/.well-known/tau-host`
+    // (Sinopia would answer with its own HTML), so skip the probe.
+    ...(sinopiaCadBase === '/' ? {} : { 'import.meta.env.TAU_ORIGIN_AGENT_HOST': '"absent"' }),
   },
   plugins: [
     mtAssets.plugin,

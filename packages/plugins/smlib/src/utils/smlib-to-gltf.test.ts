@@ -1,3 +1,4 @@
+import type { ManualEdgeGeometry, ManualBounds } from '@taucad/smlib/manual-operations';
 import { describe, it, expect, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 import { NodeIO } from '@gltf-transform/core';
@@ -131,6 +132,85 @@ describe('convertSmlibGeometriesToGltf', () => {
     const component = readTopologyPayload(firstGlb).payload.components[0]!;
     expect(component.faceGroups?.map(({ faceId }) => faceId)).toEqual([0, 1]);
     expect(component.edgeGroups?.map(({ edgeId }) => edgeId)).toEqual([0, 1]);
+  });
+
+  it('maps normalized face occurrences to native face indices without confusing the two identities', () => {
+    const geometry = createSimpleGeometry({
+      manual: { targetName: 'piece', bodySignature: 'guard', operationIds: [] },
+      manualFaces: [
+        {
+          index: 42,
+          isPlanar: true,
+          center: [10, 20, 30],
+          normal: [0, 0, 1],
+          geometry: {
+            center: [10, 20, 30],
+            normal: [0, 0, 1],
+            area: 1,
+            bounds: { min: [10, 20, 30], max: [11, 21, 30] },
+            edgeCount: 3,
+            innerWireCount: 0,
+          },
+        },
+      ],
+      faces: {
+        vertices: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+        triangles: [0, 1, 2],
+        normals: [0, 0, 1, 0, 0, 1, 0, 0, 1],
+        faceGroups: [{ start: 0, count: 3, faceId: 42 }],
+      },
+    });
+    const { payload } = readTopologyPayload(
+      convertSmlibGeometriesToGltf({ geometries: [geometry], includeTauTopology: true }),
+    );
+    expect(payload.components[0]!.faceGroups).toEqual([{ start: 0, count: 3, faceId: 0 }]);
+    expect(payload.components[0]!.sourceRefs).toMatchObject({
+      manualBodySignature: 'guard',
+      manualFaces: [
+        expect.objectContaining({
+          faceId: 0,
+          index: 42,
+          isPlanar: true,
+          center: [10, 20, 30],
+          normal: [0, 0, 1],
+          geometry: geometry.manualFaces![0]!.geometry,
+        }),
+      ],
+    });
+    const fallback = { ...geometry, manualFaces: undefined };
+    const fallbackPayload = readTopologyPayload(
+      convertSmlibGeometriesToGltf({ geometries: [fallback], includeTauTopology: true }),
+    ).payload;
+    expect(fallbackPayload.components[0]!.sourceRefs).toMatchObject({ manualFaces: [] });
+  });
+
+  it('maps edge occurrences to native indices and retains native millimetre bounds for interaction pivots', () => {
+    const edgeGeometry = {
+      kind: 'line',
+      start: [10, 20, 30],
+      end: [11, 20, 30],
+      length: 1,
+      bounds: { min: [10, 20, 30], max: [11, 20, 30] },
+      adjacentFaceCount: 2,
+      seam: false,
+      closed: false,
+    } satisfies ManualEdgeGeometry;
+    const bounds = { min: [10, 20, 30], max: [11, 20, 30] } satisfies ManualBounds;
+    const geometry = createSimpleGeometry({
+      manual: { targetName: 'piece', bodySignature: 'raw', operationIds: [], replayWitness: '1'.repeat(64) },
+      manualBounds: bounds,
+      manualEdges: [{ index: 73, geometry: edgeGeometry }],
+      edges: { lines: [10, 20, 30, 11, 20, 30], edgeGroups: [{ start: 0, count: 6, edgeId: 73 }] },
+    });
+    const { payload } = readTopologyPayload(
+      convertSmlibGeometriesToGltf({ geometries: [geometry], includeTauTopology: true }),
+    );
+    expect(payload.components[0]!.edgeGroups).toEqual([{ start: 0, count: 6, edgeId: 0 }]);
+    expect(payload.components[0]!.sourceRefs).toMatchObject({
+      manualBounds: bounds,
+      manualEdges: [{ edgeId: 0, index: 73, geometry: edgeGeometry }],
+      manualReplayWitness: '1'.repeat(64),
+    });
   });
 
   it('should convert empty geometries array to valid GLB', async () => {

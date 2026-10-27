@@ -52,7 +52,7 @@ export function WorkspaceConnections({
       const savedWorkspaces = await listWorkspaces();
       const grants = isDesktopTarget() ? await desktopBridge()?.directories?.list() : undefined;
       if (isDesktopTarget() && grants === undefined) {
-        throw new Error('Workspace management is unavailable. Restart Tau and try again.');
+        throw new Error('Workspace management is unavailable. Restart SinopiaCAD and try again.');
       }
       const homeRoot = isDesktopTarget() ? nodeHomeRoot() : undefined;
       const workspaces = savedWorkspaces.filter((workspace) => homeRoot === undefined || workspace.path !== homeRoot);
@@ -199,7 +199,7 @@ export function WorkspaceConnections({
           await projectManager.assertWorkspaceMutationAllowed(target.workspaceId);
           const directories = desktopBridge()?.directories;
           if (!directories) {
-            throw new Error('Workspace management is unavailable. Restart Tau and try again.');
+            throw new Error('Workspace management is unavailable. Restart SinopiaCAD and try again.');
           }
           await directories.disconnect(target.path);
           revoked = true;
@@ -214,7 +214,7 @@ export function WorkspaceConnections({
         } catch (error) {
           setErrorMessage(
             revoked
-              ? 'The workspace is disconnected. Restart Tau to finish refreshing locations.'
+              ? 'The workspace is disconnected. Restart SinopiaCAD to finish refreshing locations.'
               : error instanceof Error
                 ? error.message
                 : 'Could not disconnect workspace.',
@@ -304,7 +304,7 @@ export function WorkspaceConnections({
     workspaceConnection.phase === 'registering'
       ? 'Saving access to this folder'
       : workspaceConnection.phase === 'mounting'
-        ? 'Making local files available to Tau'
+        ? 'Making local files available to SinopiaCAD'
         : workspaceConnection.phase === 'browsing'
           ? 'Loading folders and projects'
           : workspaceConnection.phase === 'discovering'

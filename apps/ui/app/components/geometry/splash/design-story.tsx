@@ -31,7 +31,7 @@ function StoryPoster(): React.JSX.Element {
     <div className='flex size-full flex-col items-center justify-center gap-4 px-4'>
       <img src={posterUrl} alt='' className='max-h-64 w-full object-contain' width={720} height={720} />
       <p className='max-w-sm text-center text-xs text-muted-foreground'>
-        Describe the part you need. Tau writes real parametric CAD you can edit, checks the geometry against your
+        Describe the part you need. SinopiaCAD writes real parametric CAD you can edit, checks the geometry against your
         requirements and exports it for your printer.
       </p>
     </div>
@@ -165,10 +165,10 @@ export function DesignStory(): React.JSX.Element {
       className='relative flex size-full min-h-72 flex-col justify-center overflow-hidden bg-muted/40 p-3 sm:p-5'
     >
       <p className='sr-only'>
-        From one sentence, Tau plans its authored 34-part planetary gearbox as named parts, turns their source into
-        solids, assembles them in order and turns the input at a 4:1 reduction, widens the gears from 14 to 18 mm, shows
-        a recorded GeoSpec run of the model, and previews printing the ring gear on a 256 mm plate. The agent tasks and
-        the print sequence are illustrations, not a live session or print job.
+        From one sentence, SinopiaCAD plans its authored 34-part planetary gearbox as named parts, turns their source
+        into solids, assembles them in order and turns the input at a 4:1 reduction, widens the gears from 14 to 18 mm,
+        shows a recorded GeoSpec run of the model, and previews printing the ring gear on a 256 mm plate. The agent
+        tasks and the print sequence are illustrations, not a live session or print job.
       </p>
       <div aria-hidden='true' className='flex min-h-0 flex-1 flex-col'>
         <div className='flex min-h-12 items-center justify-center px-1 text-center text-sm font-medium sm:text-base'>

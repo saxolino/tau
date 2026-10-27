@@ -62,7 +62,7 @@ const inviteFailureMessage = (status: number, code: string | undefined): string 
     return 'Only the project owner can invite people.';
   }
   if (status === 404) {
-    return 'This project is not on Tau Cloud yet. Connect the backup first.';
+    return 'This project is not on SinopiaCAD Cloud yet. Connect the backup first.';
   }
   return 'The invitation could not be created. Try again.';
 };
@@ -319,8 +319,8 @@ export function RevisionCollaborators({ projectId }: RevisionCollaboratorsProps)
               Finding 5, ruling Q4). Either way the owner sends the link. */}
           <p className='text-xs text-muted-foreground'>
             {isDesktopTarget()
-              ? 'This link opens in the browser. Once they accept, the project appears in their Tau.'
-              : 'Tau does not email this link. Send it to them yourself.'}
+              ? 'This link opens in the browser. Once they accept, the project appears in their SinopiaCAD.'
+              : 'SinopiaCAD does not email this link. Send it to them yourself.'}
           </p>
           {expiryCopy(issued.expiresAt) === undefined ? undefined : (
             <p className='text-xs text-muted-foreground'>{expiryCopy(issued.expiresAt)}</p>

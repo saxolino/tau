@@ -105,7 +105,8 @@ export function PublicationTopbar({
       <div className='order-last flex w-full min-w-0 items-center justify-center gap-2 text-center sm:order-none sm:w-auto sm:flex-1'>
         <p className='truncate text-sm font-medium'>{publication.title}</p>
         <p className='hidden max-w-1/2 shrink-0 truncate text-xs text-muted-foreground sm:block'>
-          {sourceLabel ?? (publication.visibility === 'private' ? 'Private Tau share' : 'Public Tau share')}
+          {sourceLabel ??
+            (publication.visibility === 'private' ? 'Private SinopiaCAD share' : 'Public SinopiaCAD share')}
         </p>
       </div>
       {/* At phone widths the workbench trigger shares this row; desktop also reserves native window controls. */}

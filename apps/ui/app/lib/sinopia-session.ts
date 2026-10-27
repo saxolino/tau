@@ -36,7 +36,8 @@ export type SinopiaUser = Readonly<{ id: string; email: string | undefined }>;
  * deployment): nothing is gated and no token is sent. `checking` lasts while the stored session is read and while a
  * signed-in account's access is checked. `signed-out` may carry a notice: why the last account was signed out, or why
  * the Google sign-in did not complete. `second-factor` waits for the account's authenticator code; `unverified` means
- * the access check could not be read. Only `signed-in` opens the workspace.
+ * the access check could not be read; `reserved` is a Sinopia account that is not an administrator (SinopiaCAD is a
+ * reserved preview): signed in on this browser, but never admitted, so no token leaves. Only `signed-in` opens the workspace.
  */
 export type SinopiaSessionState =
   | Readonly<{ status: 'disabled' }>
@@ -44,6 +45,7 @@ export type SinopiaSessionState =
   | Readonly<{ status: 'signed-out'; notice?: SinopiaNotice }>
   | Readonly<{ status: 'second-factor'; user: SinopiaUser }>
   | Readonly<{ status: 'unverified'; user: SinopiaUser }>
+  | Readonly<{ status: 'reserved'; user: SinopiaUser }>
   | Readonly<{ status: 'signed-in'; user: SinopiaUser }>;
 
 /** The outcome of a sign-in step, with the code of the sentence for the person when it failed. */
@@ -312,6 +314,10 @@ export const createSinopiaSession = (
         setState({ status: 'unverified', user });
         break;
       }
+      case 'reserved': {
+        setState({ status: 'reserved', user });
+        break;
+      }
       case 'refused': {
         /* The account stays out of SinopiaCAD altogether: no session is left behind on this browser. */
         notice = sinopiaRefusalNotice(access.reason);
@@ -358,7 +364,8 @@ export const createSinopiaSession = (
     const userId = session.user.id;
     const isAwaitingThisAccount =
       checkingUserId === userId ||
-      ((state.status === 'second-factor' || state.status === 'unverified') && state.user.id === userId);
+      ((state.status === 'second-factor' || state.status === 'unverified' || state.status === 'reserved') &&
+        state.user.id === userId);
     /* A verified second factor changes the answer; a refresh or a repeated sign-in event for the same account does not. */
     if (isAwaitingThisAccount && event !== 'MFA_CHALLENGE_VERIFIED') {
       return;

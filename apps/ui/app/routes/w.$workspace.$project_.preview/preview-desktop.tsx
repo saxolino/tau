@@ -20,6 +20,7 @@ import { PreviewParameters } from '#routes/w.$workspace.$project_.preview/previe
 import { usePreviewFileList } from '#routes/w.$workspace.$project_.preview/use-preview-file-list.js';
 import { useProjectUrl } from '#hooks/use-project-slug-route.js';
 import { getFileTreeDownloadErrorMessage } from '#routes/w.$workspace.$project/file-tree-download-policy.js';
+import { publicAsset } from '#lib/base-path.js';
 
 export const PreviewDesktop = memo(function (): React.JSX.Element {
   const navigate = useNavigate();
@@ -71,7 +72,7 @@ export const PreviewDesktop = memo(function (): React.JSX.Element {
       </div>
     );
   }
-  const author = project.author ?? { name: 'You', avatar: '/avatar-sample.png' };
+  const author = project.author ?? { name: 'You', avatar: publicAsset('avatar-sample.png') };
 
   return (
     <div className='-ml-2 hidden h-full flex-col md:flex'>

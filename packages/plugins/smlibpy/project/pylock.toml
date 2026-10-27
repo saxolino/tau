@@ -36,29 +36,29 @@ hashes = { sha256 = "29b86ff8a6cc556b47ec6b64b194815cc80e6bf5eedcc6cddfd65318cb0
 
 [[packages]]
 name = "smlibpy"
-version = "0.3.5"
+version = "0.5.0"
 index = "https://pypi.org/simple"
 
 [[packages.wheels]]
-name = "smlibpy-0.3.5-cp313-cp313-macosx_11_0_arm64.whl"
-url = "https://files.pythonhosted.org/packages/95/94/3a1cce022396b3839c97e4da111094c74fc77c9b90ca9108ba7b5a83f010/smlibpy-0.3.5-cp313-cp313-macosx_11_0_arm64.whl"
-size = 6667795
-hashes = { sha256 = "fab69bd6f69724ee882aa8e6f4300e1170df76d54d6f7e758ea925ca828f65f1" }
+name = "smlibpy-0.5.0-cp313-cp313-macosx_11_0_arm64.whl"
+url = "https://files.pythonhosted.org/packages/c3/44/b4c6692cec336ca2f14b301d30ba2b007386e873d474936b3c646bf11abd/smlibpy-0.5.0-cp313-cp313-macosx_11_0_arm64.whl"
+size = 8294005
+hashes = { sha256 = "4a1884ca62119d3e8e6289011e9d25580924fe87deba481ac9aa3e79d56c123b" }
 
 [[packages.wheels]]
-name = "smlibpy-0.3.5-cp313-cp313-macosx_11_0_x86_64.whl"
-url = "https://files.pythonhosted.org/packages/82/3d/a5c9861f4e51c883b3f1fbf374f557f19263ccf6df2875ae5df23cd996d7/smlibpy-0.3.5-cp313-cp313-macosx_11_0_x86_64.whl"
-size = 7242047
-hashes = { sha256 = "f6f2fe5cd8c4384d026374707783bea7df0834789c6e31e26514b1154da3a639" }
+name = "smlibpy-0.5.0-cp313-cp313-macosx_11_0_x86_64.whl"
+url = "https://files.pythonhosted.org/packages/1e/77/0ca9733a995da9cda4fa5ba49de2dd39d7607960bd4dad29483dc6e1e945/smlibpy-0.5.0-cp313-cp313-macosx_11_0_x86_64.whl"
+size = 9054649
+hashes = { sha256 = "b24064c404ef67e9bfe9423c04d5cf125add772458ccb048e2c799c0832c7a29" }
 
 [[packages.wheels]]
-name = "smlibpy-0.3.5-cp313-cp313-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl"
-url = "https://files.pythonhosted.org/packages/e9/cb/aeb41cd6c9ba2f78fc78bab729348fcb53ef4d638aae1f8b5a11a57bf3eb/smlibpy-0.3.5-cp313-cp313-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl"
-size = 8025067
-hashes = { sha256 = "695ca595f42d86d3e9788201e79af36b371dc5cf9f08fa07c1fbf453ee02fcb3" }
+name = "smlibpy-0.5.0-cp313-cp313-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl"
+url = "https://files.pythonhosted.org/packages/79/26/b132a8627043b8245e1227e6ddbe065f652c087a7cf340bbf54c9960a09f/smlibpy-0.5.0-cp313-cp313-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl"
+size = 9812515
+hashes = { sha256 = "72af0ee9e1d2f559e2504e80df748eb9af117c69f79fc85af96de9a591c2490b" }
 
 [[packages.wheels]]
-name = "smlibpy-0.3.5-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
-url = "https://files.pythonhosted.org/packages/8e/38/92b5eb0cca60f97345a202aec5c977ec7b771d9459834869626e4b01815a/smlibpy-0.3.5-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
-size = 8793054
-hashes = { sha256 = "a65f37208d3665f894ee4ddac34d6e57be8daf8c54c274441f54769fda9b866f" }
+name = "smlibpy-0.5.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
+url = "https://files.pythonhosted.org/packages/57/5e/ef2eca55affb4b86d5bde49b44f0d3b34576b56281df54d65d4d6c40da83/smlibpy-0.5.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
+size = 10700561
+hashes = { sha256 = "28d601a83c415b1f92530e31ad016a0e1be78e503893f8d2605e2ec10c6d5290" }

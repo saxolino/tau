@@ -13,6 +13,14 @@ import type { Config } from '@react-router/dev/config';
  * `--config` file's directory, with `REACT_ROUTER_ROOT` in
  * `apps/ui/project.json` as belt and braces.
  */
+/*
+ * SinopiaCAD: `SINOPIACAD_BASE` (`/cad/`) is Vite's `base` (see `vite.config.ts`); the router's `basename` is the same
+ * path **without** the trailing slash, or `/cad` itself would not match.
+ */
+// oxlint-disable-next-line eslint/dot-notation -- ProcessEnv is index-signature-only with noPropertyAccessFromIndexSignature.
+const base = process.env['SINOPIACAD_BASE'] ?? '/';
+
 export default {
   ssr: false,
+  basename: base === '/' ? '/' : base.replace(/\/$/u, ''),
 } satisfies Config;

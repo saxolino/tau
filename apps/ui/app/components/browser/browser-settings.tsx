@@ -102,7 +102,8 @@ export function BrowserSettingsSurface({
           </div>
           <div className='flex flex-wrap items-center justify-between gap-4 p-4'>
             <div>
-              Cookies and site data<p className='mt-1 text-xs text-muted-foreground'>Separate from your Tau account.</p>
+              Cookies and site data
+              <p className='mt-1 text-xs text-muted-foreground'>Separate from your SinopiaCAD account.</p>
             </div>
             <Button
               variant='outline'
@@ -120,7 +121,7 @@ export function BrowserSettingsSurface({
         <section className='space-y-3 rounded-lg border p-4' aria-label='Confirm clearing browsing data'>
           <p>
             {clearScope === 'all'
-              ? 'Clear browser cookies, site data, cache and history? This closes browser tabs, cancels downloads and signs you out of websites. Your Tau account and downloaded files stay unchanged.'
+              ? 'Clear browser cookies, site data, cache and history? This closes browser tabs, cancels downloads and signs you out of websites. Your SinopiaCAD account and downloaded files stay unchanged.'
               : 'Clear browsing history on this device?'}
           </p>
           <div className='flex flex-wrap gap-2'>
@@ -162,7 +163,7 @@ export function BrowserSettingsPanel(): React.JSX.Element {
   const bridge = getBrowserBridge();
   const { snapshot, error, command } = useBrowserSession(bridge);
   if (!bridge) {
-    return <p className='text-sm text-muted-foreground'>Browsing is available in the Tau desktop app.</p>;
+    return <p className='text-sm text-muted-foreground'>Browsing is available in the SinopiaCAD desktop app.</p>;
   }
   return (
     <div className='space-y-4'>

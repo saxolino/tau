@@ -58,8 +58,8 @@ describe('WorkbenchLaneToggle', () => {
   });
 
   it.each([
-    ['it', 'Misure'],
-    ['en', 'Measures'],
+    ['it', 'Pezzi e misure'],
+    ['en', 'Pieces and measures'],
   ] as const)('names the lane in %s', (language, name) => {
     setLanguage(language);
     renderWithLanes(<WorkbenchLaneToggle place='viewer' />, false);
@@ -73,9 +73,9 @@ describe('WorkbenchLaneToggle', () => {
       false,
     );
 
-    const toggle = screen.getByRole('button', { name: 'Misure' });
+    const toggle = screen.getByRole('button', { name: 'Pezzi e misure' });
     expect(toggle).toHaveClass('fold-button');
-    expect(screen.getByText('Misure')).toHaveClass('fold-label');
+    expect(screen.getByText('Pezzi e misure')).toHaveClass('fold-label');
   });
 
   it('is pressed at the head of the Misure lane, advertises ⌃W, and hides the lane', async () => {
@@ -83,13 +83,13 @@ describe('WorkbenchLaneToggle', () => {
     renderWithLanes(<WorkbenchLaneToggle place='lane' />, true);
 
     // The lane's own button only hides it: named for that, no pressed state (the top bar's toggle carries it).
-    const toggle = screen.getByRole('button', { name: 'Nascondi le misure' });
+    const toggle = screen.getByRole('button', { name: 'Nascondi pezzi e misure' });
     expect(toggle).not.toHaveAttribute('aria-pressed');
     expect(toggle).toHaveAttribute('aria-keyshortcuts', 'Control+W');
     expect(toggleWorkbenchKeyCombination).toEqual({ key: 'w', ctrlKey: true });
     // The lane's own header already names it: the icon alone, a 28 px pane button.
     expect(toggle).toHaveClass('size-7');
-    expect(toggle).not.toHaveTextContent('Misure');
+    expect(toggle).not.toHaveTextContent('Pezzi e misure');
     await user.click(toggle);
 
     expect(setWorkbenchOpen).toHaveBeenCalledExactlyOnceWith(false);
@@ -99,9 +99,9 @@ describe('WorkbenchLaneToggle', () => {
     const user = userEvent.setup();
     renderWithLanes(<WorkbenchLaneToggle place='viewer' />, false);
 
-    const toggle = screen.getByRole('button', { name: 'Misure' });
+    const toggle = screen.getByRole('button', { name: 'Pezzi e misure' });
     expect(toggle).toHaveAttribute('aria-pressed', 'false');
-    expect(toggle).toHaveTextContent('Misure');
+    expect(toggle).toHaveTextContent('Pezzi e misure');
     expect(toggle).toHaveClass('@max-xl/viewer:w-7');
     await user.click(toggle);
 
@@ -118,7 +118,7 @@ describe('WorkbenchLaneToggle', () => {
     rerender(withLanes(<WorkbenchLaneToggle place='lane' />, true));
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Nascondi le misure' })).toHaveFocus();
+      expect(screen.getByRole('button', { name: 'Nascondi pezzi e misure' })).toHaveFocus();
     });
   });
 });
@@ -131,7 +131,7 @@ describe('WorkbenchLaneHead', () => {
 
   it('heads the Misure lane’s top-left group only while the lane shows', () => {
     const { container } = renderWithLanes(<WorkbenchLaneHead {...headerProperties} />, true);
-    const toggle = screen.getByRole('button', { name: 'Nascondi le misure' });
+    const toggle = screen.getByRole('button', { name: 'Nascondi pezzi e misure' });
     expect(toggle.parentElement).toHaveClass('pl-1');
     container.remove();
 
@@ -153,6 +153,6 @@ describe('WorkbenchLaneHead', () => {
         <WorkbenchLaneHead {...headerProperties} />
       </TooltipProvider>,
     );
-    expect(screen.queryByRole('button', { name: 'Misure' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Pezzi e misure' })).not.toBeInTheDocument();
   });
 });

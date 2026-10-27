@@ -143,7 +143,7 @@ export const fetchCloudProjects = async (): Promise<readonly CloudProject[]> => 
        no projects" from "nobody asked" (N1). The library renders no section for
        either; only the role resolver needs the difference, and a silent empty
        list would have told a signed-out tab its access had been revoked. */
-    throw new Error(`Tau Cloud answered ${String(response.status)}`);
+    throw new Error(`SinopiaCAD Cloud answered ${String(response.status)}`);
   }
   const body: unknown = await response.json();
   return Array.isArray(body) ? body.map((entry) => toCloudProject(entry)).filter((entry) => entry !== undefined) : [];

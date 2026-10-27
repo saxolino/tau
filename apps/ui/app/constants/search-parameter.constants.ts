@@ -23,6 +23,24 @@ export const searchParameterName = {
   // The Parts category filter, absent for all categories.
   partCategory: 'category',
 
+  /* Entry links from Sinopia («Apri nel CAD») */
+  // The Sinopia project to start a new CAD from on the home («Da un progetto Sinopia»).
+  sinopiaProject: 'project',
+  // The CAD model of the account to open (`cad_models.id`).
+  sinopiaModel: 'model',
+  // «/cad/nuovo» (a part isolated in Sinopia → recognised family): the image asset, the part, its mask, its type,
+  // the library component and a measure the designer knows (`<mm>:<what>`).
+  sinopiaAsset: 'asset',
+  sinopiaPart: 'part',
+  sinopiaMask: 'mask',
+  sinopiaPartType: 'partType',
+  sinopiaLibrary: 'library',
+  // «/cad/nuovo» from a supplier-catalogue card: `supplier_products.id` (no project, no asset, no part).
+  sinopiaSupplier: 'supplier',
+  sinopiaMeasure: 'measure',
+  // Development only: a recorded recognition («prova»), no Sinopia read and no paid call.
+  recognitionTrial: 'prova',
+
   /* Dialogs */
   // The open settings dialog section, absent when the dialog is closed.
   settings: 'settings',

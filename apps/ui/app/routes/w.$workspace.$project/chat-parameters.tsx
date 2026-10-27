@@ -306,7 +306,8 @@ function ParametersQuickExport({ entryPath }: { readonly entryPath: string }): R
  *
  * @returns The source, stable while the project's services are.
  */
-function useProjectParametersSource(): ParametersSource {
+/** The project's parameter authority as the measures panes read and write it. */
+export function useProjectParametersSource(): ParametersSource {
   const {
     parameterService,
     projectRef,

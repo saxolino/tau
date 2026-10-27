@@ -138,7 +138,7 @@ describe('ChatOptionsMeta — rows', () => {
     expect(screen.queryByRole('menuitem')).toBeNull();
   });
 
-  it('should render the model from a Tau execution even when there are no messages yet', () => {
+  it('should render the model from a SinopiaCAD execution even when there are no messages yet', () => {
     chatSelectorState.activeExecution = { kind: 'tau', model: 'pinned-model' };
     chatSelectorState.messages = [];
 
@@ -239,12 +239,12 @@ describe('ChatOptionsMeta — receipt credits', () => {
     renderMeta();
 
     await waitFor(() => {
-      expect(screen.getByLabelText('Tau credits: 1 · 1 pending')).toBeInTheDocument();
+      expect(screen.getByLabelText('SinopiaCAD credits: 1 · 1 pending')).toBeInTheDocument();
     });
     expect(screen.queryByText(/\$/)).not.toBeInTheDocument();
   });
 
-  it('should show no credits when the cookie hides them or Tau Cloud is off', () => {
+  it('should show no credits when the cookie hides them or SinopiaCAD Cloud is off', () => {
     cookie.showCredits = false;
     renderMeta();
     expect(valueOf('Credits')).toHaveTextContent('—');

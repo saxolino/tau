@@ -52,7 +52,7 @@ describe('fileProvenanceLabel', () => {
 
     expect(records).toEqual({
       breadcrumbBadge: 'Artifact',
-      description: 'Supporting data used by Tau. Not included in revisions.',
+      description: 'Supporting data used by SinopiaCAD. Not included in revisions.',
       dimmed: true,
       readOnly: false,
     });

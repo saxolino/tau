@@ -107,9 +107,9 @@ export function VerifyEmail({ className }: VerifyEmailProps): React.JSX.Element 
 
         <CardDescription>
           {status === 'verified'
-            ? 'Your Tau account is ready. Taking you back now.'
+            ? 'Your SinopiaCAD account is ready. Taking you back now.'
             : status === 'verifying'
-              ? 'Hold tight while Tau confirms this verification link.'
+              ? 'Hold tight while SinopiaCAD confirms this verification link.'
               : status === 'missing-token'
                 ? 'Open the verification link from your email, or sign in to request a fresh link.'
                 : 'This link may have expired or already been used. Sign in to request a fresh verification email.'}

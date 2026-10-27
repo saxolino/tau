@@ -1,5 +1,6 @@
 import { agentMessages } from '#i18n/messages/agent.js';
 import { measuresMessages } from '#i18n/messages/measures.js';
+import { materialsMessages } from '#i18n/messages/materials.js';
 import { piecesMessages } from '#i18n/messages/pieces.js';
 import { accountMessages } from '#i18n/messages/account.js';
 import { authMessages } from '#i18n/messages/auth.js';
@@ -16,6 +17,16 @@ import { versionsMessages } from '#i18n/messages/versions.js';
 import { sinopiaImagesMessages } from '#i18n/messages/sinopia-images.js';
 import { sinopiaSendMessages } from '#i18n/messages/sinopia-send.js';
 import { sinopiaSyncMessages } from '#i18n/messages/sinopia-sync.js';
+import { libraryMessages } from '#i18n/messages/library.js';
+import { manualEditMessages } from '#i18n/messages/manual-edit.js';
+import { inspectorMessages } from '#i18n/messages/inspector.js';
+import { riconoscimentoMessages } from '#i18n/messages/riconoscimento.js';
+import { assistantMessages } from '#i18n/messages/assistant.js';
+import { producibilitaMessages } from '#i18n/messages/producibilita.js';
+import { fotoCampioneMessages } from '#i18n/messages/foto-campione.js';
+import { sketchMessages } from '#i18n/messages/sketch.js';
+import { consegnaMessages } from '#i18n/messages/consegna.js';
+import { serieMessages } from '#i18n/messages/serie.js';
 
 /**
  * Every area's messages under its own namespace: `t('project.topBar.versions')`. One area per file in
@@ -24,6 +35,7 @@ import { sinopiaSyncMessages } from '#i18n/messages/sinopia-sync.js';
 export const areas = {
   agent: agentMessages,
   measures: measuresMessages,
+  materials: materialsMessages,
   pieces: piecesMessages,
   account: accountMessages,
   auth: authMessages,
@@ -40,6 +52,16 @@ export const areas = {
   sinopiaImages: sinopiaImagesMessages,
   sinopiaSend: sinopiaSendMessages,
   sinopiaSync: sinopiaSyncMessages,
+  manualEdit: manualEditMessages,
+  inspector: inspectorMessages,
+  library: libraryMessages,
+  riconoscimento: riconoscimentoMessages,
+  fotoCampione: fotoCampioneMessages,
+  assistant: assistantMessages,
+  producibilita: producibilitaMessages,
+  sketch: sketchMessages,
+  consegna: consegnaMessages,
+  serie: serieMessages,
 } as const;
 
 /** The Italian catalog, the source of every key. */

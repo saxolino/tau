@@ -816,7 +816,7 @@ export const connectMachineChannel = (port: MachineChannelEndpoint): MachineChan
       } catch (error) {
         if (error !== null && typeof error === 'object' && 'code' in error && error.code === 'WIRE_VALIDATION_FAILED') {
           throw Object.assign(
-            new Error('This Tau and the machines host it reached are different versions. Update Tau.', {
+            new Error('This SinopiaCAD and the machines host it reached are different versions. Update SinopiaCAD.', {
               cause: error,
             }),
             { code: 'MACHINE_CHANNEL_VERSION_MISMATCH' },

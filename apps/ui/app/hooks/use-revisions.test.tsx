@@ -1054,7 +1054,7 @@ describe('useRevisionChanges', () => {
     /* The pseudonym stays stable and per workspace; the scheme is not copy. */
     expect(result.current.revisions[1]?.actor).toBe('Anonymous · 2722de98');
     /* An agent turn's actor id is a model id; the person reads who did it. */
-    expect(result.current.revisions[0]?.actor).toBe('Tau agent');
+    expect(result.current.revisions[0]?.actor).toBe('SinopiaCAD agent');
   });
 
   /* F4: the session is a store the hook subscribes to, not a value it read once. */

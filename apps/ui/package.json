@@ -96,6 +96,7 @@
     "json-rpc-2.0": "^1.7.1",
     "lucide-react": "catalog:",
     "next-themes": "catalog:",
+    "pdf-lib": "catalog:",
     "pluralize": "^8.0.0",
     "radix-ui": "catalog:",
     "react-day-picker": "^10.0.1",
@@ -107,6 +108,7 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@classcad/smlibwasm": "catalog:",
     "@taucad/geometry-core": "workspace:*",
     "@taucad/runtime-testing": "workspace:*",
     "@taucad/spatial": "workspace:*",

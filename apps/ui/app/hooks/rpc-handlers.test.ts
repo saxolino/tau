@@ -1854,7 +1854,7 @@ describe('rpc-handlers', () => {
             success: false,
             errorCode: 'UNKNOWN',
             message:
-              '`.tau/workbench/entries.json` was written by a newer Tau, so rendering stopped rather than assume a default render timeout. Update Tau to use it; do not rewrite it to work around this.',
+              '`.tau/workbench/entries.json` was written by a newer version of SinopiaCAD, so rendering stopped rather than assume a default render timeout. Update SinopiaCAD to use it; do not rewrite it to work around this.',
           });
           expect(projectRef.send).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'claimGeometryUnit' }));
         });

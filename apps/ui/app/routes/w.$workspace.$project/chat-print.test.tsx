@@ -1443,7 +1443,7 @@ describe('Print pane slice summary', () => {
 });
 
 describe('Print pane jobs', () => {
-  it('does not say Tau is waiting when an external agent asked and no chat is paused on it', async () => {
+  it('does not say SinopiaCAD is waiting when an external agent asked and no chat is paused on it', async () => {
     const external = agentJob({ requestedBy: { kind: 'agent', id: 'external-agent', label: 'External agent' } });
     renderPane(createFixture({ jobs: [external] }).client);
 
@@ -1624,7 +1624,7 @@ describe('Print pane jobs', () => {
     );
 
     const progress = await screen.findByRole('status', { name: 'Waiting for Workshop X1C to confirm the start…' });
-    expect(progress).toHaveTextContent("Tau confirms it from the machine's own report");
+    expect(progress).toHaveTextContent("SinopiaCAD confirms it from the machine's own report");
     expect(screen.queryByText(/reply-lost/u)).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /retry|check again|reconcile/iu })).not.toBeInTheDocument();
   });
@@ -1929,7 +1929,7 @@ describe('Print pane monitor and controls', () => {
       isShown: true,
     },
     {
-      when: 'while an operation Tau sent is in flight',
+      when: 'while an operation SinopiaCAD sent is in flight',
       snapshot: {
         operations: [
           {
@@ -2019,7 +2019,7 @@ describe('Print pane monitor and controls', () => {
     },
   );
 
-  it('says a live run was not started from Tau rather than where it was started', async () => {
+  it('says a live run was not started from SinopiaCAD rather than where it was started', async () => {
     const run = printing();
     renderPane(
       createFixture({
@@ -2028,7 +2028,7 @@ describe('Print pane monitor and controls', () => {
     );
     await findMachine('Printing');
     const live = screen.getByRole('region', { name: 'Run' });
-    expect(live).toHaveTextContent('not started from Tau');
+    expect(live).toHaveTextContent('not started from SinopiaCAD');
     expect(live).not.toHaveTextContent('started at the machine');
   });
 
@@ -2084,7 +2084,7 @@ describe('Print pane monitor and controls', () => {
     ).toBeInTheDocument();
   });
 
-  it('lists the operations Tau sent with how the machine confirmed each', async () => {
+  it('lists the operations SinopiaCAD sent with how the machine confirmed each', async () => {
     const idle = entry();
     const machine = entry({
       snapshot: {
@@ -2831,7 +2831,8 @@ describe('Print pane Bambu Studio mode', () => {
     const unavailable = createBambuStudio(false);
     desktopHost.bambuStudio = unavailable;
     const fixture = createFixture({ entries: [realPrinter()] });
-    const producer = 'Slice it with Bambu Studio in Tau (desktop app with Bambu Studio installed), then send it again.';
+    const producer =
+      'Slice it with Bambu Studio in SinopiaCAD (desktop app with Bambu Studio installed), then send it again.';
     // The printer, not the pane, says which files it takes: its job check refuses the reference slicer's.
     fixture.checkJob.mockResolvedValue({
       status: 'blocked',
@@ -2845,7 +2846,7 @@ describe('Print pane Bambu Studio mode', () => {
     await findMachine('Ready');
     expect(
       await within(prepareRegion()).findByText(
-        "Slicing with Tau's reference slicer: Bambu Studio is not available here.",
+        "Slicing with SinopiaCAD's reference slicer: Bambu Studio is not available here.",
       ),
     ).toBeInTheDocument();
     expect(unavailable.catalog).not.toHaveBeenCalled();
@@ -2869,7 +2870,7 @@ describe('Print pane Bambu Studio mode', () => {
     desktopHost.bambuStudio = undefined;
     renderPane(createFixture().client);
     expect(
-      await screen.findByText("Slicing with Tau's reference slicer: Bambu Studio is not available here."),
+      await screen.findByText("Slicing with SinopiaCAD's reference slicer: Bambu Studio is not available here."),
     ).toBeInTheDocument();
     await user.click(prepareActions().getByRole('button', { name: 'Slice and preview' }));
     await reviewPrint();
@@ -3613,7 +3614,7 @@ describe('Print pane presence, Stop and jobs across machines', () => {
     expect(within(region).queryByRole('button', { name: 'Preview' })).not.toBeInTheDocument();
   });
 
-  it('reads a run the machine stopped reporting as not reported, and says Tau did not stop it', async () => {
+  it('reads a run the machine stopped reporting as not reported, and says SinopiaCAD did not stop it', async () => {
     const run = printing();
     renderPane(
       createFixture({
@@ -3627,7 +3628,7 @@ describe('Print pane presence, Stop and jobs across machines', () => {
     );
     const ended = await screen.findByRole('region', { name: 'Run' });
     expect(ended).toHaveTextContent('Last run: Not reported · pyramid.gcode.3mf');
-    expect(ended).toHaveTextContent('Workshop X1C did not report how this run ended, and Tau did not stop it.');
+    expect(ended).toHaveTextContent('Workshop X1C did not report how this run ended, and SinopiaCAD did not stop it.');
   });
 });
 
@@ -3697,7 +3698,7 @@ describe('Print pane program files', () => {
     { machine: router, name: 'Garage LongMill', isStreamed: true },
     { machine: carvera, name: 'Desk Carvera', isStreamed: false },
   ])(
-    'lists only the files $name accepts, and says when Tau feeds the whole run',
+    'lists only the files $name accepts, and says when SinopiaCAD feeds the whole run',
     async ({ machine, name, isStreamed }) => {
       const user = userEvent.setup();
       renderPane(createFixture({ entries: [machine()] }).client);
@@ -3710,8 +3711,9 @@ describe('Print pane program files', () => {
       ]);
       await user.keyboard('{Escape}');
       expect(
-        within(programRegion()).queryByText('Keep this computer awake: Tau feeds the program for the whole run.') !==
-          null,
+        within(programRegion()).queryByText(
+          'Keep this computer awake: SinopiaCAD feeds the program for the whole run.',
+        ) !== null,
       ).toBe(isStreamed);
       expect(screen.queryByText(/from the agent or at the machine/u)).not.toBeInTheDocument();
     },
@@ -3867,7 +3869,9 @@ describe('Print pane program files', () => {
     );
     expect(await screen.findByText('Press start on Garage LongMill to begin face.nc')).toBeInTheDocument();
     expect(
-      within(screen.getByRole('region', { name: 'Job' })).getByText(/Keep this computer awake: Tau feeds the program/u),
+      within(screen.getByRole('region', { name: 'Job' })).getByText(
+        /Keep this computer awake: SinopiaCAD feeds the program/u,
+      ),
     ).toBeInTheDocument();
   });
 
@@ -3902,7 +3906,9 @@ describe('Print pane jobs watch', () => {
           .getAllByRole('status')
           .filter((status) => status.textContent.includes('Job updates from Workshop X1C stopped')),
       ).toHaveLength(1);
-      expect(screen.getByText(/Tau keeps retrying; the jobs shown here may be out of date\./u)).toBeInTheDocument();
+      expect(
+        screen.getByText(/SinopiaCAD keeps retrying; the jobs shown here may be out of date\./u),
+      ).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }

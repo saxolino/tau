@@ -31,6 +31,19 @@ describe('TabletLane', () => {
     expect(close).toHaveBeenCalledTimes(2);
   });
 
+  it('should leave the model usable under the inspector’s sheet: no veil, still closable', () => {
+    const close = vi.fn();
+    render(
+      <TabletLane isViewerInteractive label='Ispettore' side='right' onClose={close}>
+        <p>Telaio fibbia</p>
+      </TabletLane>,
+    );
+    // One close button only: the sheet's own, not a veil over the model.
+    expect(screen.getAllByRole('button', { name: 'Chiudi' })).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Chiudi' }));
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   it('should keep the composer above the visual keyboard and remove viewport listeners', () => {
     const viewport = new EventTarget();
     Object.assign(viewport, { height: 900, offsetTop: 0 });

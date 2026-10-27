@@ -242,7 +242,7 @@ describe('ChatRevisionMarker', () => {
         filesystem,
         checkouts: { projectId: 'project-1', root: () => filesystem },
       });
-      await port.init({ author: { name: 'Tau', email: 'noreply@tau.new' } });
+      await port.init({ author: { name: 'SinopiaCAD', email: 'noreply@tau.new' } });
       const revisions = createProjectRevisionsActor({ port, projectId: 'project-1', filesystem: () => filesystem });
       revisions.actor.start();
       const toolsReady = Promise.withResolvers<RevisionFileSystem>();
@@ -457,7 +457,7 @@ describe('ChatRevisionMarker', () => {
     expect(glyph).not.toContain('text-destructive');
   });
 
-  it('should say the saved revision is still on its way to Tau Cloud (round 21)', () => {
+  it('should say the saved revision is still on its way to SinopiaCAD Cloud (round 21)', () => {
     revisionStatusHarness.status = {
       ...revisionStatusHarness.status,
       remote: { ...revisionStatusHarness.status.remote, kind: 'tau', phase: 'connected' },
@@ -467,7 +467,7 @@ describe('ChatRevisionMarker', () => {
     setRevisions({ revisions: [revision()], byTurnId: new Map([['u1', revision()]]), headRevisionId: 'rev-5' });
     render(<ChatRevisionMarker userMessageId='u1' isLatestTurn />);
     fireEvent.click(screen.getByRole('button', { name: /revision details$/u }));
-    expect(screen.getByText('Backing up to Tau Cloud…')).not.toBeNull();
+    expect(screen.getByText('Backing up to SinopiaCAD Cloud…')).not.toBeNull();
   });
 
   it('should link an earlier saved request to its revision in Revisions', () => {

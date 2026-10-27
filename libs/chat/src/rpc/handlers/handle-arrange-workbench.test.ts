@@ -503,7 +503,7 @@ describe('handleArrangeWorkbench', () => {
     expect(result).toEqual({
       success: false,
       errorCode: 'INVALID_RECORD',
-      message: 'The layout record was written by a newer Tau. Update Tau to use it.',
+      message: 'The layout record was written by a newer SinopiaCAD. Update SinopiaCAD to use it.',
     });
     expect(state.writes).toEqual([]);
   });
@@ -593,7 +593,7 @@ describe('handleArrangeWorkbench', () => {
       expect(result).toEqual({
         success: false,
         errorCode: 'INVALID_RECORD',
-        message: 'The entries record was written by a newer Tau. Update Tau to use it.',
+        message: 'The entries record was written by a newer SinopiaCAD. Update SinopiaCAD to use it.',
       });
       expect(state.writes).toEqual([]);
       expect(state.files.get(workbenchPaths.entries)).toBe(newerEntries);

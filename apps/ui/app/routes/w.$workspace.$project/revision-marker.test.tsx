@@ -62,7 +62,7 @@ const card = (over: Partial<RevisionCard> = {}): RevisionCard => ({
   n: 2,
   createdAt: new Date('2026-07-09T14:14:00').getTime(),
   summary: 'Thicker base',
-  actor: 'Tau agent',
+  actor: 'SinopiaCAD agent',
   turnId: 'u1',
   conflicted: false,
   trigger: 'turn',
@@ -116,7 +116,7 @@ describe('RevisionRow', () => {
       'aria-expanded',
       'false',
     );
-    expect(item).toHaveTextContent('Tau agent');
+    expect(item).toHaveTextContent('SinopiaCAD agent');
   });
 
   it('never shows who made your own revision, nor a raw actor id (HQ4)', () => {
@@ -477,7 +477,7 @@ describe('RevisionMenu', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it('shows the publication a Tau Cloud name backs before removing it, then asks again with its id (D24)', async () => {
+  it('shows the publication a SinopiaCAD Cloud name backs before removing it, then asks again with its id (D24)', async () => {
     const user = userEvent.setup();
     revisionStatusHarness.role = 'owner';
     revisionStatusHarness.status = {
@@ -562,7 +562,7 @@ describe('RevisionMenu', () => {
     });
   });
 
-  it('says why Tau Cloud refused a removal, and removes nothing (I12)', async () => {
+  it('says why SinopiaCAD Cloud refused a removal, and removes nothing (I12)', async () => {
     const user = userEvent.setup();
     revisionStatusHarness.role = 'owner';
     revisionStatusHarness.status = {
@@ -578,11 +578,11 @@ describe('RevisionMenu', () => {
     await user.click(screen.getByRole('menuitem', { name: 'Remove version name…' }));
     await user.click(await screen.findByRole('button', { name: 'Remove name' }));
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('Tau Cloud is getting too many requests');
+    expect(await screen.findByRole('alert')).toHaveTextContent('SinopiaCAD Cloud is getting too many requests');
     expect(revisionStatusHarness.commands.deleteTag).not.toHaveBeenCalled();
   });
 
-  it('offers no removal a Tau Cloud collaborator who is not the owner would be refused', async () => {
+  it('offers no removal a SinopiaCAD Cloud collaborator who is not the owner would be refused', async () => {
     const user = userEvent.setup();
     revisionStatusHarness.role = 'write';
     revisionStatusHarness.status = {

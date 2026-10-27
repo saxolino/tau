@@ -97,7 +97,6 @@ describe('createSinopiaSession', () => {
     expect(authCalls(calls)).toEqual([]);
     expect(databaseReads(calls).toSorted()).toEqual([
       '/rest/v1/profiles',
-      '/rest/v1/rpc/get_my_beta_status',
       '/rest/v1/rpc/needs_profession_selection',
       '/rest/v1/user_consents',
     ]);
@@ -235,20 +234,12 @@ describe('createSinopiaSession', () => {
 describe('createSinopiaSession entry criteria', () => {
   it.each<{ account: SinopiaTestAccount; code: SinopiaMessageCode }>([
     {
-      account: { withoutProfile: true },
-      code: 'noProfile',
-    },
-    {
       account: { withoutTerms: true },
       code: 'terms',
     },
     {
-      account: { needsProfession: true, beta: 'needs_profile' },
-      code: 'betaProfile',
-    },
-    {
-      account: { beta: 'waitlisted' },
-      code: 'waitlisted',
+      account: { needsProfession: true, beta: 'not_applicable' },
+      code: 'profession',
     },
   ])(
     'should sign out an account sinopialab.com keeps out ($account) and say where to complete it',
@@ -282,8 +273,30 @@ describe('createSinopiaSession entry criteria', () => {
     },
   );
 
+  it.each<{ name: string; account: SinopiaTestAccount }>([
+    { name: 'a designer', account: { role: 'designer' } },
+    { name: 'an account without a profile row', account: { withoutProfile: true } },
+  ])(
+    'should keep $name in the reserved preview: signed in on the browser, never admitted, no token out',
+    async ({ account }) => {
+      localStorage.setItem(sinopiaKey, JSON.stringify(tokenResponse('stored')));
+      scriptSinopiaBackend({}, account);
+      const session = open();
+      const tokens: Array<string | undefined> = [];
+      session.onAccessToken((token) => {
+        tokens.push(token);
+      });
+
+      await vi.waitFor(() => {
+        expect(session.getState()).toMatchObject({ status: 'reserved' });
+      });
+      expect(tokens.filter((token) => token !== undefined)).toEqual([]);
+      await expect(session.accessToken()).resolves.toBeUndefined();
+    },
+  );
+
   it('should clear the notice at the next sign-in attempt', async () => {
-    scriptSinopiaBackend({ password: tokenResponse('signed-in') }, { withoutProfile: true });
+    scriptSinopiaBackend({ password: tokenResponse('signed-in') }, { withoutTerms: true });
     const session = open();
     session.subscribe(() => undefined);
     await session.signIn('pilota@sinopialab.com', 'segreta');

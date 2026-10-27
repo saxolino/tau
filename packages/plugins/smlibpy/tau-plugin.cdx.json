@@ -106,6 +106,38 @@
       ]
     },
     {
+      "bom-ref": "28d601a83c415b1f92530e31ad016a0e1be78e503893f8d2605e2ec10c6d5290",
+      "type": "library",
+      "name": "smlibpy",
+      "version": "0.5.0",
+      "purl": "pkg:pypi/smlibpy@0.5.0?file_name=smlibpy-0.5.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "28d601a83c415b1f92530e31ad016a0e1be78e503893f8d2605e2ec10c6d5290"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "name": "MIT AND Apache-2.0 AND OFL-1.1"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://files.pythonhosted.org/packages/57/5e/ef2eca55affb4b86d5bde49b44f0d3b34576b56281df54d65d4d6c40da83/smlibpy-0.5.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
+        }
+      ],
+      "properties": [
+        {
+          "name": "taucad:target",
+          "value": "linux-x64-glibc"
+        }
+      ]
+    },
+    {
       "bom-ref": "29b86ff8a6cc556b47ec6b64b194815cc80e6bf5eedcc6cddfd65318cb0b4eee",
       "type": "library",
       "name": "numpy",
@@ -206,6 +238,38 @@
       ]
     },
     {
+      "bom-ref": "4a1884ca62119d3e8e6289011e9d25580924fe87deba481ac9aa3e79d56c123b",
+      "type": "library",
+      "name": "smlibpy",
+      "version": "0.5.0",
+      "purl": "pkg:pypi/smlibpy@0.5.0?file_name=smlibpy-0.5.0-cp313-cp313-macosx_11_0_arm64.whl",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "4a1884ca62119d3e8e6289011e9d25580924fe87deba481ac9aa3e79d56c123b"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "name": "MIT AND Apache-2.0 AND OFL-1.1"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://files.pythonhosted.org/packages/c3/44/b4c6692cec336ca2f14b301d30ba2b007386e873d474936b3c646bf11abd/smlibpy-0.5.0-cp313-cp313-macosx_11_0_arm64.whl"
+        }
+      ],
+      "properties": [
+        {
+          "name": "taucad:target",
+          "value": "darwin-arm64"
+        }
+      ]
+    },
+    {
       "bom-ref": "52c808f96484f5571a5cc863775ce50247c17dfb3b0361f8ed6b4b0456f80080",
       "type": "library",
       "name": "numpy",
@@ -238,15 +302,15 @@
       ]
     },
     {
-      "bom-ref": "695ca595f42d86d3e9788201e79af36b371dc5cf9f08fa07c1fbf453ee02fcb3",
+      "bom-ref": "72af0ee9e1d2f559e2504e80df748eb9af117c69f79fc85af96de9a591c2490b",
       "type": "library",
       "name": "smlibpy",
-      "version": "0.3.5",
-      "purl": "pkg:pypi/smlibpy@0.3.5?file_name=smlibpy-0.3.5-cp313-cp313-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl",
+      "version": "0.5.0",
+      "purl": "pkg:pypi/smlibpy@0.5.0?file_name=smlibpy-0.5.0-cp313-cp313-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "695ca595f42d86d3e9788201e79af36b371dc5cf9f08fa07c1fbf453ee02fcb3"
+          "content": "72af0ee9e1d2f559e2504e80df748eb9af117c69f79fc85af96de9a591c2490b"
         }
       ],
       "licenses": [
@@ -259,47 +323,13 @@
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://files.pythonhosted.org/packages/e9/cb/aeb41cd6c9ba2f78fc78bab729348fcb53ef4d638aae1f8b5a11a57bf3eb/smlibpy-0.3.5-cp313-cp313-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl"
+          "url": "https://files.pythonhosted.org/packages/79/26/b132a8627043b8245e1227e6ddbe065f652c087a7cf340bbf54c9960a09f/smlibpy-0.5.0-cp313-cp313-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl"
         }
       ],
       "properties": [
         {
           "name": "taucad:target",
           "value": "linux-arm64-glibc"
-        }
-      ]
-    },
-    {
-      "bom-ref": "6a22eb5a972712ed3080ec46a821f55cd55b75d8784b2e9a43d88ad0e0879bce",
-      "type": "file",
-      "name": "tau-worker/worker.py",
-      "hashes": [
-        {
-          "alg": "SHA-256",
-          "content": "6a22eb5a972712ed3080ec46a821f55cd55b75d8784b2e9a43d88ad0e0879bce"
-        }
-      ],
-      "licenses": [
-        {
-          "expression": "Apache-2.0"
-        }
-      ],
-      "properties": [
-        {
-          "name": "taucad:target",
-          "value": "darwin-arm64"
-        },
-        {
-          "name": "taucad:target",
-          "value": "darwin-x64"
-        },
-        {
-          "name": "taucad:target",
-          "value": "linux-arm64-glibc"
-        },
-        {
-          "name": "taucad:target",
-          "value": "linux-x64-glibc"
         }
       ]
     },
@@ -464,15 +494,15 @@
       ]
     },
     {
-      "bom-ref": "a65f37208d3665f894ee4ddac34d6e57be8daf8c54c274441f54769fda9b866f",
+      "bom-ref": "b24064c404ef67e9bfe9423c04d5cf125add772458ccb048e2c799c0832c7a29",
       "type": "library",
       "name": "smlibpy",
-      "version": "0.3.5",
-      "purl": "pkg:pypi/smlibpy@0.3.5?file_name=smlibpy-0.3.5-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "version": "0.5.0",
+      "purl": "pkg:pypi/smlibpy@0.5.0?file_name=smlibpy-0.5.0-cp313-cp313-macosx_11_0_x86_64.whl",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "a65f37208d3665f894ee4ddac34d6e57be8daf8c54c274441f54769fda9b866f"
+          "content": "b24064c404ef67e9bfe9423c04d5cf125add772458ccb048e2c799c0832c7a29"
         }
       ],
       "licenses": [
@@ -485,13 +515,13 @@
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://files.pythonhosted.org/packages/8e/38/92b5eb0cca60f97345a202aec5c977ec7b771d9459834869626e4b01815a/smlibpy-0.3.5-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
+          "url": "https://files.pythonhosted.org/packages/1e/77/0ca9733a995da9cda4fa5ba49de2dd39d7607960bd4dad29483dc6e1e945/smlibpy-0.5.0-cp313-cp313-macosx_11_0_x86_64.whl"
         }
       ],
       "properties": [
         {
           "name": "taucad:target",
-          "value": "linux-x64-glibc"
+          "value": "darwin-x64"
         }
       ]
     },
@@ -592,6 +622,40 @@
       ]
     },
     {
+      "bom-ref": "d83fa03f7ddb9e1823853cbc98d06e28579e240242348483c6482a44aee75292",
+      "type": "file",
+      "name": "tau-worker/worker.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "d83fa03f7ddb9e1823853cbc98d06e28579e240242348483c6482a44aee75292"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Apache-2.0"
+        }
+      ],
+      "properties": [
+        {
+          "name": "taucad:target",
+          "value": "darwin-arm64"
+        },
+        {
+          "name": "taucad:target",
+          "value": "darwin-x64"
+        },
+        {
+          "name": "taucad:target",
+          "value": "linux-arm64-glibc"
+        },
+        {
+          "name": "taucad:target",
+          "value": "linux-x64-glibc"
+        }
+      ]
+    },
+    {
       "bom-ref": "e2332cc07d95d823e7e681270c3b09ad05859174cd45f6027e25529af94bf79f",
       "type": "file",
       "name": "tau-worker/smlibpy_materials.py",
@@ -660,38 +724,6 @@
       ]
     },
     {
-      "bom-ref": "f6f2fe5cd8c4384d026374707783bea7df0834789c6e31e26514b1154da3a639",
-      "type": "library",
-      "name": "smlibpy",
-      "version": "0.3.5",
-      "purl": "pkg:pypi/smlibpy@0.3.5?file_name=smlibpy-0.3.5-cp313-cp313-macosx_11_0_x86_64.whl",
-      "hashes": [
-        {
-          "alg": "SHA-256",
-          "content": "f6f2fe5cd8c4384d026374707783bea7df0834789c6e31e26514b1154da3a639"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "name": "MIT AND Apache-2.0 AND OFL-1.1"
-          }
-        }
-      ],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://files.pythonhosted.org/packages/82/3d/a5c9861f4e51c883b3f1fbf374f557f19263ccf6df2875ae5df23cd996d7/smlibpy-0.3.5-cp313-cp313-macosx_11_0_x86_64.whl"
-        }
-      ],
-      "properties": [
-        {
-          "name": "taucad:target",
-          "value": "darwin-x64"
-        }
-      ]
-    },
-    {
       "bom-ref": "f712a9143c8a5d248438ec7921a0b48d548bca4f1337d33c690d28c2d0504137",
       "type": "platform",
       "name": "cpython",
@@ -718,38 +750,6 @@
         {
           "name": "taucad:target",
           "value": "darwin-x64"
-        }
-      ]
-    },
-    {
-      "bom-ref": "fab69bd6f69724ee882aa8e6f4300e1170df76d54d6f7e758ea925ca828f65f1",
-      "type": "library",
-      "name": "smlibpy",
-      "version": "0.3.5",
-      "purl": "pkg:pypi/smlibpy@0.3.5?file_name=smlibpy-0.3.5-cp313-cp313-macosx_11_0_arm64.whl",
-      "hashes": [
-        {
-          "alg": "SHA-256",
-          "content": "fab69bd6f69724ee882aa8e6f4300e1170df76d54d6f7e758ea925ca828f65f1"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "name": "MIT AND Apache-2.0 AND OFL-1.1"
-          }
-        }
-      ],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://files.pythonhosted.org/packages/95/94/3a1cce022396b3839c97e4da111094c74fc77c9b90ca9108ba7b5a83f010/smlibpy-0.3.5-cp313-cp313-macosx_11_0_arm64.whl"
-        }
-      ],
-      "properties": [
-        {
-          "name": "taucad:target",
-          "value": "darwin-arm64"
         }
       ]
     }

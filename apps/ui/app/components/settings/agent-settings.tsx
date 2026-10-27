@@ -43,7 +43,7 @@ export function AgentSettings(): React.JSX.Element {
             <SettingsItem settingId='show-credits'>
               <SettingRow
                 label='Show Credits'
-                description='Display the Tau credits charged for each message in the chat history'
+                description='Display the SinopiaCAD credits charged for each message in the chat history'
               >
                 <Switch aria-label='Show Credits' checked={showCredits} onCheckedChange={setShowCredits} />
               </SettingRow>

@@ -1,3 +1,14 @@
+import { DirectEditControls } from '#graphics/three/react/direct-edit-controls.jsx';
+import { directEditEdges, pickDirectEditEdge } from '#graphics/three/react/direct-edit-geometry.js';
+import type { DirectEditTool } from '#graphics/three/react/direct-edit-tool.js';
+import type { ModelPickResult } from '#graphics/three/utils/model-gpu-pick.js';
+import { fromRenderPoint } from '@taucad/spatial';
+import { PlanarFaceControls } from '#graphics/three/react/planar-face-controls.jsx';
+import { SketchControls } from '#graphics/three/react/sketch-controls.jsx';
+import type { SketchTool } from '#graphics/three/react/sketch-tool.js';
+import { ProducibilityOverlayMesh } from '#graphics/three/react/producibility-overlay.jsx';
+import type { ProducibilityOverlay } from '#graphics/three/react/producibility-overlay.types.js';
+import type { PlanarFaceTool } from '#graphics/three/react/planar-face-tool.js';
 import { installSectionClip, transferSectionClip } from '#graphics/three/materials/section-clip.js';
 import {
   createGltfSurfaceBatches,
@@ -20,16 +31,16 @@ import type {
   Material,
   Texture,
   Intersection,
-  Raycaster,
   BufferGeometry,
   Mesh,
   MeshPhysicalMaterial,
   InstancedMesh,
 } from 'three';
-import { Vector2, Box3, Vector3 } from 'three';
+import { Vector2, Box3, Vector3, Raycaster } from 'three';
 import { useFrame, useThree } from '@react-three/fiber';
 import type { ThreeEvent } from '@react-three/fiber';
 import { applyMatcap } from '#graphics/three/materials/gltf-matcap.js';
+import { applyPieceMaterialChoice } from '#graphics/three/materials/piece-material-override.js';
 import {
   applyModelMaterialAppearance,
   getOrCaptureModelMaterialAppearance,
@@ -332,6 +343,12 @@ export function restoreOriginalMaterials(scene: Group, saved: Map<number, Materi
 }
 
 type GltfMeshDisplayProperties = {
+  readonly planarFaceTool?: PlanarFaceTool;
+  readonly directEditTool?: DirectEditTool;
+  /** A sketch on the model (E4): while it is open, clicks draw on its plane instead of selecting. */
+  readonly sketchTool?: SketchTool;
+  /** The producibility veil the host asks for (E1): faces of a check, a draft map, a whole piece. */
+  readonly producibilityOverlay?: ProducibilityOverlay;
   /**
    * The GLTF file to load.
    */
@@ -1843,8 +1860,11 @@ export type ApplyModelComponentVisualStateToSceneOptions = Readonly<{
   > & {
     /** Parts the Kinematics pane points at; they light as a hovered part does. */
     readonly kinematicsHoveredComponentIds?: readonly string[];
+    /** The material each piece is dressed in; absent, every piece keeps the model's own. */
+    readonly materialByComponentId?: ModelInteractionUnitState['materialByComponentId'];
   };
   enableSurfaces: boolean;
+  /** Every edge. Off, only the selected or focused piece shows its edges. */
   enableLines: boolean;
 }>;
 
@@ -1913,7 +1933,10 @@ export function applyModelComponentVisualStateToScene({
     previous.modelVisualState.hiddenComponentIds !== modelVisualState.hiddenComponentIds ||
     previous.modelVisualState.isolatedComponentIds !== modelVisualState.isolatedComponentIds ||
     previous.modelVisualState.focusedComponentId !== modelVisualState.focusedComponentId ||
-    previous.modelVisualState.opacityByComponentId !== modelVisualState.opacityByComponentId;
+    previous.modelVisualState.opacityByComponentId !== modelVisualState.opacityByComponentId ||
+    previous.modelVisualState.materialByComponentId !== modelVisualState.materialByComponentId ||
+    // Without global edges, a selection change shows or hides the selected piece's edges.
+    (!enableLines && previous.modelVisualState.selectedComponentIds !== modelVisualState.selectedComponentIds);
   appliedAppearance.set(scene, {
     scene,
     componentManifest,
@@ -1947,17 +1970,24 @@ export function applyModelComponentVisualStateToScene({
       }
     });
   }
+  const materialByComponentId = modelVisualState.materialByComponentId ?? {};
   for (const object of inventory ?? currentObjects) {
     const isLine = isLineObject(object);
     const isSurface = isSurfaceObject(object);
-    const globallyVisible = isLine ? enableLines : isSurface ? enableSurfaces : true;
     const componentId = getObjectComponentId(object);
     if (!componentId) {
       if (applyAppearance && (isLine || isSurface)) {
-        object.visible = globallyVisible;
+        object.visible = isLine ? enableLines : isSurface ? enableSurfaces : true;
       }
       continue;
     }
+    const emphasis = resolveModelComponentEmphasisWithManifest(emphasisComponents, componentManifest, componentId);
+    // Edges are a drawing aid: with global edges off they stay on the piece being worked on, never on the rest.
+    const globallyVisible = isLine
+      ? enableLines || emphasis === 'selected' || emphasis === 'focused'
+      : isSurface
+        ? enableSurfaces
+        : true;
     const visualState = applyAppearance
       ? resolveComponentVisualStateWithManifest({
           componentId,
@@ -1972,7 +2002,6 @@ export function applyModelComponentVisualStateToScene({
       object.visible = globallyVisible && visualState.visible;
     }
 
-    const emphasis = resolveModelComponentEmphasisWithManifest(emphasisComponents, componentManifest, componentId);
     if (isLine) {
       // Edges share one base material per presentation, so emphasis is a per-object material
       // swap rather than a tint on the shared material (which would let the last-visited
@@ -1991,6 +2020,9 @@ export function applyModelComponentVisualStateToScene({
     }
 
     for (const material of visualState ? getObjectMaterials(object) : []) {
+      if (isSurface) {
+        applyPieceMaterialChoice(material, materialByComponentId[componentId]);
+      }
       const snapshot = getOrCaptureModelMaterialAppearance(material);
       applyModelMaterialAppearance(material, snapshot, visualState!.opacity);
     }
@@ -2038,6 +2070,10 @@ export function applyGltfEdgeThemeColor(scene: Group, edgeColor: number): void {
  */
 export function GltfMesh({
   gltfFile,
+  planarFaceTool,
+  directEditTool,
+  sketchTool,
+  producibilityOverlay,
   sourceFile,
   geometryHash,
   presentationRevision = 0,
@@ -2081,9 +2117,20 @@ export function GltfMesh({
   const unitId = presentation?.unitId ?? requestedUnitId;
   const sectionBarrierRef = useRef<GltfPresentationBarrier>(sectionView.isActive ? 'analysis-ready' : 'display-ready');
   const materialOptionsRef = useRef({ enableMatcap, matcapTint, enableLines });
-  const needsMeasurementFeatures = useGraphicsSelector(
+  const hasMeasurementDemand = useGraphicsSelector(
     (state) => state.context.isMeasureActive || state.context.measurements.some((measurement) => measurement.isPinned),
   );
+  const activePlanarFaceTool = componentManifest?.mechanism ? undefined : planarFaceTool;
+  const activeDirectEditTool = componentManifest?.mechanism ? undefined : directEditTool;
+  const activeSketchTool = componentManifest?.mechanism ? undefined : sketchTool;
+  const isSubElementSelected =
+    activePlanarFaceTool?.selection !== undefined || (activeDirectEditTool?.selection?.edgeIds?.length ?? 0) > 0;
+  const needsMeasurementFeatures =
+    hasMeasurementDemand ||
+    activePlanarFaceTool !== undefined ||
+    activeDirectEditTool !== undefined ||
+    activeSketchTool !== undefined ||
+    (producibilityOverlay?.pieces.length ?? 0) > 0;
   const measurementDemandRef = useRef(needsMeasurementFeatures);
   useLayoutEffect(() => {
     measurementDemandRef.current = needsMeasurementFeatures;
@@ -2156,7 +2203,11 @@ export function GltfMesh({
       }
 
       // The GPU pick answers a pointer ray; another ray, or a renderer that cannot pick, asks the trees.
-      const gpu = modelPick.pick(raycaster);
+      // GPU ID/depth hits identify a piece but carry no triangle faceIndex. Native face
+      // editing requires the exact clipping-aware BVH hit; its pending result already
+      // replays the pointer after an off-thread tree becomes ready.
+      const gpu: ModelPickResult =
+        (activePlanarFaceTool ?? activeDirectEditTool) ? { status: 'unavailable' } : modelPick.pick(raycaster);
       let hit: Intersection<Mesh> | undefined;
       let pending: boolean;
       if (gpu.status === 'unavailable') {
@@ -2194,7 +2245,15 @@ export function GltfMesh({
     return () => {
       scene.raycast = previousRaycast;
     };
-  }, [getModelPickableMeshes, graphicsActor, modelPick, renderFrame, scene]);
+  }, [
+    activePlanarFaceTool,
+    activeDirectEditTool,
+    getModelPickableMeshes,
+    graphicsActor,
+    modelPick,
+    renderFrame,
+    scene,
+  ]);
 
   const handleKinematicsPointerDown = useKinematicsViewer({
     unitId,
@@ -2460,7 +2519,8 @@ export function GltfMesh({
       scene,
       componentManifest,
       inventory: getComponentInventory(scene),
-      modelVisualState,
+      // A picked face or picked edges carry their own highlight; washing the whole piece would hide which one it is.
+      modelVisualState: isSubElementSelected ? { ...modelVisualState, selectedComponentIds: [] } : modelVisualState,
       enableSurfaces,
       enableLines,
     });
@@ -2475,6 +2535,7 @@ export function GltfMesh({
     enableSurfaces,
     graphicsBackendThree,
     invalidate,
+    isSubElementSelected,
     matcapTint,
     modelVisualState,
     presentation,
@@ -2623,7 +2684,75 @@ export function GltfMesh({
         event.stopPropagation();
         return;
       }
+      // An open sketch owns the clicks on its plane, the model included: drawing never selects a piece.
+      if (activeSketchTool) {
+        event.stopPropagation();
+        return;
+      }
       const graphicsContext = graphicsActor.getSnapshot().context;
+      if (
+        activePlanarFaceTool &&
+        !graphicsContext.suppressNextModelPointerClick &&
+        graphicsContext.modelPointerClickSuppressionReasons.length === 0 &&
+        !hasModelHitBlockingSceneUiHit(event.intersections)
+      ) {
+        const features = event.object.userData['measurementFeatures'] as GltfMeasurementFeatures | undefined;
+        const offset = event.faceIndex === undefined || event.faceIndex === null ? undefined : event.faceIndex * 3;
+        const face =
+          offset === undefined
+            ? undefined
+            : features?.faces?.find(
+                (candidate) => offset >= candidate.start && offset < candidate.start + candidate.count,
+              );
+        const faceId = face ? Number(face.id.slice('face:'.length)) : Number.NaN;
+        if (features && Number.isInteger(faceId) && presentation) {
+          event.stopPropagation();
+          const point = fromRenderPoint({ renderFrame, point: [event.point.x, event.point.y, event.point.z] });
+          activePlanarFaceTool.onPick({
+            componentId: features.componentId,
+            faceId,
+            point,
+            artifactKey: presentation.key,
+          });
+          return;
+        }
+      }
+      if (
+        activeDirectEditTool &&
+        !graphicsContext.suppressNextModelPointerClick &&
+        graphicsContext.modelPointerClickSuppressionReasons.length === 0 &&
+        !hasModelHitBlockingSceneUiHit(event.intersections) &&
+        presentation
+      ) {
+        event.stopPropagation();
+        const componentId = getObjectComponentId(event.object);
+        const edgeMode = activeDirectEditTool.mode === 'fillet' || activeDirectEditTool.mode === 'chamfer';
+        if (edgeMode) {
+          const edge = pickDirectEditEdge({
+            edges: directEditEdges(presentation.scene),
+            raycaster: Object.assign(new Raycaster(), { ray: event.ray.clone() }),
+            camera: event.camera,
+            height: size.height,
+            meshes: getModelPickableMeshes(),
+            clipping: resolveSectionViewRaycastClip(graphicsContext, renderFrame),
+          });
+          if (edge) {
+            activeDirectEditTool.onPick({
+              componentId: edge.componentId,
+              edgeId: edge.edgeId,
+              point: fromRenderPoint({ renderFrame, point: [edge.point.x, edge.point.y, edge.point.z] }),
+              artifactKey: presentation.key,
+            });
+          }
+        } else if (componentId) {
+          activeDirectEditTool.onPick({
+            componentId,
+            point: fromRenderPoint({ renderFrame, point: [event.point.x, event.point.y, event.point.z] }),
+            artifactKey: presentation.key,
+          });
+        }
+        return;
+      }
       const clickAction = resolveModelPointerClickAction({
         intersections: event.intersections,
         modelComponentId: getObjectComponentId(event.object),
@@ -2658,7 +2787,17 @@ export function GltfMesh({
         graphicsActor.send(dispatchEvent);
       }
     },
-    [graphicsActor, unitId],
+    [
+      activePlanarFaceTool,
+      activeDirectEditTool,
+      activeSketchTool,
+      graphicsActor,
+      presentation,
+      renderFrame,
+      unitId,
+      size.height,
+      getModelPickableMeshes,
+    ],
   );
 
   const resolveContextMenuActionFromEvent = useCallback(
@@ -2745,6 +2884,10 @@ export function GltfMesh({
 
   const handlePointerMissed = useCallback(() => {
     lastHoveredComponentIdRef.current = undefined;
+    // A click beside the model while sketching is a point of the sketch, not a deselection.
+    if (activeSketchTool) {
+      return;
+    }
     if (!modelVisualState.isViewerHoverSuppressed) {
       graphicsActor.send({
         type: 'setHoveredModelComponent',
@@ -2773,23 +2916,37 @@ export function GltfMesh({
       unitId,
       source: 'viewer',
     });
-  }, [graphicsActor, modelVisualState.isViewerHoverSuppressed, unitId]);
+  }, [activeSketchTool, graphicsActor, modelVisualState.isViewerHoverSuppressed, unitId]);
 
   if (!scene) {
     return undefined;
   }
 
   return (
-    <group matrix={assetMatrix} matrixAutoUpdate={false}>
-      <primitive
-        object={scene}
-        onPointerMove={handlePointerMove}
-        onPointerDown={handlePointerDown}
-        onPointerOut={handlePointerOut}
-        onClick={handleClick}
-        onContextMenu={handleContextMenu}
-        onPointerMissed={handlePointerMissed}
-      />
-    </group>
+    <>
+      <ProducibilityOverlayMesh overlay={producibilityOverlay} artifactKey={presentation.key} scene={scene} />
+      {activePlanarFaceTool ? (
+        <PlanarFaceControls tool={activePlanarFaceTool} artifactKey={presentation.key} scene={scene} />
+      ) : null}
+      {activeSketchTool ? (
+        <SketchControls tool={activeSketchTool} scene={scene} getMeshes={getModelPickableMeshes} />
+      ) : null}
+      {/* A tool's handles belong to the piece being worked on: with nothing selected they would float inside the model. */}
+      {activeDirectEditTool &&
+      (modelVisualState.selectedComponentIds.length > 0 || modelVisualState.focusedComponentId !== undefined) ? (
+        <DirectEditControls tool={activeDirectEditTool} artifactKey={presentation.key} scene={scene} />
+      ) : null}
+      <group matrix={assetMatrix} matrixAutoUpdate={false}>
+        <primitive
+          object={scene}
+          onPointerMove={handlePointerMove}
+          onPointerDown={handlePointerDown}
+          onPointerOut={handlePointerOut}
+          onClick={handleClick}
+          onContextMenu={handleContextMenu}
+          onPointerMissed={handlePointerMissed}
+        />
+      </group>
+    </>
   );
 }

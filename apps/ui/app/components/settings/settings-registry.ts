@@ -190,7 +190,7 @@ const settingsCatalog = [
       },
       {
         id: 'tau-host',
-        label: 'Tau Host',
+        label: 'SinopiaCAD Host',
         description: 'Pair and manage remote compute devices',
         keywords: ['local', 'remote', 'rendering', 'revoke'],
       },
@@ -276,7 +276,7 @@ const settingsCatalog = [
       {
         id: 'show-credits',
         label: 'Show Credits',
-        description: 'Display the Tau credits charged for each message in the chat history',
+        description: 'Display the SinopiaCAD credits charged for each message in the chat history',
         keywords: ['metadata', 'cost'],
       },
       {
@@ -315,8 +315,8 @@ const settingsCatalog = [
       },
       {
         id: 'tau-cloud-projects',
-        label: 'Tau Cloud Projects',
-        description: 'Bring your Tau Cloud projects to this device when you sign in',
+        label: 'SinopiaCAD Cloud Projects',
+        description: 'Bring your SinopiaCAD Cloud projects to this device when you sign in',
         keywords: ['sync', 'backup', 'download', 'materialize', 'sign in'],
       },
     ],

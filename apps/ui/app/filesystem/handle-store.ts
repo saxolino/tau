@@ -309,7 +309,9 @@ async function openHandleDbRaw(): Promise<IDBDatabase> {
     // "Opening Home" shell for as long as the other tab lives. Fail loudly instead.
     request.addEventListener('blocked', () => {
       blocked = true;
-      reject(new Error(`Opening ${dbName} is blocked by another Tau tab on an older version; close it and reload.`));
+      reject(
+        new Error(`Opening ${dbName} is blocked by another SinopiaCAD tab on an older version; close it and reload.`),
+      );
     });
 
     request.addEventListener('success', () => {

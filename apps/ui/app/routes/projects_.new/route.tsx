@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react';
+import { useTranslation } from '#i18n/translate.js';
 import type { MetaFunction } from 'react-router';
 import { PageContent } from '#components/layout/page-content.js';
 import { PageHeader } from '#components/layout/page-header.js';
@@ -84,6 +85,7 @@ function useProjectCreation() {
 }
 
 export default function ProjectsNew(): React.JSX.Element {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const { createProject, isCreating } = useProjectCreation();
   const location = useProjectCreationLocation();
@@ -109,9 +111,9 @@ export default function ProjectsNew(): React.JSX.Element {
         }
         return;
       }
-      toast.error('Failed to create project. Please try again.');
+      toast.error(t('library.createFailed'));
     }
-  }, [createProject, location, presentLocationError, projectDescription, projectName]);
+  }, [createProject, location, presentLocationError, projectDescription, projectName, t]);
 
   const handleCancel = useCallback(() => {
     void navigate('/');
@@ -124,29 +126,29 @@ export default function ProjectsNew(): React.JSX.Element {
     { key: 'Enter' },
     useCallback(() => {
       if (isCreateButtonDisabled) {
-        toast.error('Please fill in all fields.');
+        toast.error(t('library.fillAll'));
       } else {
         void handleCreateProject();
       }
-    }, [isCreateButtonDisabled, handleCreateProject]),
+    }, [isCreateButtonDisabled, handleCreateProject, t]),
   );
 
   return (
     <PageContent layout='fill'>
-      <PageHeader title='New project' />
+      <PageHeader title={t('library.newTitle')} />
 
       <div className='md:flex md:min-h-0 md:flex-1 md:flex-col md:overflow-hidden'>
         <Card className='flex flex-col bg-sidebar/70'>
           <CardContent className='shrink-0 space-y-4 py-6'>
             <div className='flex flex-col gap-4'>
               <div className='flex-1 space-y-2'>
-                <Label htmlFor='project-name'>Project Name *</Label>
+                <Label htmlFor='project-name'>{t('library.nameLabel')}</Label>
                 <Input
                   autoFocus
                   autoComplete='off'
                   id='project-name'
                   value={projectName}
-                  placeholder='Enter your project name…'
+                  placeholder={t('library.namePlaceholder')}
                   maxLength={100}
                   onChange={(event) => {
                     setProjectName(event.target.value);
@@ -154,11 +156,11 @@ export default function ProjectsNew(): React.JSX.Element {
                 />
               </div>
               <div className='flex-1 space-y-2'>
-                <Label htmlFor='project-description'>Description (optional)</Label>
+                <Label htmlFor='project-description'>{t('library.descriptionLabel')}</Label>
                 <Input
                   id='project-description'
                   value={projectDescription}
-                  placeholder="Describe what you're building…"
+                  placeholder={t('library.descriptionPlaceholder')}
                   maxLength={500}
                   onChange={(event) => {
                     setProjectDescription(event.target.value);
@@ -167,16 +169,14 @@ export default function ProjectsNew(): React.JSX.Element {
               </div>
             </div>
             <div className='space-y-2'>
-              <Label>Location</Label>
+              <Label>{t('library.locationLabel')}</Label>
               {location.shouldShowPicker ? (
                 <WorkspaceSelector state={location} variant='field' />
               ) : (
                 <p className='text-sm'>{homeLocationLabel}</p>
               )}
               {isDesktopTarget() ? undefined : (
-                <p className='text-xs text-muted-foreground'>
-                  Browser storage can be cleared or evicted. Export important work.
-                </p>
+                <p className='text-xs text-muted-foreground'>{t('library.storageWarning')}</p>
               )}
             </div>
           </CardContent>
@@ -185,10 +185,10 @@ export default function ProjectsNew(): React.JSX.Element {
 
       <div className='flex shrink-0 flex-col gap-3 pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:flex-row sm:justify-between sm:gap-4'>
         <Button variant='outline' disabled={isCreating} onClick={handleCancel}>
-          Cancel
+          {t('library.cancel')}
         </Button>
         <Button disabled={isCreateButtonDisabled} className='min-w-30' onClick={handleCreateProject}>
-          {isCreating ? 'Creating…' : `Create Project ${formattedKeyCombination}`}
+          {isCreating ? t('library.creating') : t('library.createProject', { shortcut: formattedKeyCombination })}
         </Button>
       </div>
     </PageContent>

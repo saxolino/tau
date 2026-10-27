@@ -75,7 +75,7 @@ export const flagRegistry = {
   tauDebug: {
     showInExperimental: true,
     schema: z.boolean().default(tauDebugDefault),
-    label: 'Tau Debug',
+    label: 'SinopiaCAD Debug',
     description: 'Enable in-app debug surfaces (e2e diagnostic panels, geometry inspectors).',
   },
 } as const satisfies Record<string, FlagDefinition>;

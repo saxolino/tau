@@ -9,7 +9,7 @@ const runtimeAuthFetch: typeof globalThis.fetch = async (input, init) => {
    * which serves no Tau accounts. Better Auth stays wired but inert: its calls fail here, as against an unreachable
    * API, so its session reads as undetermined and nothing reaches the function. */
   if (readSinopiaConfig() !== undefined) {
-    throw new TypeError('SinopiaCAD signs in with Sinopia, not with a Tau account.');
+    throw new TypeError('SinopiaCAD signs in with Sinopia, not with a SinopiaCAD account.');
   }
   const apiBaseURL = requireClientEnvironment('TAU_API_URL').replace(/\/$/u, '');
   const requestUrl = new URL(input instanceof Request ? input.url : input);

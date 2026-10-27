@@ -82,7 +82,7 @@ describe('desktop /s/:slug', () => {
     expect(await screen.findByText('workbench: Persisted project')).toBeInTheDocument();
   });
 
-  it('opens a Tau publication through the API the web loader calls', async () => {
+  it('opens a SinopiaCAD publication through the API the web loader calls', async () => {
     const fetchMock = vi.fn(async () => Response.json(publicationBody));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -121,7 +121,7 @@ describe('desktop /s/:slug', () => {
     expect(await screen.findByText('Sign in to open this link.')).toBeInTheDocument();
     expect(
       screen.getByText(
-        'Sign-in opens in your browser. Tau Desktop keeps the link and opens it once you are signed in.',
+        'Sign-in opens in your browser. SinopiaCAD Desktop keeps the link and opens it once you are signed in.',
       ),
     ).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Sign in' })).toHaveAttribute(
@@ -151,7 +151,7 @@ describe('desktop /s/:slug', () => {
 
     mountAt('pub_bare');
 
-    expect(await screen.findByText('Tau cannot open this link.')).toBeInTheDocument();
+    expect(await screen.findByText('SinopiaCAD cannot open this link.')).toBeInTheDocument();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

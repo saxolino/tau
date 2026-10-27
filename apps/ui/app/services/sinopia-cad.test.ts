@@ -86,11 +86,31 @@ beforeEach(() => {
 
 describe('Sinopia CAD persistence', () => {
   it('creates an owned accessories project with a separate UUID model identity', async () => {
-    transport.fetch.mockResolvedValueOnce(json(null, 201));
+    transport.fetch
+      .mockResolvedValueOnce(json({ current_vertical: 'accessories' }))
+      .mockResolvedValueOnce(json(null, 201));
     const result = await createSinopiaCadLink('Ring');
-    expect(requests()[0]?.body).toMatchObject({ name: 'Ring', vertical: 'accessories', user_id: userId });
+    expect(requests()[1]?.body).toMatchObject({ name: 'Ring', vertical: 'accessories', user_id: userId });
     expect(result.modelId).toMatch(/^[0-9a-f-]{36}$/u);
     expect(result.projectId).not.toBe(result.modelId);
+  });
+  it('creates the project in the vertical the person is working in on Sinopia, so a heel is born in Calzature', async () => {
+    transport.fetch
+      .mockResolvedValueOnce(json({ current_vertical: 'footwear' }))
+      .mockResolvedValueOnce(json(null, 201));
+    await createSinopiaCadLink('Tacco');
+    expect(requests()[0]?.url).toContain('/rest/v1/profiles');
+    expect(requests()[0]?.url).toContain(`id=eq.${userId}`);
+    expect(requests()[1]?.body).toMatchObject({ name: 'Tacco', vertical: 'footwear' });
+  });
+  it.each([
+    { name: 'no vertical chosen yet', profile: json({ current_vertical: null }) },
+    { name: 'an unknown vertical', profile: json({ current_vertical: 'spaceships' }) },
+    { name: 'a profile that cannot be read', profile: json({ message: 'boom' }, 500) },
+  ])('falls back to accessories with $name', async ({ profile }) => {
+    transport.fetch.mockResolvedValueOnce(profile).mockResolvedValueOnce(json(null, 201));
+    await createSinopiaCadLink('Ring');
+    expect(requests()[1]?.body).toMatchObject({ vertical: 'accessories' });
   });
   it('reuses only a verified owned origin project and performs no project insert', async () => {
     transport.fetch.mockResolvedValueOnce(json({ id: link.projectId }));
@@ -118,15 +138,16 @@ describe('Sinopia CAD persistence', () => {
   it('verifies an earlier attempt’s named project instead of inserting a second one', async () => {
     const ids = await sinopiaCadLinkIds(userId, 'proj_0123456789ABCDEFGHIJK');
     transport.fetch
+      .mockResolvedValueOnce(json({ current_vertical: 'accessories' }))
       .mockResolvedValueOnce(json({ code: '23505', message: 'duplicate key value violates unique constraint' }, 409))
       .mockResolvedValueOnce(json({ id: ids.projectId }));
     const created = await createSinopiaCadLink('Collana col ramo', undefined, ids);
     expect(created).toEqual({ ...ids, userId, baseRevisionId: null });
-    expect(requests().map((request) => request.method)).toEqual(['POST', 'GET']);
-    expect(requests()[0]?.body).toMatchObject({ id: ids.projectId, name: 'Collana col ramo', vertical: 'accessories' });
-    expect(requests()[1]?.url).toContain(`id=eq.${ids.projectId}`);
-    expect(requests()[1]?.url).toContain(`user_id=eq.${userId}`);
-    expect(requests()[1]?.url).toContain('deleted_at=is.null');
+    expect(requests().map((request) => request.method)).toEqual(['GET', 'POST', 'GET']);
+    expect(requests()[1]?.body).toMatchObject({ id: ids.projectId, name: 'Collana col ramo', vertical: 'accessories' });
+    expect(requests()[2]?.url).toContain(`id=eq.${ids.projectId}`);
+    expect(requests()[2]?.url).toContain(`user_id=eq.${userId}`);
+    expect(requests()[2]?.url).toContain('deleted_at=is.null');
   });
   it('fails without a link when the named project is not this account’s', async () => {
     const ids = await sinopiaCadLinkIds(userId, 'proj_0123456789ABCDEFGHIJK');
@@ -162,7 +183,7 @@ describe('Sinopia CAD persistence', () => {
     expect(first).toEqual({ ...ids, userId, baseRevisionId: null });
     expect(again).toEqual(first);
     expect(inserts).toBe(1);
-    expect(requests()[0]?.body).toMatchObject({
+    expect(requests().find((request) => request.method === 'POST')?.body).toMatchObject({
       id: ids.projectId,
       user_id: userId,
       name: 'Collana col ramo',

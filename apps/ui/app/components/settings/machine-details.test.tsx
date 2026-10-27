@@ -44,7 +44,7 @@ describe('MachineDetails', () => {
       'Axes X, Y, Z',
       'Components 12 components',
       'Processes FFF 256 × 256 × 256 mm · CoreXY',
-      'Jobs Stored · Started by Tau',
+      'Jobs Stored · Started by SinopiaCAD',
       'Stop Motion halts at once, heaters turn off, the position is kept.',
       'Controls 3 qualified · 14 designed',
       'Observation freshness 4 groups · 15 s to 30 s',
@@ -105,7 +105,7 @@ describe('MachineDetails', () => {
 
     expect(factsOf(openPart('Jobs'))).toEqual([
       'Delivery: Stored on the machine',
-      'Start: Tau starts the run',
+      'Start: SinopiaCAD starts the run',
       'Accepts: application/vnd.bambulab.gcode-3mf',
       'Who may start: A person, or an agent a person approved',
       'Vouched before a start: The build plate is clear',

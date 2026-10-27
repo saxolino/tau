@@ -47,10 +47,10 @@ describe('describeRevisionFailure', () => {
   /* D91: a rename the effect refuses before writing anything says why, never "already exists". */
   it('should say why a rename of a linked or backed-up branch is refused', () => {
     expect(describeRevisionFailure('branch', 'BRANCH_RENAME_LINKED').description).toBe(
-      'This branch has its own set of files open, so Tau can’t rename it. Make a new branch from it instead.',
+      'This branch has its own set of files open, so SinopiaCAD can’t rename it. Make a new branch from it instead.',
     );
     expect(describeRevisionFailure('branch', 'BRANCH_RENAME_PUSHED').description).toBe(
-      'This branch is already backed up under its name, and Tau can’t remove a name there. Make a new branch from it instead.',
+      'This branch is already backed up under its name, and SinopiaCAD can’t remove a name there. Make a new branch from it instead.',
     );
   });
 
@@ -85,7 +85,7 @@ describe('describeRevisionFailure', () => {
   it('phrases a turn that recorded nothing, never in the machine’s own words', () => {
     expect(describeRevisionFailure('turn', 'BASE_CUT_FAILED')).toEqual({
       title: 'Nothing was saved for that change',
-      description: 'Tau could not save this project’s earlier edits first. Try sending that again.',
+      description: 'SinopiaCAD could not save this project’s earlier edits first. Try sending that again.',
     });
     expect(describeRevisionFailure('turn', 'LEASE_UNAVAILABLE').description).toContain('Another window');
     expect(describeRevisionFailure('turn', undefined).description).toBe(revisionFailureCopy.turn.fallback);
@@ -108,7 +108,7 @@ describe('describeRevisionFailure', () => {
   it('falls back per subject for a failure that carries no code at all', () => {
     expect(describeRevisionFailure('save', undefined)).toEqual({
       title: 'That change could not be saved',
-      description: 'Tau could not record this change. Reload the page and try again.',
+      description: 'SinopiaCAD could not record this change. Reload the page and try again.',
     });
     expect(describeRevisionFailure('branch', 'SOMETHING_NEW').description).toBe(revisionFailureCopy.branch.fallback);
   });
@@ -162,7 +162,11 @@ describe('a restore whose files are back but not recorded (W0 N1, M1)', () => {
 
 describe('what the Hosted Remote answers (W2a, W9)', () => {
   it.each([
-    ['backup', 'REMOTE_DAMAGED', /has to repair this project’s copy on Tau Cloud.*Nothing on this device is lost/u],
+    [
+      'backup',
+      'REMOTE_DAMAGED',
+      /has to repair this project’s copy on SinopiaCAD Cloud.*Nothing on this device is lost/u,
+    ],
     ['removeName', 'GIT_RATE_LIMITED', /Wait a minute, then try again/u],
     ['removeName', 'GIT_LEASE_OWNER_BUSY', /Try again in a moment/u],
     ['removeName', 'GIT_HYDRATE_BUDGET_EXHAUSTED', /Try again tomorrow/u],

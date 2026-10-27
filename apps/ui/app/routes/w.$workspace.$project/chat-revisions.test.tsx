@@ -13,7 +13,14 @@ const client = vi.hoisted(() => ({ diff: vi.fn(async () => []), compare: vi.fn()
 const deliveries = vi.hoisted(() => ({ events: [] as VersionEvent[], error: undefined as string | undefined }));
 vi.mock('#hooks/use-sinopia-send-events.js', () => ({ useSinopiaSendEvents: () => deliveries }));
 vi.mock('#hooks/use-sinopia-cad-conflicts.js', () => ({ SinopiaConflictVersions: () => null }));
-vi.mock('#hooks/use-project.js', () => ({ useProject: () => ({ projectId: 'p' }) }));
+vi.mock('#hooks/use-project.js', async () => {
+  const { createActor, createMachine } = await import('xstate');
+  // The versions name pieces from the open model; here there is none.
+  const modelInteractionRef = createActor(
+    createMachine({ context: { unitOrder: [] as string[], unitsById: {} as Record<string, never> } }),
+  ).start();
+  return { useProject: () => ({ projectId: 'p', modelInteractionRef }) };
+});
 vi.mock('#hooks/use-revisions.js', () => ({
   useRevisions: () => ({ revisions: state.revisions, headRevisionId: 'current', hasOlder: false, isLoading: false }),
   useWithRestoreTargets: (cards: readonly RevisionCard[]) => cards,

@@ -86,6 +86,90 @@ describe('ProjectWorkspaceProvider', () => {
     keyboard.useKeybinding.mockImplementation(stubKeybinding);
   });
 
+  it('should keep the lanes and the tools open together: there is one work mode', () => {
+    render(
+      <ProjectWorkspaceProvider>
+        <Probe />
+      </ProjectWorkspaceProvider>,
+    );
+    expect(workspace.assistantEntryOpen).toBe(true);
+    expect(workspace.assistantExpanded).toBe(false);
+    expect(send).not.toHaveBeenCalled();
+    const slot = document.createElement('div');
+    act(() => {
+      workspace.registerManualViewer('view-1', true, true);
+      workspace.setInspectorSlot(slot);
+    });
+    expect(workspace.inspectorSlot).toBe(slot);
+    // Opening Misure or the right lane never takes the tools away, and never closes the other lane.
+    act(() => {
+      workspace.setWorkbenchOpen(true);
+      workspace.setChatOpen(true);
+    });
+    expect(workspace.inspectorSlot).toBe(slot);
+    expect(send).toHaveBeenCalledWith({
+      type: 'setPanelState',
+      panelState: { desktopLayout: { workbenchOpen: true, compactAuxiliary: 'workbench' } },
+    });
+    expect(send).toHaveBeenCalledWith({
+      type: 'setPanelState',
+      panelState: { desktopLayout: { chatOpen: true, compactAuxiliary: 'chat' } },
+    });
+    act(() => {
+      workspace.setAssistantExpanded(true);
+    });
+    expect(workspace.assistantExpanded).toBe(true);
+    expect(workspace.inspectorSlot).toBe(slot);
+  });
+
+  it('should publish the face or edges the tools picked, and a proportional scaler, until they are withdrawn', async () => {
+    render(
+      <ProjectWorkspaceProvider>
+        <Probe />
+      </ProjectWorkspaceProvider>,
+    );
+    const scale = vi.fn(async () => true);
+    act(() => {
+      workspace.setInspectorSubSelection({ kind: 'face', componentId: 'frame', direction: 'top' });
+      workspace.setScalePiece(scale);
+    });
+    expect(workspace.inspectorSubSelection).toEqual({ kind: 'face', componentId: 'frame', direction: 'top' });
+    await expect(workspace.scalePiece?.('frame', 1.1)).resolves.toBe(true);
+    expect(scale).toHaveBeenCalledExactlyOnceWith('frame', 1.1);
+    act(() => {
+      workspace.setInspectorSubSelection(undefined);
+      workspace.setScalePiece(undefined);
+    });
+    expect(workspace.inspectorSubSelection).toBeUndefined();
+    expect(workspace.scalePiece).toBeUndefined();
+  });
+
+  it('should scope the manual inspector to the active viewer and preserve another viewer on cleanup', () => {
+    render(
+      <ProjectWorkspaceProvider>
+        <Probe />
+      </ProjectWorkspaceProvider>,
+    );
+    let unregisterInactive: () => void = () => undefined;
+    act(() => {
+      workspace.registerManualViewer('view-1', true, true);
+      unregisterInactive = workspace.registerManualViewer('view-2', true, false);
+    });
+    expect(workspace.manualViewId).toBe('view-1');
+    act(() => {
+      unregisterInactive();
+    });
+    expect(workspace.manualAvailable).toBe(true);
+    expect(workspace.manualViewId).toBe('view-1');
+    act(() => {
+      workspace.registerManualViewer('view-1', true, false);
+      workspace.registerManualViewer('view-3', false, true);
+    });
+    // A newly active unsupported viewer owns the tools rather than enabling a stale inspector.
+    expect(workspace.manualViewId).toBe('view-3');
+    expect(workspace.manualAvailable).toBe(false);
+  });
+
   it.each(['replace', 'gap', 'moved'] as const)(
     'should preserve recovery focus across header %s without stealing it',
     (mode) => {

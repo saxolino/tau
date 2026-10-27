@@ -168,7 +168,7 @@ export const syncCopy = (sync: SyncFacet, remote?: RemoteFacet): string | undefi
             : isGithubRemote(remote)
               ? 'GitHub'
               : remote.kind === 'tau'
-                ? 'Tau Cloud'
+                ? 'SinopiaCAD Cloud'
                 : 'The remote';
         return `Backed up · ${refuser} refused access`;
       }
@@ -386,7 +386,7 @@ export const arrivedSentence = (card: RevisionCard | undefined, remote?: RemoteF
     return `${name} arrived from another session`;
   }
   return remote?.kind === 'tau'
-    ? `${name} arrived from ${card.actor} on Tau Cloud`
+    ? `${name} arrived from ${card.actor} on SinopiaCAD Cloud`
     : `${name} arrived from ${card.actor}`;
 };
 

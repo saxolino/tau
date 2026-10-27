@@ -46,6 +46,7 @@
     "./cad/part-preview-image": "./src/cad/part-preview-image.tsx",
     "./cad/part-properties-panel": "./src/cad/part-properties-panel.tsx",
     "./cad/part-quantities": "./src/cad/part-quantities.ts",
+    "./cad/piece-materials": "./src/cad/piece-materials.ts",
     "./cad/part-thumbnail-state": "./src/cad/part-thumbnail-state.ts",
     "./cad/section-tool-row": "./src/cad/section-tool-row.tsx",
     "./cad/section-view-control": "./src/cad/section-view-control.tsx",
@@ -69,6 +70,7 @@
     "./graphics/three/post-processing-settings": "./src/graphics/three/post-processing-settings.ts",
     "./graphics/three/react/exact-measurement": "./src/graphics/three/react/exact-measurement.tsx",
     "./graphics/three/react/gltf-mesh": "./src/graphics/three/react/gltf-mesh.tsx",
+    "./graphics/three/react/producibility-overlay.types": "./src/graphics/three/react/producibility-overlay.types.ts",
     "./graphics/three/render-frame-timing": "./src/graphics/three/render-frame-timing.ts",
     "./graphics/three/render-loop-observer": "./src/graphics/three/render-loop-observer.ts",
     "./graphics/three/renderer": "./src/graphics/three/renderer.ts",
@@ -121,7 +123,11 @@
     "./parameters/rjsf-validator": "./src/parameters/rjsf-validator.ts",
     "./services/graphics-camera-registry": "./src/services/graphics-camera-registry.ts",
     "./utils/inspect-glb": "./src/utils/inspect-glb.ts",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./cad/planar-face-tool": "./src/graphics/three/react/planar-face-tool.ts",
+    "./cad/direct-edit-tool": "./src/graphics/three/react/direct-edit-tool.ts",
+    "./cad/sketch-tool": "./src/graphics/three/react/sketch-tool.ts",
+    "./cad/sketch-geometry": "./src/graphics/three/react/sketch-geometry.ts"
   },
   "publishConfig": {
     "access": "public",
@@ -180,6 +186,11 @@
         "types": "./dist/cad/part-quantities.d.mts",
         "import": "./dist/cad/part-quantities.mjs",
         "default": "./dist/cad/part-quantities.mjs"
+      },
+      "./cad/piece-materials": {
+        "types": "./dist/cad/piece-materials.d.mts",
+        "import": "./dist/cad/piece-materials.mjs",
+        "default": "./dist/cad/piece-materials.mjs"
       },
       "./cad/part-thumbnail-state": {
         "types": "./dist/cad/part-thumbnail-state.d.mts",
@@ -295,6 +306,11 @@
         "types": "./dist/graphics/three/react/gltf-mesh.d.mts",
         "import": "./dist/graphics/three/react/gltf-mesh.mjs",
         "default": "./dist/graphics/three/react/gltf-mesh.mjs"
+      },
+      "./graphics/three/react/producibility-overlay.types": {
+        "types": "./dist/graphics/three/react/producibility-overlay.types.d.mts",
+        "import": "./dist/graphics/three/react/producibility-overlay.types.mjs",
+        "default": "./dist/graphics/three/react/producibility-overlay.types.mjs"
       },
       "./graphics/three/render-frame-timing": {
         "types": "./dist/graphics/three/render-frame-timing.d.mts",
@@ -556,7 +572,27 @@
         "import": "./dist/utils/inspect-glb.mjs",
         "default": "./dist/utils/inspect-glb.mjs"
       },
-      "./package.json": "./package.json"
+      "./package.json": "./package.json",
+      "./cad/planar-face-tool": {
+        "types": "./dist/graphics/three/react/planar-face-tool.d.mts",
+        "import": "./dist/graphics/three/react/planar-face-tool.mjs",
+        "default": "./dist/graphics/three/react/planar-face-tool.mjs"
+      },
+      "./cad/direct-edit-tool": {
+        "types": "./dist/graphics/three/react/direct-edit-tool.d.mts",
+        "import": "./dist/graphics/three/react/direct-edit-tool.mjs",
+        "default": "./dist/graphics/three/react/direct-edit-tool.mjs"
+      },
+      "./cad/sketch-tool": {
+        "types": "./dist/graphics/three/react/sketch-tool.d.mts",
+        "import": "./dist/graphics/three/react/sketch-tool.mjs",
+        "default": "./dist/graphics/three/react/sketch-tool.mjs"
+      },
+      "./cad/sketch-geometry": {
+        "types": "./dist/graphics/three/react/sketch-geometry.d.mts",
+        "import": "./dist/graphics/three/react/sketch-geometry.mjs",
+        "default": "./dist/graphics/three/react/sketch-geometry.mjs"
+      }
     },
     "imports": {}
   },

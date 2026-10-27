@@ -1,0 +1,2201 @@
+{
+  "versione": 1,
+  "modello": "claude-sonnet-5-5",
+  "schemaUscita": {
+    "type": "object",
+    "properties": {
+      "famiglia": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "enum": [
+              "tacco",
+              "fondo_semplice",
+              "fibbia",
+              "occhiello",
+              "borchia",
+              "placca",
+              "puntale",
+              "anello",
+              "pendente",
+              "libero",
+              "non_modellabile"
+            ]
+          },
+          "confidenza": {
+            "type": "number"
+          },
+          "alternative": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "enum": [
+                    "tacco",
+                    "fondo_semplice",
+                    "fibbia",
+                    "occhiello",
+                    "borchia",
+                    "placca",
+                    "puntale",
+                    "anello",
+                    "pendente",
+                    "libero",
+                    "non_modellabile"
+                  ]
+                },
+                "confidenza": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "id",
+                "confidenza"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "id",
+          "confidenza",
+          "alternative"
+        ],
+        "additionalProperties": false
+      },
+      "variante": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "confidenza": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "confidenza"
+        ],
+        "additionalProperties": false
+      },
+      "vista": {
+        "type": "object",
+        "properties": {
+          "nome": {
+            "type": "string",
+            "enum": [
+              "fronte",
+              "dietro",
+              "fianco_esterno",
+              "fianco_interno",
+              "tre_quarti",
+              "sopra",
+              "sotto"
+            ]
+          },
+          "azimuth": {
+            "type": "number"
+          },
+          "elevation": {
+            "type": "number"
+          },
+          "rollo": {
+            "type": "number"
+          },
+          "ortografica": {
+            "type": "boolean"
+          },
+          "confidenza": {
+            "type": "number"
+          },
+          "latiOcclusi": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "alto",
+                "basso",
+                "sinistra",
+                "destra"
+              ]
+            }
+          }
+        },
+        "required": [
+          "nome",
+          "azimuth",
+          "elevation",
+          "rollo",
+          "ortografica",
+          "confidenza",
+          "latiOcclusi"
+        ],
+        "additionalProperties": false
+      },
+      "scala": {
+        "type": "object",
+        "properties": {
+          "pxPerMm": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fonte": {
+            "type": "string",
+            "enum": [
+              "misura_nota",
+              "libreria",
+              "catalogo",
+              "taglia",
+              "forma",
+              "stima"
+            ]
+          },
+          "riferimento": {
+            "type": "string"
+          },
+          "confidenza": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "pxPerMm",
+          "fonte",
+          "riferimento",
+          "confidenza"
+        ],
+        "additionalProperties": false
+      },
+      "parametri": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "chiave": {
+              "type": "string"
+            },
+            "valore": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            },
+            "min": {
+              "type": "number"
+            },
+            "max": {
+              "type": "number"
+            },
+            "confidenza": {
+              "type": "number"
+            },
+            "fonte": {
+              "type": "string",
+              "enum": [
+                "misura_nota",
+                "taglia",
+                "libreria",
+                "catalogo",
+                "proporzione",
+                "default_mestiere",
+                "non_visibile"
+              ]
+            },
+            "motivo": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "chiave",
+            "valore",
+            "confidenza",
+            "fonte",
+            "motivo"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "materiale": {
+        "type": "object",
+        "properties": {
+          "chiave": {
+            "type": "string"
+          },
+          "confidenza": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "chiave",
+          "confidenza"
+        ],
+        "additionalProperties": false
+      },
+      "domande": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "chiave": {
+              "type": "string"
+            },
+            "motivo": {
+              "type": "string"
+            },
+            "proposte": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            }
+          },
+          "required": [
+            "chiave",
+            "motivo",
+            "proposte"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "note": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "famiglia",
+      "variante",
+      "vista",
+      "scala",
+      "parametri",
+      "materiale",
+      "domande",
+      "note"
+    ],
+    "additionalProperties": false
+  },
+  "limitiUscita": [
+    {
+      "percorso": "/famiglia/confidenza",
+      "minimum": 0,
+      "maximum": 1
+    },
+    {
+      "percorso": "/famiglia/alternative/*/confidenza",
+      "minimum": 0,
+      "maximum": 1
+    },
+    {
+      "percorso": "/famiglia/alternative",
+      "maxItems": 2
+    },
+    {
+      "percorso": "/variante/confidenza",
+      "minimum": 0,
+      "maximum": 1
+    },
+    {
+      "percorso": "/vista/azimuth",
+      "minimum": -180,
+      "maximum": 180
+    },
+    {
+      "percorso": "/vista/elevation",
+      "minimum": -90,
+      "maximum": 90
+    },
+    {
+      "percorso": "/vista/rollo",
+      "minimum": -45,
+      "maximum": 45
+    },
+    {
+      "percorso": "/vista/confidenza",
+      "minimum": 0,
+      "maximum": 1
+    },
+    {
+      "percorso": "/vista/latiOcclusi",
+      "maxItems": 4
+    },
+    {
+      "percorso": "/scala/pxPerMm",
+      "exclusiveMinimum": 0
+    },
+    {
+      "percorso": "/scala/riferimento",
+      "maxLength": 140
+    },
+    {
+      "percorso": "/scala/confidenza",
+      "minimum": 0,
+      "maximum": 1
+    },
+    {
+      "percorso": "/parametri/*/confidenza",
+      "minimum": 0,
+      "maximum": 1
+    },
+    {
+      "percorso": "/parametri/*/motivo",
+      "maxLength": 140
+    },
+    {
+      "percorso": "/parametri",
+      "maxItems": 80
+    },
+    {
+      "percorso": "/materiale/chiave",
+      "maxLength": 40
+    },
+    {
+      "percorso": "/materiale/confidenza",
+      "minimum": 0,
+      "maximum": 1
+    },
+    {
+      "percorso": "/domande/*/motivo",
+      "maxLength": 100
+    },
+    {
+      "percorso": "/domande/*/proposte",
+      "minItems": 3,
+      "maxItems": 3
+    },
+    {
+      "percorso": "/domande",
+      "maxItems": 3
+    },
+    {
+      "percorso": "/note",
+      "maxLength": 300
+    }
+  ],
+  "schemaParte": {
+    "type": "object",
+    "properties": {
+      "versione": {
+        "type": "number",
+        "const": 1
+      },
+      "progetto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "verticale": {
+            "type": "string",
+            "enum": [
+              "footwear",
+              "leather_goods",
+              "atelier",
+              "accessories"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "verticale"
+        ]
+      },
+      "immagine": {
+        "type": "object",
+        "properties": {
+          "bucket": {
+            "type": "string",
+            "const": "creator-private"
+          },
+          "path": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[\\da-f]{64}$"
+          },
+          "larghezzaPx": {
+            "type": "integer"
+          },
+          "altezzaPx": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "bucket",
+          "path",
+          "sha256",
+          "larghezzaPx",
+          "altezzaPx"
+        ]
+      },
+      "parte": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "nome": {
+            "type": "string"
+          },
+          "etichetta": {
+            "type": "string"
+          },
+          "materiale": {
+            "type": "string"
+          },
+          "colore": {
+            "type": "string"
+          },
+          "box": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ]
+          },
+          "contorno": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ]
+            }
+          }
+        },
+        "required": [
+          "id",
+          "nome",
+          "etichetta",
+          "box"
+        ]
+      },
+      "maschera": {
+        "type": "object",
+        "properties": {
+          "bucket": {
+            "type": "string",
+            "const": "creator-private"
+          },
+          "path": {
+            "type": "string"
+          },
+          "origine": {
+            "type": "string",
+            "enum": [
+              "sam",
+              "contorno"
+            ]
+          }
+        },
+        "required": [
+          "bucket",
+          "path",
+          "origine"
+        ]
+      },
+      "tipo": {
+        "type": "object",
+        "properties": {
+          "partType": {
+            "type": "string"
+          },
+          "fonte": {
+            "type": "string",
+            "enum": [
+              "utente",
+              "libreria",
+              "catalogo",
+              "riconosci_parti"
+            ]
+          }
+        },
+        "required": [
+          "partType",
+          "fonte"
+        ]
+      },
+      "scala": {
+        "type": "object",
+        "properties": {
+          "tipo": {
+            "type": "string",
+            "enum": [
+              "misura",
+              "libreria",
+              "catalogo",
+              "taglia",
+              "forma"
+            ]
+          },
+          "valoreMm": {
+            "type": "number"
+          },
+          "cosa": {
+            "type": "string"
+          },
+          "pxPerMm": {
+            "type": "number"
+          },
+          "confidenza": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "tipo",
+          "valoreMm",
+          "cosa",
+          "confidenza"
+        ]
+      },
+      "altreParti": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "etichetta": {
+              "type": "string"
+            },
+            "box": {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "etichetta",
+            "box"
+          ]
+        }
+      }
+    },
+    "required": [
+      "versione",
+      "progetto",
+      "immagine",
+      "parte"
+    ]
+  },
+  "limitiParte": [
+    {
+      "percorso": "/immagine/path",
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    {
+      "percorso": "/immagine/larghezzaPx",
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991
+    },
+    {
+      "percorso": "/immagine/altezzaPx",
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991
+    },
+    {
+      "percorso": "/parte/id",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    {
+      "percorso": "/parte/nome",
+      "maxLength": 200
+    },
+    {
+      "percorso": "/parte/etichetta",
+      "maxLength": 200
+    },
+    {
+      "percorso": "/parte/materiale",
+      "maxLength": 200
+    },
+    {
+      "percorso": "/parte/colore",
+      "maxLength": 200
+    },
+    {
+      "percorso": "/parte/contorno",
+      "maxItems": 2000
+    },
+    {
+      "percorso": "/maschera/path",
+      "maxLength": 1024
+    },
+    {
+      "percorso": "/tipo/partType",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    {
+      "percorso": "/scala/valoreMm",
+      "exclusiveMinimum": 0
+    },
+    {
+      "percorso": "/scala/cosa",
+      "maxLength": 80
+    },
+    {
+      "percorso": "/scala/pxPerMm",
+      "exclusiveMinimum": 0
+    },
+    {
+      "percorso": "/scala/confidenza",
+      "minimum": 0,
+      "maximum": 1
+    },
+    {
+      "percorso": "/altreParti/*/id",
+      "maxLength": 200
+    },
+    {
+      "percorso": "/altreParti/*/etichetta",
+      "maxLength": 200
+    },
+    {
+      "percorso": "/altreParti",
+      "maxItems": 50
+    }
+  ],
+  "famiglie": [
+    {
+      "id": "anello",
+      "versione": 1,
+      "varianti": [
+        "griffe",
+        "chiuso",
+        "fascia"
+      ],
+      "partTypes": [],
+      "parametri": [
+        {
+          "chiave": "taglia.sistema",
+          "unita": "enum",
+          "default": "it",
+          "valori": [
+            "it",
+            "us",
+            "eu_iso",
+            "diametro"
+          ],
+          "descrizione": "Sistema di taglie"
+        },
+        {
+          "chiave": "taglia.valore",
+          "unita": "n",
+          "min": 1,
+          "max": 76,
+          "passo": 0.5,
+          "default": 14,
+          "critico": true,
+          "descrizione": "Taglia (IT 1–35 · US 3–15 · ISO 41–76 · mm 13–24)"
+        },
+        {
+          "chiave": "taglia.diametroInterno",
+          "unita": "mm",
+          "default": 17.19,
+          "derivato": true,
+          "descrizione": "Diametro interno dalla taglia"
+        },
+        {
+          "chiave": "gambo.profilo",
+          "unita": "enum",
+          "default": "mezzotondo",
+          "valori": [
+            "tondo",
+            "mezzotondo",
+            "piatto",
+            "d",
+            "comfort"
+          ],
+          "descrizione": "Profilo del gambo"
+        },
+        {
+          "chiave": "gambo.larghezza",
+          "unita": "mm",
+          "min": 1.5,
+          "max": 10,
+          "default": 3,
+          "critico": true,
+          "silhouetteSensibile": true,
+          "descrizione": "Larghezza del gambo in alto"
+        },
+        {
+          "chiave": "gambo.spessore",
+          "unita": "mm",
+          "min": 1,
+          "max": 4,
+          "default": 1.8,
+          "silhouetteSensibile": true,
+          "descrizione": "Spessore del gambo in alto"
+        },
+        {
+          "chiave": "gambo.rastremazione",
+          "unita": "frazione",
+          "min": 0.5,
+          "max": 1,
+          "default": 0.8,
+          "descrizione": "Gambo in basso / in alto"
+        },
+        {
+          "chiave": "castone.tipo",
+          "unita": "enum",
+          "default": "griffe",
+          "valori": [
+            "chiuso",
+            "griffe",
+            "nessuno"
+          ],
+          "descrizione": "Castone"
+        },
+        {
+          "chiave": "castone.parete",
+          "unita": "mm",
+          "min": 0.5,
+          "max": 1.5,
+          "default": 0.8,
+          "descrizione": "Parete del castone"
+        },
+        {
+          "chiave": "castone.labbro",
+          "unita": "mm",
+          "min": 0.3,
+          "max": 0.8,
+          "default": 0.4,
+          "descrizione": "Labbro del castone chiuso"
+        },
+        {
+          "chiave": "castone.sede",
+          "unita": "frazione",
+          "min": 0.3,
+          "max": 0.6,
+          "default": 0.45,
+          "descrizione": "Cintura della pietra sotto il bordo (frazione della sua altezza)"
+        },
+        {
+          "chiave": "castone.altezza",
+          "unita": "mm",
+          "default": 3.25,
+          "derivato": true,
+          "descrizione": "0,9 × altezza della pietra + 0,5 (il chiuso quanto basta al padiglione)"
+        },
+        {
+          "chiave": "pietra.taglio",
+          "unita": "enum",
+          "default": "tondo",
+          "valori": [
+            "tondo"
+          ],
+          "descrizione": "Taglio (fase 1: brillante tondo)"
+        },
+        {
+          "chiave": "pietra.diametro",
+          "unita": "mm",
+          "min": 1.5,
+          "max": 14,
+          "default": 5,
+          "critico": true,
+          "silhouetteSensibile": true,
+          "descrizione": "Diametro della pietra calibrata"
+        },
+        {
+          "chiave": "pietra.altezza",
+          "unita": "mm",
+          "default": 3.05,
+          "derivato": true,
+          "descrizione": "0,61 × diametro (brillante)"
+        },
+        {
+          "chiave": "griffe.numero",
+          "unita": "n",
+          "min": 3,
+          "max": 8,
+          "default": 4,
+          "descrizione": "Numero di griffe"
+        },
+        {
+          "chiave": "griffe.diametro",
+          "unita": "mm",
+          "min": 0.7,
+          "max": 1.6,
+          "default": 1,
+          "descrizione": "Diametro delle griffe"
+        },
+        {
+          "chiave": "griffe.altezzaSopraCintura",
+          "unita": "mm",
+          "min": 0.5,
+          "max": 1.5,
+          "default": 0.8,
+          "descrizione": "Quanto le griffe salgono sopra la cintura"
+        },
+        {
+          "chiave": "lega",
+          "unita": "enum",
+          "default": "oro_18kt_giallo",
+          "valori": [
+            "oro_18kt_giallo",
+            "oro_18kt_rosa",
+            "oro_18kt_bianco",
+            "oro_14kt",
+            "oro_9kt",
+            "argento_925",
+            "platino_950",
+            "titanio"
+          ],
+          "descrizione": "Lega"
+        }
+      ]
+    },
+    {
+      "id": "borchia",
+      "versione": 1,
+      "varianti": [
+        "cupola",
+        "piramide",
+        "piatta",
+        "cono"
+      ],
+      "partTypes": [
+        "stud"
+      ],
+      "parametri": [
+        {
+          "chiave": "testa.forma",
+          "unita": "enum",
+          "default": "cupola",
+          "valori": [
+            "cupola",
+            "piramide",
+            "piatta",
+            "cono"
+          ],
+          "descrizione": "Forma della testa"
+        },
+        {
+          "chiave": "testa.diametro",
+          "unita": "mm",
+          "min": 4,
+          "max": 25,
+          "default": 8,
+          "critico": true,
+          "silhouetteSensibile": true,
+          "descrizione": "Diametro della testa"
+        },
+        {
+          "chiave": "testa.altezza",
+          "unita": "mm",
+          "min": 1,
+          "max": 12,
+          "default": 3,
+          "silhouetteSensibile": true,
+          "descrizione": "Altezza della testa"
+        },
+        {
+          "chiave": "testa.lati",
+          "unita": "n",
+          "min": 3,
+          "max": 8,
+          "default": 4,
+          "descrizione": "Lati della piramide"
+        },
+        {
+          "chiave": "gambo.diametro",
+          "unita": "mm",
+          "min": 1.5,
+          "max": 4,
+          "default": 2.5,
+          "descrizione": "Diametro del gambo"
+        },
+        {
+          "chiave": "gambo.lunghezza",
+          "unita": "mm",
+          "min": 3,
+          "max": 12,
+          "default": 6,
+          "descrizione": "Lunghezza del gambo"
+        },
+        {
+          "chiave": "costruzione.processo",
+          "unita": "enum",
+          "default": "pressofusione_zama",
+          "valori": [
+            "pressofusione_zama",
+            "cnc"
+          ],
+          "descrizione": "Processo"
+        },
+        {
+          "chiave": "costruzione.materiale",
+          "unita": "enum",
+          "default": "zama",
+          "valori": [
+            "zama",
+            "ottone"
+          ],
+          "descrizione": "Materiale"
+        },
+        {
+          "chiave": "costruzione.cava",
+          "unita": "bool",
+          "default": false,
+          "descrizione": "Testa svuotata da sotto"
+        },
+        {
+          "chiave": "costruzione.parete",
+          "unita": "mm",
+          "min": 0.8,
+          "max": 2,
+          "default": 1,
+          "descrizione": "Parete della testa cava"
+        },
+        {
+          "chiave": "costruzione.sformo",
+          "unita": "deg",
+          "min": 0.5,
+          "max": 2,
+          "default": 1,
+          "descrizione": "Sformo del gambo"
+        }
+      ]
+    },
+    {
+      "id": "fibbia",
+      "versione": 1,
+      "varianti": [
+        "rettangolare",
+        "ovale",
+        "a_d",
+        "doppia"
+      ],
+      "partTypes": [
+        "buckle"
+      ],
+      "parametri": [
+        {
+          "chiave": "cinturino.larghezza",
+          "unita": "mm",
+          "min": 8,
+          "max": 60,
+          "default": 20,
+          "critico": true,
+          "silhouetteSensibile": true,
+          "descrizione": "Larghezza del cinturino che passa nella fibbia"
+        },
+        {
+          "chiave": "cinturino.spessore",
+          "unita": "mm",
+          "min": 1.5,
+          "max": 5,
+          "default": 3,
+          "descrizione": "Spessore del cinturino"
+        },
+        {
+          "chiave": "telaio.luce",
+          "unita": "mm",
+          "default": 21,
+          "derivato": true,
+          "descrizione": "Luce interna: cinturino + 1 mm di gioco"
+        },
+        {
+          "chiave": "telaio.altezzaInterna",
+          "unita": "mm",
+          "min": 6,
+          "max": 40,
+          "default": 12,
+          "silhouetteSensibile": true,
+          "descrizione": "Apertura interna lungo il cinturino: max(10, 2 × spessore cinturino + 6)"
+        },
+        {
+          "chiave": "telaio.sezioneLarghezza",
+          "unita": "mm",
+          "min": 1.5,
+          "max": 8,
+          "default": 3,
+          "silhouetteSensibile": true,
+          "descrizione": "Larghezza della sezione del telaio"
+        },
+        {
+          "chiave": "telaio.sezioneSpessore",
+          "unita": "mm",
+          "min": 1.2,
+          "max": 6,
+          "default": 2.5,
+          "descrizione": "Spessore della sezione del telaio"
+        },
+        {
+          "chiave": "telaio.raggioAngoli",
+          "unita": "mm",
+          "min": 0,
+          "max": 20,
+          "default": 3,
+          "silhouetteSensibile": true,
+          "descrizione": "Raggio degli angoli interni (esterni = raggio + sezione)"
+        },
+        {
+          "chiave": "telaio.profilo",
+          "unita": "enum",
+          "default": "bombato",
+          "valori": [
+            "piatto",
+            "bombato",
+            "tondo"
+          ],
+          "descrizione": "Profilo della sezione"
+        },
+        {
+          "chiave": "telaio.raggioBordo",
+          "unita": "mm",
+          "min": 0,
+          "max": 3,
+          "default": 0.75,
+          "descrizione": "Raccordo dei bordi del profilo piatto (0,3 × spessore)"
+        },
+        {
+          "chiave": "ardiglione.diametro",
+          "unita": "mm",
+          "min": 1.5,
+          "max": 4.5,
+          "default": 2.5,
+          "descrizione": "Diametro del filo dell’ardiglione"
+        },
+        {
+          "chiave": "ardiglione.lunghezza",
+          "unita": "mm",
+          "default": 16.5,
+          "derivato": true,
+          "descrizione": "Lunghezza dell’ardiglione: apertura + sezione + 1,5 mm"
+        },
+        {
+          "chiave": "ardiglione.gioco",
+          "unita": "mm",
+          "min": 0.2,
+          "max": 0.6,
+          "default": 0.3,
+          "descrizione": "Gioco dell’occhio dell’ardiglione attorno alla barra"
+        },
+        {
+          "chiave": "ardiglione.materiale",
+          "unita": "enum",
+          "default": "acciaio",
+          "valori": [
+            "acciaio",
+            "inox",
+            "ottone"
+          ],
+          "descrizione": "Materiale del filo"
+        },
+        {
+          "chiave": "traversino.abilitato",
+          "unita": "bool",
+          "default": false,
+          "descrizione": "Barra centrale (l’ardiglione vi si avvolge)"
+        },
+        {
+          "chiave": "traversino.larghezza",
+          "unita": "mm",
+          "min": 1.5,
+          "max": 6,
+          "default": 2.5,
+          "descrizione": "Larghezza del traversino"
+        },
+        {
+          "chiave": "traversino.profilo",
+          "unita": "enum",
+          "default": "piatto",
+          "valori": [
+            "piatto",
+            "tondo"
+          ],
+          "descrizione": "Sezione del traversino: piatta (90 % dello spessore) o tonda di diametro = larghezza"
+        },
+        {
+          "chiave": "costruzione.processo",
+          "unita": "enum",
+          "default": "pressofusione_zama",
+          "valori": [
+            "pressofusione_zama",
+            "fusione_cera_persa",
+            "cnc"
+          ],
+          "descrizione": "Processo produttivo del telaio"
+        },
+        {
+          "chiave": "costruzione.materiale",
+          "unita": "enum",
+          "default": "zama",
+          "valori": [
+            "zama",
+            "ottone",
+            "argento_925",
+            "inox"
+          ],
+          "descrizione": "Materiale del telaio (zama in pressofusione, ottone o argento fuso, ottone o inox lavorato)"
+        },
+        {
+          "chiave": "costruzione.sformo",
+          "unita": "deg",
+          "min": 0.5,
+          "max": 2,
+          "default": 1,
+          "descrizione": "Sformo dei fianchi in pressofusione"
+        }
+      ]
+    },
+    {
+      "id": "fondo_semplice",
+      "versione": 1,
+      "varianti": [
+        "platform",
+        "zeppa",
+        "cuoio_liscio"
+      ],
+      "partTypes": [
+        "sole",
+        "midsole_wedge",
+        "welt"
+      ],
+      "parametri": [
+        {
+          "chiave": "pianta.taglia",
+          "unita": "n",
+          "min": 35,
+          "max": 47,
+          "passo": 0.5,
+          "default": 37,
+          "critico": true,
+          "silhouetteSensibile": true,
+          "descrizione": "Taglia EU"
+        },
+        {
+          "chiave": "pianta.lunghezza",
+          "unita": "mm",
+          "default": 258.7,
+          "derivato": true,
+          "descrizione": "Taglia × 6,667 + 12 (ipotesi dichiarata)"
+        },
+        {
+          "chiave": "pianta.rapportoPianta",
+          "unita": "frazione",
+          "min": 0.3,
+          "max": 0.45,
+          "default": 0.37,
+          "silhouetteSensibile": true,
+          "descrizione": "Larghezza in pianta / lunghezza"
+        },
+        {
+          "chiave": "pianta.rapportoTallone",
+          "unita": "frazione",
+          "min": 0.2,
+          "max": 0.32,
+          "default": 0.25,
+          "descrizione": "Larghezza al tallone / lunghezza"
+        },
+        {
+          "chiave": "pianta.larghezzaPianta",
+          "unita": "mm",
+          "default": 95.7,
+          "derivato": true,
+          "descrizione": "Larghezza in pianta"
+        },
+        {
+          "chiave": "pianta.larghezzaTallone",
+          "unita": "mm",
+          "default": 64.7,
+          "derivato": true,
+          "descrizione": "Larghezza al tallone"
+        },
+        {
+          "chiave": "pianta.sormonto",
+          "unita": "mm",
+          "min": 0,
+          "max": 12,
+          "default": 2.5,
+          "descrizione": "Sormonto oltre la forma (2,5 montato · 8 guardolo)"
+        },
+        {
+          "chiave": "spessore.punta",
+          "unita": "mm",
+          "min": 3,
+          "max": 60,
+          "default": 12,
+          "critico": true,
+          "silhouetteSensibile": true,
+          "descrizione": "Spessore in punta"
+        },
+        {
+          "chiave": "spessore.tallone",
+          "unita": "mm",
+          "min": 3,
+          "max": 120,
+          "default": 12,
+          "critico": true,
+          "silhouetteSensibile": true,
+          "descrizione": "Spessore al tallone"
+        },
+        {
+          "chiave": "spessore.puntaRialzo",
+          "unita": "mm",
+          "min": 0,
+          "max": 25,
+          "default": 10,
+          "silhouetteSensibile": true,
+          "descrizione": "Rialzo di punta (toe spring)"
+        },
+        {
+          "chiave": "fianco.sformo",
+          "unita": "deg",
+          "min": 0,
+          "max": 6,
+          "default": 1.5,
+          "descrizione": "Sformo dei fianchi (TR/TPU 1,5 · gomma 4 · cuoio 0)"
+        },
+        {
+          "chiave": "bordo.raggioSuperiore",
+          "unita": "mm",
+          "min": 0,
+          "max": 6,
+          "default": 2,
+          "descrizione": "Raccordo del bordo superiore"
+        },
+        {
+          "chiave": "bordo.raggioInferiore",
+          "unita": "mm",
+          "min": 0,
+          "max": 3,
+          "default": 1,
+          "descrizione": "Raccordo del bordo inferiore"
+        },
+        {
+          "chiave": "costruzione.materiale",
+          "unita": "enum",
+          "default": "tr",
+          "valori": [
+            "tr",
+            "tpu",
+            "gomma",
+            "eva",
+            "pu_espanso",
+            "cuoio",
+            "sughero"
+          ],
+          "descrizione": "Materiale"
+        },
+        {
+          "chiave": "costruzione.lato",
+          "unita": "enum",
+          "default": "coppia",
+          "valori": [
+            "dx",
+            "sx",
+            "coppia"
+          ],
+          "descrizione": "Destro, sinistro o la coppia"
+        }
+      ]
+    },
+    {
+      "id": "occhiello",
+      "versione": 1,
+      "varianti": [
+        "standard"
+      ],
+      "partTypes": [
+        "eyelet"
+      ],
+      "parametri": [
+        {
+          "chiave": "foro.diametro",
+          "unita": "mm",
+          "min": 3,
+          "max": 12,
+          "default": 5,
+          "critico": true,
+          "silhouetteSensibile": true,
+          "descrizione": "Diametro del foro"
+        },
+        {
+          "chiave": "flangia.diametro",
+          "unita": "mm",
+          "min": 6,
+          "max": 20,
+          "default": 9,
+          "silhouetteSensibile": true,
+          "descrizione": "Diametro della flangia (foro + 3 … foro + 8)"
+        },
+        {
+          "chiave": "flangia.spessore",
+          "unita": "mm",
+          "min": 0.4,
+          "max": 1,
+          "default": 0.6,
+          "descrizione": "Spessore della flangia"
+        },
+        {
+          "chiave": "flangia.raggio",
+          "unita": "mm",
+          "min": 0.2,
+          "max": 1,
+          "default": 0.4,
+          "descrizione": "Raggio del bordo della flangia"
+        },
+        {
+          "chiave": "gambo.altezza",
+          "unita": "mm",
+          "min": 2,
+          "max": 8,
+          "default": 4,
+          "descrizione": "Altezza del gambo: pelle + 1 mm di ribattitura"
+        },
+        {
+          "chiave": "parete.spessore",
+          "unita": "mm",
+          "min": 0.3,
+          "max": 0.8,
+          "default": 0.5,
+          "descrizione": "Parete della lamiera"
+        },
+        {
+          "chiave": "rondella.abilitata",
+          "unita": "bool",
+          "default": false,
+          "descrizione": "Rondella di ribattitura"
+        },
+        {
+          "chiave": "rondella.diametro",
+          "unita": "mm",
+          "default": 8,
+          "derivato": true,
+          "descrizione": "Flangia − 1 mm"
+        },
+        {
+          "chiave": "costruzione.materiale",
+          "unita": "enum",
+          "default": "ottone",
+          "valori": [
+            "ottone",
+            "alluminio"
+          ],
+          "descrizione": "Materiale"
+        }
+      ]
+    },
+    {
+      "id": "pendente",
+      "versione": 1,
+      "varianti": [
+        "disco",
+        "cuore",
+        "goccia",
+        "placchetta"
+      ],
+      "partTypes": [],
+      "parametri": [
+        {
+          "chiave": "corpo.forma",
+          "unita": "enum",
+          "default": "disco",
+          "valori": [
+            "disco",
+            "cuore",
+            "goccia",
+            "placchetta"
+          ],
+          "descrizione": "Forma del pendente"
+        },
+        {
+          "chiave": "corpo.lunghezza",
+          "unita": "mm",
+          "min": 5,
+          "max": 60,
+          "default": 15,
+          "critico": true,
+          "silhouetteSensibile": true,
+          "descrizione": "Altezza del pendente (senza anellino)"
+        },
+        {
+          "chiave": "corpo.larghezza",
+          "unita": "mm",
+          "min": 5,
+          "max": 60,
+          "default": 15,
+          "silhouetteSensibile": true,
+          "descrizione": "Larghezza"
+        },
+        {
+          "chiave": "corpo.spessore",
+          "unita": "mm",
+          "min": 0.8,
+          "max": 3,
+          "default": 1.2,
+          "descrizione": "Spessore al bordo"
+        },
+        {
+          "chiave": "corpo.bombatura",
+          "unita": "mm",
+          "min": 0,
+          "max": 3,
+          "default": 0.6,
+          "descrizione": "Bombatura della faccia a vista"
+        },
+        {
+          "chiave": "anellino.diametroInterno",
+          "unita": "mm",
+          "min": 2,
+          "max": 6,
+          "default": 3,
+          "descrizione": "Diametro interno dell’anellino"
+        },
+        {
+          "chiave": "anellino.filo",
+          "unita": "mm",
+          "min": 0.6,
+          "max": 1.5,
+          "default": 0.9,
+          "descrizione": "Filo dell’anellino"
+        },
+        {
+          "chiave": "anellino.orientamento",
+          "unita": "enum",
+          "default": "in_piano",
+          "valori": [
+            "in_piano",
+            "di_traverso"
+          ],
+          "descrizione": "Anellino nel piano del pendente (0°) o di traverso (90°)"
+        },
+        {
+          "chiave": "occhiello.foro",
+          "unita": "mm",
+          "min": 0,
+          "max": 3,
+          "default": 0,
+          "descrizione": "Foro sotto l’anellino (0 = nessuno, 1–3)"
+        },
+        {
+          "chiave": "lega",
+          "unita": "enum",
+          "default": "argento_925",
+          "valori": [
+            "argento_925",
+            "oro_18kt_giallo",
+            "oro_18kt_rosa",
+            "oro_18kt_bianco",
+            "oro_14kt",
+            "oro_9kt",
+            "ottone"
+          ],
+          "descrizione": "Lega"
+        }
+      ]
+    },
+    {
+      "id": "placca",
+      "versione": 1,
+      "varianti": [
+        "rettangolo",
+        "ovale",
+        "cerchio",
+        "scudo"
+      ],
+      "partTypes": [
+        "ornament"
+      ],
+      "parametri": [
+        {
+          "chiave": "piastra.forma",
+          "unita": "enum",
+          "default": "rettangolo",
+          "valori": [
+            "rettangolo",
+            "ovale",
+            "cerchio",
+            "scudo",
+            "contorno"
+          ],
+          "descrizione": "Forma della placca"
+        },
+        {
+          "chiave": "piastra.contorno",
+          "unita": "contorno",
+          "default": [],
+          "descrizione": "Punti del contorno (forma «contorno»): curva chiusa che passa per i punti, portata a lunghezza × larghezza"
+        },
+        {
+          "chiave": "piastra.lunghezza",
+          "unita": "mm",
+          "min": 6,
+          "max": 120,
+          "default": 30,
+          "critico": true,
+          "silhouetteSensibile": true,
+          "descrizione": "Lunghezza (diametro per il cerchio)"
+        },
+        {
+          "chiave": "piastra.larghezza",
+          "unita": "mm",
+          "min": 4,
+          "max": 60,
+          "default": 12,
+          "critico": true,
+          "silhouetteSensibile": true,
+          "descrizione": "Larghezza"
+        },
+        {
+          "chiave": "piastra.spessore",
+          "unita": "mm",
+          "min": 0.6,
+          "max": 5,
+          "default": 1.5,
+          "descrizione": "Spessore (zama 1,5 · ottone tranciato 0,8)"
+        },
+        {
+          "chiave": "piastra.raggioAngoli",
+          "unita": "mm",
+          "min": 0,
+          "max": 20,
+          "default": 2,
+          "silhouetteSensibile": true,
+          "descrizione": "Raggio degli angoli"
+        },
+        {
+          "chiave": "piastra.bombatura",
+          "unita": "mm",
+          "min": 0,
+          "max": 4,
+          "default": 0,
+          "descrizione": "Bombatura della faccia a vista"
+        },
+        {
+          "chiave": "bordo.rilievo",
+          "unita": "mm",
+          "min": 0,
+          "max": 1,
+          "default": 0.3,
+          "descrizione": "Rilievo del bordo (0 = senza)"
+        },
+        {
+          "chiave": "bordo.larghezza",
+          "unita": "mm",
+          "min": 0.4,
+          "max": 3,
+          "default": 0.8,
+          "descrizione": "Larghezza del bordo"
+        },
+        {
+          "chiave": "testo.contenuto",
+          "unita": "testo",
+          "default": "",
+          "descrizione": "Testo del logo"
+        },
+        {
+          "chiave": "testo.altezza",
+          "unita": "mm",
+          "min": 2,
+          "max": 40,
+          "default": 5,
+          "descrizione": "Altezza delle maiuscole"
+        },
+        {
+          "chiave": "testo.modo",
+          "unita": "enum",
+          "default": "rilievo",
+          "valori": [
+            "rilievo",
+            "inciso",
+            "nessuno"
+          ],
+          "descrizione": "Testo in rilievo o inciso"
+        },
+        {
+          "chiave": "testo.profondita",
+          "unita": "mm",
+          "min": 0.2,
+          "max": 1.5,
+          "default": 0.4,
+          "descrizione": "Rilievo o profondità del testo"
+        },
+        {
+          "chiave": "testo.font",
+          "unita": "enum",
+          "default": "lato",
+          "valori": [
+            "lato",
+            "sinopia"
+          ],
+          "descrizione": "Carattere"
+        },
+        {
+          "chiave": "fissaggio.tipo",
+          "unita": "enum",
+          "default": "perni",
+          "valori": [
+            "nessuno",
+            "perni",
+            "fori",
+            "ribattini"
+          ],
+          "descrizione": "Fissaggio"
+        },
+        {
+          "chiave": "fissaggio.perno.diametro",
+          "unita": "mm",
+          "min": 1,
+          "max": 3,
+          "default": 1.5,
+          "descrizione": "Diametro dei perni o dei fori"
+        },
+        {
+          "chiave": "fissaggio.perno.lunghezza",
+          "unita": "mm",
+          "min": 2,
+          "max": 8,
+          "default": 4,
+          "descrizione": "Lunghezza dei perni"
+        },
+        {
+          "chiave": "fissaggio.interasse",
+          "unita": "mm",
+          "default": 18,
+          "derivato": true,
+          "descrizione": "Interasse dei perni: 0,6 × lunghezza"
+        },
+        {
+          "chiave": "costruzione.processo",
+          "unita": "enum",
+          "default": "pressofusione_zama",
+          "valori": [
+            "pressofusione_zama",
+            "tranciatura_lamiera",
+            "fusione_cera_persa"
+          ],
+          "descrizione": "Processo produttivo"
+        },
+        {
+          "chiave": "costruzione.materiale",
+          "unita": "enum",
+          "default": "zama",
+          "valori": [
+            "zama",
+            "ottone",
+            "argento_925",
+            "inox"
+          ],
+          "descrizione": "Materiale"
+        },
+        {
+          "chiave": "costruzione.sformo",
+          "unita": "deg",
+          "min": 0.5,
+          "max": 2,
+          "default": 1,
+          "descrizione": "Sformo dei fianchi in pressofusione"
+        }
+      ]
+    },
+    {
+      "id": "puntale",
+      "versione": 1,
+      "varianti": [
+        "quarto_ellissoide"
+      ],
+      "partTypes": [],
+      "parametri": [
+        {
+          "chiave": "puntale.lunghezza",
+          "unita": "mm",
+          "min": 10,
+          "max": 60,
+          "default": 25,
+          "critico": true,
+          "silhouetteSensibile": true,
+          "descrizione": "Lunghezza (dal retro alla punta)"
+        },
+        {
+          "chiave": "puntale.larghezza",
+          "unita": "mm",
+          "min": 10,
+          "max": 60,
+          "default": 30,
+          "critico": true,
+          "silhouetteSensibile": true,
+          "descrizione": "Larghezza"
+        },
+        {
+          "chiave": "puntale.altezza",
+          "unita": "mm",
+          "min": 4,
+          "max": 25,
+          "default": 10,
+          "silhouetteSensibile": true,
+          "descrizione": "Altezza"
+        },
+        {
+          "chiave": "puntale.spessore",
+          "unita": "mm",
+          "min": 0.4,
+          "max": 1.2,
+          "default": 0.6,
+          "descrizione": "Spessore della lamiera"
+        },
+        {
+          "chiave": "fori.numero",
+          "unita": "n",
+          "min": 0,
+          "max": 2,
+          "passo": 2,
+          "default": 2,
+          "descrizione": "Fori di fissaggio (0 o 2)"
+        },
+        {
+          "chiave": "fori.diametro",
+          "unita": "mm",
+          "min": 1,
+          "max": 3,
+          "default": 1.6,
+          "descrizione": "Diametro dei fori"
+        },
+        {
+          "chiave": "costruzione.materiale",
+          "unita": "enum",
+          "default": "ottone",
+          "valori": [
+            "ottone",
+            "inox",
+            "alluminio"
+          ],
+          "descrizione": "Lamiera"
+        }
+      ]
+    },
+    {
+      "id": "tacco",
+      "versione": 1,
+      "varianti": [
+        "stiletto",
+        "blocco",
+        "rocchetto",
+        "cono",
+        "kitten"
+      ],
+      "partTypes": [
+        "heel",
+        "top_lift"
+      ],
+      "parametri": [
+        {
+          "chiave": "tacco.altezza",
+          "unita": "mm",
+          "min": 15,
+          "max": 130,
+          "default": 85,
+          "critico": true,
+          "silhouetteSensibile": true,
+          "descrizione": "Altezza dal piano d’appoggio al punto posteriore della seduta"
+        },
+        {
+          "chiave": "tacco.spinta",
+          "unita": "deg",
+          "min": -2,
+          "max": 10,
+          "default": 3,
+          "silhouetteSensibile": true,
+          "descrizione": "Inclinazione in avanti dell’asse del tacco"
+        },
+        {
+          "chiave": "seduta.forma",
+          "unita": "enum",
+          "default": "ellisse",
+          "valori": [
+            "ellisse",
+            "rettangolo",
+            "scudo"
+          ],
+          "descrizione": "Forma della seduta"
+        },
+        {
+          "chiave": "seduta.lunghezza",
+          "unita": "mm",
+          "min": 30,
+          "max": 90,
+          "default": 55,
+          "critico": true,
+          "silhouetteSensibile": true,
+          "descrizione": "Lunghezza della seduta (verso la punta)"
+        },
+        {
+          "chiave": "seduta.larghezza",
+          "unita": "mm",
+          "min": 28,
+          "max": 75,
+          "default": 48,
+          "critico": true,
+          "silhouetteSensibile": true,
+          "descrizione": "Larghezza della seduta"
+        },
+        {
+          "chiave": "seduta.raggioAngoli",
+          "unita": "mm",
+          "min": 0,
+          "max": 30,
+          "default": 12,
+          "descrizione": "Raggio degli angoli (rettangolo, scudo)"
+        },
+        {
+          "chiave": "seduta.inclinazione",
+          "unita": "deg",
+          "min": 0,
+          "max": 15,
+          "default": 6,
+          "descrizione": "Inclinazione della seduta (calzata media), scende verso la punta"
+        },
+        {
+          "chiave": "tappo.forma",
+          "unita": "enum",
+          "default": "ellisse",
+          "valori": [
+            "ellisse",
+            "rettangolo",
+            "come_seduta"
+          ],
+          "descrizione": "Forma del tappo"
+        },
+        {
+          "chiave": "tappo.lunghezza",
+          "unita": "mm",
+          "min": 6,
+          "max": 70,
+          "default": 10,
+          "critico": true,
+          "silhouetteSensibile": true,
+          "descrizione": "Lunghezza del tappo"
+        },
+        {
+          "chiave": "tappo.larghezza",
+          "unita": "mm",
+          "min": 6,
+          "max": 70,
+          "default": 10,
+          "critico": true,
+          "silhouetteSensibile": true,
+          "descrizione": "Larghezza del tappo"
+        },
+        {
+          "chiave": "tappo.altezza",
+          "unita": "mm",
+          "min": 3,
+          "max": 8,
+          "default": 5,
+          "descrizione": "Spessore del sopratacco"
+        },
+        {
+          "chiave": "tappo.materiale",
+          "unita": "enum",
+          "default": "tpu",
+          "valori": [
+            "tpu",
+            "pu"
+          ],
+          "descrizione": "Materiale del sopratacco"
+        },
+        {
+          "chiave": "vita.quota",
+          "unita": "frazione",
+          "min": 0.2,
+          "max": 0.8,
+          "default": 0.55,
+          "silhouetteSensibile": true,
+          "descrizione": "Quota della vita (0 tappo, 1 seduta)"
+        },
+        {
+          "chiave": "vita.scala",
+          "unita": "frazione",
+          "min": 0.25,
+          "max": 1.2,
+          "default": 0.45,
+          "silhouetteSensibile": true,
+          "descrizione": "Larghezza della vita rispetto alla seduta"
+        },
+        {
+          "chiave": "dorso.bombatura",
+          "unita": "mm",
+          "min": -10,
+          "max": 15,
+          "default": 6,
+          "silhouetteSensibile": true,
+          "descrizione": "Bombatura del dorso (verso −Y)"
+        },
+        {
+          "chiave": "fronte.bombatura",
+          "unita": "mm",
+          "min": -12,
+          "max": 10,
+          "default": -4,
+          "silhouetteSensibile": true,
+          "descrizione": "Bombatura del fronte (verso +Y; negativa = concavo)"
+        },
+        {
+          "chiave": "anima.diametro",
+          "unita": "mm",
+          "min": 0,
+          "max": 8,
+          "default": 5,
+          "descrizione": "Perno d’acciaio (0 = assente, altrimenti 3–8)"
+        },
+        {
+          "chiave": "anima.lunghezza",
+          "unita": "mm",
+          "default": 72,
+          "derivato": true,
+          "descrizione": "Altezza − tappo − 8 mm"
+        },
+        {
+          "chiave": "fori.numero",
+          "unita": "n",
+          "min": 0,
+          "max": 4,
+          "default": 3,
+          "descrizione": "Fori di fissaggio sulla seduta"
+        },
+        {
+          "chiave": "fori.diametro",
+          "unita": "mm",
+          "min": 2,
+          "max": 4.5,
+          "default": 3.2,
+          "descrizione": "Diametro dei fori di fissaggio"
+        },
+        {
+          "chiave": "costruzione.processo",
+          "unita": "enum",
+          "default": "stampaggio_iniezione",
+          "valori": [
+            "stampaggio_iniezione",
+            "cnc",
+            "stampa_3d_resina"
+          ],
+          "descrizione": "Processo produttivo"
+        },
+        {
+          "chiave": "costruzione.materiale",
+          "unita": "enum",
+          "default": "abs",
+          "valori": [
+            "abs",
+            "pa6",
+            "pa_gf30",
+            "pu",
+            "legno_faggio",
+            "alluminio"
+          ],
+          "descrizione": "Materiale del corpo"
+        },
+        {
+          "chiave": "costruzione.parete",
+          "unita": "mm",
+          "min": 1.5,
+          "max": 4,
+          "default": 2.2,
+          "descrizione": "Parete dello svuotamento (ABS)"
+        },
+        {
+          "chiave": "costruzione.sformo",
+          "unita": "deg",
+          "min": 0.5,
+          "max": 3,
+          "default": 1.5,
+          "descrizione": "Sformo della cavità"
+        },
+        {
+          "chiave": "costruzione.svuotato",
+          "unita": "bool",
+          "default": true,
+          "derivato": true,
+          "descrizione": "Svuotato dal lato seduta (iniezione e seduta oltre 900 mm²)"
+        },
+        {
+          "chiave": "costruzione.lato",
+          "unita": "enum",
+          "default": "coppia",
+          "valori": [
+            "dx",
+            "sx",
+            "coppia"
+          ],
+          "descrizione": "Destro, sinistro o la coppia"
+        }
+      ]
+    }
+  ],
+  "mappaPartType": {
+    "heel": {
+      "famiglia": "tacco"
+    },
+    "top_lift": {
+      "famiglia": "tacco",
+      "pezzo": "Tappo"
+    },
+    "sole": {
+      "famiglia": "fondo_semplice"
+    },
+    "midsole_wedge": {
+      "famiglia": "fondo_semplice",
+      "variante": "zeppa"
+    },
+    "welt": {
+      "famiglia": "fondo_semplice"
+    },
+    "buckle": {
+      "famiglia": "fibbia",
+      "variante": "rettangolare"
+    },
+    "eyelet": {
+      "famiglia": "occhiello"
+    },
+    "stud": {
+      "famiglia": "borchia",
+      "variante": "cupola"
+    },
+    "ornament": {
+      "famiglia": "placca",
+      "variante": "rettangolo",
+      "soloSuggerimento": true
+    },
+    "shank": {
+      "famiglia": "non_modellabile"
+    },
+    "insole": {
+      "famiglia": "non_modellabile"
+    },
+    "sockliner": {
+      "famiglia": "non_modellabile"
+    },
+    "last": {
+      "famiglia": "non_modellabile"
+    },
+    "counter": {
+      "famiglia": "non_modellabile"
+    },
+    "toe_puff": {
+      "famiglia": "non_modellabile"
+    },
+    "zipper": {
+      "famiglia": "non_modellabile"
+    },
+    "laces_cords": {
+      "famiglia": "non_modellabile"
+    },
+    "leather": {
+      "famiglia": "non_modellabile"
+    },
+    "textile": {
+      "famiglia": "non_modellabile"
+    },
+    "lining": {
+      "famiglia": "non_modellabile"
+    },
+    "trim_edge": {
+      "famiglia": "non_modellabile"
+    },
+    "thread": {
+      "famiglia": "non_modellabile"
+    },
+    "adhesive": {
+      "famiglia": "non_modellabile"
+    },
+    "packaging": {
+      "famiglia": "non_modellabile"
+    }
+  },
+  "mappaLibreria": {
+    "heel": {
+      "famiglia": "tacco"
+    },
+    "sole": {
+      "famiglia": "fondo_semplice"
+    },
+    "closure": {
+      "famiglia": "fibbia",
+      "variante": "rettangolare",
+      "soloSuggerimento": true
+    },
+    "hardware": {
+      "famiglia": "placca",
+      "soloSuggerimento": true
+    },
+    "accessory": {
+      "famiglia": "placca",
+      "soloSuggerimento": true
+    },
+    "texture": {
+      "famiglia": "non_modellabile"
+    },
+    "fabric": {
+      "famiglia": "non_modellabile"
+    },
+    "strap": {
+      "famiglia": "non_modellabile"
+    },
+    "panel": {
+      "famiglia": "non_modellabile"
+    },
+    "lining": {
+      "famiglia": "non_modellabile"
+    },
+    "reinforcement": {
+      "famiglia": "non_modellabile"
+    },
+    "insole": {
+      "famiglia": "non_modellabile"
+    },
+    "lace": {
+      "famiglia": "non_modellabile"
+    }
+  }
+}

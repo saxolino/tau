@@ -57,19 +57,19 @@ describe('web /s/:slug desktop offer', () => {
     mountAt('tau~pub_123', { publication: {}, viewerRole: 'public' });
 
     expect(await screen.findByText('publication workbench')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Open in Tau Desktop' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Open in SinopiaCAD Desktop' })).toBeInTheDocument();
   });
 
   it('offers the app beside a portable share too', async () => {
     mountAt('direct', { kind: 'portable' });
 
-    expect(await screen.findByRole('button', { name: 'Open in Tau Desktop' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Open in SinopiaCAD Desktop' })).toBeInTheDocument();
   });
 
   it('should keep the offer at the bottom-right with the browser continuation action', async () => {
     mountAt('tau~pub_123', { publication: {}, viewerRole: 'public' });
 
-    const openInDesktop = await screen.findByRole('button', { name: 'Open in Tau Desktop' });
+    const openInDesktop = await screen.findByRole('button', { name: 'Open in SinopiaCAD Desktop' });
     const offer = openInDesktop.closest('.fixed');
     expect(offer).toHaveClass(
       'hidden',
@@ -99,7 +99,7 @@ describe('web /s/:slug desktop offer', () => {
   it('offers nothing for a slug the shell would refuse', async () => {
     mountAt('a'.repeat(257), { kind: 'portable' });
 
-    expect(screen.queryByRole('button', { name: 'Open in Tau Desktop' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Open in SinopiaCAD Desktop' })).not.toBeInTheDocument();
   });
 
   it('offers nothing on the desktop build', () => {
@@ -107,6 +107,6 @@ describe('web /s/:slug desktop offer', () => {
 
     mountAt('tau~pub_123', { publication: {}, viewerRole: 'public' });
 
-    expect(screen.queryByRole('button', { name: 'Open in Tau Desktop' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Open in SinopiaCAD Desktop' })).not.toBeInTheDocument();
   });
 });

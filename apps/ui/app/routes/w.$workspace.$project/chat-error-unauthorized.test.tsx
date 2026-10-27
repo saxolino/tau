@@ -42,7 +42,9 @@ describe('ChatErrorUnauthorized', () => {
     renderAt('/w/home/p');
 
     expect(screen.getByText('Sign in to continue')).toBeInTheDocument();
-    expect(screen.getByText('Your turn is paused. Sign in and Tau resumes where it stopped.')).toBeInTheDocument();
+    expect(
+      screen.getByText('Your turn is paused. Sign in and SinopiaCAD resumes where it stopped.'),
+    ).toBeInTheDocument();
     const links = screen.getAllByRole('link');
     expect(links.map((link) => link.textContent)).toEqual(['Sign in', 'Create account']);
   });

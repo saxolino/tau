@@ -37,6 +37,17 @@ export const authMessages = defineMessages({
       retry: 'Riprova',
       signOut: 'Esci',
     },
+    reserved: {
+      title: 'SinopiaCAD è in anteprima riservata',
+      description:
+        'L’account {email} non ha ancora accesso: per ora SinopiaCAD è aperto solo all’amministratore di Sinopia.',
+      back: 'Torna a Sinopia',
+      signOut: 'Esci',
+    },
+    notConfigured: {
+      title: 'SinopiaCAD non è collegato a Sinopia',
+      description: 'Manca la configurazione di Sinopia, quindi l’accesso resta chiuso. Riprova più tardi.',
+    },
     goToSinopia: 'Vai a sinopialab.com',
     refused: 'Accesso a SinopiaCAD',
     signOut: 'Esci',
@@ -93,6 +104,17 @@ export const authMessages = defineMessages({
         'Sinopia did not answer while I was checking the account {email}. Check your connection and try again.',
       retry: 'Try again',
       signOut: 'Sign out',
+    },
+    reserved: {
+      title: 'SinopiaCAD is a reserved preview',
+      description:
+        'The account {email} does not have access yet: for now SinopiaCAD is open only to the Sinopia administrator.',
+      back: 'Back to Sinopia',
+      signOut: 'Sign out',
+    },
+    notConfigured: {
+      title: 'SinopiaCAD is not connected to Sinopia',
+      description: 'Sinopia’s configuration is missing, so access stays closed. Try again later.',
     },
     goToSinopia: 'Go to sinopialab.com',
     refused: 'SinopiaCAD access',

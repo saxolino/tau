@@ -11,6 +11,7 @@
  */
 
 import { useEffect } from 'react';
+import { useHref } from 'react-router';
 import { idPrefix } from '@taucad/types/constants';
 import { useProjects } from '#hooks/use-projects.js';
 import type { ProjectListItem } from '#types/project-library.types.js';
@@ -87,15 +88,17 @@ export function useCanonicalProjectUrlCorrection(projectId: string | undefined, 
   const canonical = useProjectSlugs(projectId);
   const canonicalSlugs = canonical.status === 'resolved' ? canonical.value : undefined;
   const target = canonicalSlugs ? `${projectUrl(canonicalSlugs)}${suffix}` : undefined;
+  // The address bar carries the router's basename (`/cad` on sinopialab.com); `projectUrl` does not.
+  const href = useHref(target ?? '/');
   useEffect(() => {
-    if (target !== undefined && globalThis.location.pathname !== target) {
+    if (target !== undefined && globalThis.location.pathname !== href) {
       globalThis.history.replaceState(
         globalThis.history.state,
         '',
-        `${target}${globalThis.location.search}${globalThis.location.hash}`,
+        `${href}${globalThis.location.search}${globalThis.location.hash}`,
       );
     }
-  }, [target]);
+  }, [target, href]);
 
   return canonicalSlugs;
 }

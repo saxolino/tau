@@ -66,7 +66,11 @@ export function projectSyncIndicator(sync: SyncFacet | undefined, isCloudPending
     return { label: 'Preparing files…', detail: 'Making the downloaded files ready to open.', kind: 'busy' };
   }
   if (isCloudPending) {
-    return { label: 'Connecting to Tau Cloud…', detail: 'Your files will appear when they are ready.', kind: 'busy' };
+    return {
+      label: 'Connecting to SinopiaCAD Cloud…',
+      detail: 'Your files will appear when they are ready.',
+      kind: 'busy',
+    };
   }
   if (sync?.state === 'checking') {
     return { label: 'Checking synced files…', detail: 'Checking this project for remote changes.', kind: 'busy' };

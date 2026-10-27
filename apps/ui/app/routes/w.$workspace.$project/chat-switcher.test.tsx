@@ -52,19 +52,23 @@ describe('ChatSwitcher', () => {
     resetLanguageForTests();
   });
 
-  it('should list the project’s conversations, Tau’s placeholder names as «Agente», then the archived ones', async () => {
+  it('should list the project’s conversations, SinopiaCAD’s placeholder names as «Assistente», then the archived ones', async () => {
     setLanguage('it');
     const user = userEvent.setup();
     renderSwitcher();
 
     await user.click(screen.getByRole('button', { name: 'Conversazioni precedenti' }));
 
+    // The Italian placeholder name is now «Assistente» (the product renamed the agent to the assistant).
     expect(screen.getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
       'Marquise più lunga',
-      'Agente',
+      'Assistente',
       'Conversazioni archiviate',
     ]);
-    expect(screen.getByRole('menuitem', { name: 'Agente' })).toHaveAttribute('href', '/w/home/collana?chat=chat_old');
+    expect(screen.getByRole('menuitem', { name: 'Assistente' })).toHaveAttribute(
+      'href',
+      '/w/home/collana?chat=chat_old',
+    );
   });
 
   it('opens the project archive while preserving the current chat and other query state', async () => {

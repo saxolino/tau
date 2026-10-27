@@ -98,7 +98,7 @@ const codeOf = (error: unknown): string | undefined =>
 function toMetadataFetchError(error: unknown): ImportGitHubError {
   const status = statusOf(error);
   if (status === 404) {
-    return new ImportGitHubError('notFound', "Tau couldn't find a public repository at this address.", {
+    return new ImportGitHubError('notFound', "SinopiaCAD couldn't find a public repository at this address.", {
       cause: error,
     });
   }
@@ -109,7 +109,7 @@ function toMetadataFetchError(error: unknown): ImportGitHubError {
       { cause: error },
     );
   }
-  return new ImportGitHubError('failed', "Tau couldn't read this repository from GitHub. Try again shortly.", {
+  return new ImportGitHubError('failed', "SinopiaCAD couldn't read this repository from GitHub. Try again shortly.", {
     cause: error,
   });
 }

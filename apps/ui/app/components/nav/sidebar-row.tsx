@@ -276,7 +276,7 @@ export function SidebarFailureRow({
           Retry
         </Button>
       ) : (
-        <span className='sr-only'>Tau tries again when you return to this window.</span>
+        <span className='sr-only'>SinopiaCAD tries again when you return to this window.</span>
       )}
     </div>
   );

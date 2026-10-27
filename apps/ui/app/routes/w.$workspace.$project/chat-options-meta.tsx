@@ -92,7 +92,7 @@ export function ChatOptionsMeta(): React.JSX.Element {
           <dt>Credits</dt>
           <dd
             className='text-foreground'
-            aria-label={hasCredits ? `Tau credits: ${formatReceiptTotal(total)}` : undefined}
+            aria-label={hasCredits ? `SinopiaCAD credits: ${formatReceiptTotal(total)}` : undefined}
           >
             {hasCredits ? formatReceiptTotal(total) : none}
           </dd>

@@ -197,7 +197,7 @@ export const describeProjectManifestIssue = (issue: ProjectManifestParseIssue): 
     case 'manifest-unknown-schema': {
       return issue.found === undefined
         ? [`$schema is missing; expected ${issue.supported}.`]
-        : [`$schema ${JSON.stringify(issue.found)} is not supported by this version of Tau.`];
+        : [`$schema ${JSON.stringify(issue.found)} is not supported by this version of SinopiaCAD.`];
     }
     case 'manifest-invalid': {
       return issue.issues.length === 0

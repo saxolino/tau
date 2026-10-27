@@ -155,7 +155,9 @@ export function RevisionStatusAction(): React.JSX.Element | undefined {
             facts={facts}
             backup={
               backupCopy(status.sync, where, status.remote) ??
-              (pendingBackup ? 'Backs up to Tau Cloud automatically after your first save' : 'No backup connected')
+              (pendingBackup
+                ? 'Backs up to SinopiaCAD Cloud automatically after your first save'
+                : 'No backup connected')
             }
             chat={hasDiverged && focusedChat !== undefined ? `${focusedChat.name} · on ${chatBranch}` : undefined}
             revisions={revisions}

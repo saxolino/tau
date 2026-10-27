@@ -37,6 +37,16 @@ function SelectedPieceDetail({
   const record = useSelector(parameterActor, (state) => state?.context.current?.entry);
   const parameters = useSelector(project?.geometryUnits.get(selectedPath), (state) => state?.context.parameterManifest);
   const name = readablePieceName(selected.node.name, language);
+  // A face or edges picked with the inspector's tools narrow what the assistant is told about.
+  const sub = workspace?.inspectorSubSelection;
+  const detail =
+    sub?.componentId === selected.node.id
+      ? sub.kind === 'face'
+        ? t(`inspector.faces.${sub.direction}`)
+        : t(sub.edgeCount === 1 ? 'manualEdit.describe.edgesPickedOne' : 'manualEdit.describe.edgesPicked', {
+            count: sub.edgeCount,
+          })
+      : undefined;
   const group = groupPieceMeasures(selected.manifest, parameters?.defaults ?? {}).find(
     (candidate) => candidate.node?.id === selected.node.id,
   );
@@ -52,7 +62,9 @@ function SelectedPieceDetail({
       }
     >
       <span className='min-w-0 truncate text-xs' title={name}>
-        {location === 'composer' ? t('measures.looking', { name }) : `${name}${value ? ` · ${value}` : ''}`}
+        {location === 'composer'
+          ? t('measures.looking', { name: detail ? `${name} · ${detail}` : name })
+          : `${name}${value ? ` · ${value}` : ''}`}
       </span>
       {location === 'viewer' && selected.reference ? (
         <Button

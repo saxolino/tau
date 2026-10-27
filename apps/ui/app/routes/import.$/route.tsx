@@ -132,7 +132,7 @@ const repositoryUnavailableAdvice = (error: Error | undefined, canChooseFromAcco
       return `GitHub’s limit for public reads was reached. Try again in a few minutes${fromAccount}.`;
     }
     case 'failed': {
-      return 'Tau couldn’t read it from GitHub. Try again shortly.';
+      return 'SinopiaCAD couldn’t read it from GitHub. Try again shortly.';
     }
     default: {
       return canChooseFromAccount
@@ -589,7 +589,7 @@ export default function ImportRoute(): React.JSX.Element {
         ? 'This repository has an invalid tau.json. Fix or remove it before importing as a linked project.'
         : unsupportedLargeBlob === undefined
           ? undefined
-          : `${unsupportedLargeBlob.path} is a large ordinary Git blob. Track it with Git LFS in GitHub before importing so Tau can preserve repository identity.`,
+          : `${unsupportedLargeBlob.path} is a large ordinary Git blob. Track it with Git LFS in GitHub before importing so SinopiaCAD can preserve repository identity.`,
     );
   }, []);
 
@@ -828,7 +828,7 @@ export default function ImportRoute(): React.JSX.Element {
                 <PageNotice
                   title='Couldn’t open this repository'
                   message={repositoryUnavailableAdvice(gitHubError, githubConnectionAvailable !== false)}
-                  detail={gitHubError?.message ?? "Tau couldn't find a public repository at this address."}
+                  detail={gitHubError?.message ?? "SinopiaCAD couldn't find a public repository at this address."}
                 >
                   {githubConnectionAvailable === false ? undefined : (
                     <Button
@@ -1173,7 +1173,7 @@ export default function ImportRoute(): React.JSX.Element {
                     }}
                   />
                   <p className='text-xs text-muted-foreground'>
-                    Tau preserves the selected branch’s commits, tracked files, executable modes and Git remote.
+                    SinopiaCAD preserves the selected branch’s commits, tracked files, executable modes and Git remote.
                     {linkedSelection.repository.access === 'write'
                       ? ' Importing does not push to GitHub. Enable writes for this repository in Settings, then choose Push to upload revisions.'
                       : ' This repository is linked read-only; local revisions remain available.'}
@@ -1203,13 +1203,13 @@ export default function ImportRoute(): React.JSX.Element {
                         {linkedNeedsSetup ? (
                           <>
                             Add or update <span className='font-mono'>tau.json</span>
-                            {linkedSelection.files.length === 0 ? ` and create ${linkedMainFile}` : ''}, with Tau’s{' '}
-                            <span className='font-mono'>.gitignore</span> and{' '}
+                            {linkedSelection.files.length === 0 ? ` and create ${linkedMainFile}` : ''}, with
+                            SinopiaCAD’s <span className='font-mono'>.gitignore</span> and{' '}
                             <span className='font-mono'>.gitattributes</span> entries.
                           </>
                         ) : (
                           <>
-                            Tau’s <span className='font-mono'>.gitignore</span> and{' '}
+                            SinopiaCAD’s <span className='font-mono'>.gitignore</span> and{' '}
                             <span className='font-mono'>.gitattributes</span> entries, only when missing.
                           </>
                         )}

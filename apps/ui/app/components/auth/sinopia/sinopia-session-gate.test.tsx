@@ -117,6 +117,19 @@ describe('SinopiaSessionGate', () => {
     expect(screen.queryByText('Workspace')).not.toBeInTheDocument();
   });
 
+  it('should show the reserved page, and no workspace, to an account that is not an administrator', () => {
+    sinopia.state = { status: 'reserved', user: account };
+
+    renderGate();
+
+    expect(screen.getByRole('heading', { level: 1, name: 'SinopiaCAD è in anteprima riservata' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Torna a Sinopia' })).toHaveAttribute(
+      'href',
+      'https://sinopialab.com/dashboard',
+    );
+    expect(screen.queryByText('Workspace')).not.toBeInTheDocument();
+  });
+
   it('should offer «Riprova» when the access check could not be read', async () => {
     sinopia.state = { status: 'unverified', user: account };
     const user = userEvent.setup();
@@ -150,6 +163,28 @@ describe('SinopiaSessionGate', () => {
     });
   });
 
+  it('should go back to /cad/… after Google without doubling the sub-path', async () => {
+    sinopia.state = { status: 'signed-in', user: account };
+    // `location.pathname` carries the router's basename, and so does what the round trip remembered.
+    sinopia.returnTo = '/cad/w/studio/scarpa?chat=uno#vista';
+
+    render(
+      <MemoryRouter basename='/cad' initialEntries={['/cad/w/studio/scarpa?code=codice-google']}>
+        <Address />
+        <SinopiaSessionGate placeholder={<p>Caricamento del progetto</p>}>
+          <p>Workspace</p>
+        </SinopiaSessionGate>
+      </MemoryRouter>,
+    );
+
+    await vi.waitFor(() => {
+      expect(session.settleReturn).toHaveBeenCalledWith('/cad/w/studio/scarpa?chat=uno#vista');
+    });
+    // The router reports the address without its basename: `/cad/cad/…` would read `/cad/w/…` here.
+    expect(screen.getByRole('status', { name: 'Indirizzo' })).toHaveTextContent('/w/studio/scarpa?chat=uno#vista');
+    expect(screen.getByRole('status', { name: 'Indirizzo' })).not.toHaveTextContent('/cad');
+  });
+
   it('should show the sign-in screen and the notice in English when that is the language', () => {
     setLanguage('en');
     sinopia.state = { status: 'signed-out', notice: { code: 'waitlisted' } };
@@ -165,11 +200,27 @@ describe('SinopiaSessionGate', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('You’re on the Sinopia waiting list.');
   });
 
-  it('should gate nothing without a Sinopia project', () => {
+  it('should gate nothing without a Sinopia project on the dev server', () => {
     sinopia.state = { status: 'disabled' };
 
     renderGate();
 
     expect(screen.getByText('Workspace')).toBeInTheDocument();
+  });
+
+  it('should keep the workspace closed on a web build without a Sinopia project', () => {
+    vi.stubEnv('DEV', false);
+    try {
+      sinopia.state = { status: 'disabled' };
+
+      renderGate();
+
+      expect(screen.queryByText('Workspace')).not.toBeInTheDocument();
+      expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(
+        /not connected to Sinopia|non è collegato a Sinopia/,
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

@@ -30,9 +30,9 @@ describe('model component appearance', () => {
 
   it('mixes cap tint by emphasis while preserving selected highlight strength', () => {
     expect(mixModelEmphasisTint(0x00_00_00, 'none')).toBe(0x00_00_00);
-    expect(mixModelEmphasisTint(0x00_00_00, 'hover')).toBe(0x59_4b_1a);
-    expect(mixModelEmphasisTint(0x00_00_00, 'selected')).toBe(0xb3_95_34);
-    expect(mixModelEmphasisTint(0xdd_dd_dd, 'selected')).toBe(0xf5_d7_76);
+    expect(mixModelEmphasisTint(0x00_00_00, 'hover')).toBe(0x2c_33_3a);
+    expect(mixModelEmphasisTint(0x00_00_00, 'selected')).toBe(0x58_66_73);
+    expect(mixModelEmphasisTint(0xdd_dd_dd, 'selected')).toBe(0x9a_a8_b6);
     expect(mixModelEmphasisTint(0xdd_dd_dd, 'focused')).toBe(mixModelEmphasisTint(0xdd_dd_dd, 'selected'));
     expect(mixModelEmphasisTint(0xff_ff_ff, 'hover')).not.toBe(0xff_ff_ff);
     expect(mixModelEmphasisTint(0x20_40_60, 'hover')).not.toBe(mixModelEmphasisTint(0x20_40_60, 'selected'));

@@ -37,12 +37,12 @@ describe('ChatErrorPausedTurn', () => {
       <ChatErrorPausedTurn resumable reason='server_error: The server had an error while processing your request.' />,
     );
 
-    expect(screen.getByText('Tau paused this turn')).toBeInTheDocument();
+    expect(screen.getByText('SinopiaCAD paused this turn')).toBeInTheDocument();
     // The consequence is its own paragraph after the provider's sentence and
     // ahead of the action, never folded into a disclosure (DESIGN).
     const paragraphs = [...container.querySelectorAll('p')].map((node) => node.textContent);
     expect(paragraphs).toEqual([
-      'Tau paused this turn',
+      'SinopiaCAD paused this turn',
       'server_error: The server had an error while processing your request.',
       'Everything up to here is saved.',
     ]);

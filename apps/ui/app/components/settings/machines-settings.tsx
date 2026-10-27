@@ -110,8 +110,8 @@ const refusals: ReadonlyMap<string, string | undefined> = new Map([
     "The machine's certificate changed since the code was saved. Enter the access code to bind it again.",
   ],
   ['MACHINE_BINDING_BUSY', "Resolve this machine's open jobs first."],
-  ['MACHINE_CREDENTIAL_SAVE_FAILED', 'Tau could not save the access code to your Keychain.'],
-  ['SECRET_VAULT_UNAVAILABLE', 'Tau could not reach your Keychain.'],
+  ['MACHINE_CREDENTIAL_SAVE_FAILED', 'SinopiaCAD could not save the access code to your Keychain.'],
+  ['SECRET_VAULT_UNAVAILABLE', 'SinopiaCAD could not reach your Keychain.'],
   /* The ceremony's second half goes through the desktop shell, not the facet that words these for every other call. */
   ['MACHINE_STORE_OWNED_ELSEWHERE', printersInUseElsewhere],
   ['AUTHORITY_ALREADY_OWNED', printersInUseElsewhere],
@@ -195,7 +195,7 @@ const bind = async (client: MachineClient, input: BindInput): Promise<MachineBin
   }
   const bridge = desktopBridge();
   if (bridge === undefined) {
-    throw new Error('This runtime cannot complete the binding ceremony; use the Tau desktop app.');
+    throw new Error('This runtime cannot complete the binding ceremony; use the SinopiaCAD desktop app.');
   }
   /* The shell pins from the endpoint the provider connects to, so only the ceremony and a typed code travel. */
   return bridge.machines.completeBinding({
@@ -257,7 +257,9 @@ const removalConsequence = (manifest: MachineManifest): string => {
   const { jobs } = manifest;
   const keepsRunning = !isSimulatedMachine(manifest) && jobs.type === 'supported' && jobs.delivery === 'stored';
   return [
-    takesCode(manifest) ? 'Tau stops watching it and forgets its saved access code.' : 'Tau stops watching it.',
+    takesCode(manifest)
+      ? 'SinopiaCAD stops watching it and forgets its saved access code.'
+      : 'SinopiaCAD stops watching it.',
     keepsRunning ? `A job in progress keeps running on the ${nounOf(manifest)}.` : undefined,
   ]
     .filter((sentence) => sentence !== undefined)
@@ -431,7 +433,7 @@ const BoundMachine = memo(function BoundMachine({
               Remove {name}?
             </p>
             <p id={consequenceId}>
-              {provider === undefined ? 'Tau stops watching it.' : removalConsequence(provider.manifest)}
+              {provider === undefined ? 'SinopiaCAD stops watching it.' : removalConsequence(provider.manifest)}
             </p>
             {refusal === undefined ? null : (
               <p role='alert' className='flex items-start gap-1.5'>

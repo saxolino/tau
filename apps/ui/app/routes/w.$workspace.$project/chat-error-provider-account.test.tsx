@@ -126,7 +126,7 @@ describe('ChatErrorProviderAccount (Tau Cloud)', () => {
     render(<ChatErrorProviderAccountCloud description={openAiMessage} details={openAiDetails} />);
 
     const notice = screen.getByRole('status', { name: 'OpenAI models are unavailable right now' });
-    expect(notice).toHaveTextContent('Tau could not run this turn on OpenAI. You were not charged for it.');
+    expect(notice).toHaveTextContent('SinopiaCAD could not run this turn on OpenAI. You were not charged for it.');
     expect(actionLabels(notice)).toEqual(['Switch model', 'Try again']);
     expect(within(notice).queryByRole('link')).not.toBeInTheDocument();
     expect(within(notice).queryByRole('button', { name: /details/iu })).not.toBeInTheDocument();

@@ -294,7 +294,7 @@ function JobReview({
               jobs.type === 'supported'
                 ? jobs.delivery === 'stored'
                   ? 'stored on the machine'
-                  : 'fed by Tau line by line'
+                  : 'fed by SinopiaCAD line by line'
                 : undefined,
             ]
               .filter(Boolean)
@@ -452,7 +452,7 @@ function JobProgress({
         />
         <p className='text-xs text-muted-foreground'>
           The press at the machine is the proof someone is there.
-          {delivery === 'streamed' ? ' Keep this computer awake: Tau feeds the program for the whole run.' : ''}
+          {delivery === 'streamed' ? ' Keep this computer awake: SinopiaCAD feeds the program for the whole run.' : ''}
         </p>
         {error ? <PrintNotice tone='error'>{error}</PrintNotice> : null}
         <div>
@@ -502,8 +502,8 @@ function JobProgress({
       {job.state === 'preparing' ? null : <PrintSteps steps={progressSteps(job, delivery)} />}
       {job.state === 'confirming' ? (
         <p className='text-xs text-muted-foreground'>
-          The start was sent. Tau confirms it from the machine&apos;s own report, usually within a minute; nothing more
-          is sent.
+          The start was sent. SinopiaCAD confirms it from the machine&apos;s own report, usually within a minute;
+          nothing more is sent.
         </p>
       ) : null}
     </div>
@@ -546,8 +546,8 @@ function UnknownCard({ client, job }: { readonly client: MachineClient; readonly
         The machine hasn&apos;t confirmed the start of {job.program.name}.
       </p>
       <p className='text-xs text-muted-foreground'>
-        Check the machine. Tau keeps watching and moves this to the run as soon as the machine reports it. Nothing is
-        resent.
+        Check the machine. SinopiaCAD keeps watching and moves this to the run as soon as the machine reports it.
+        Nothing is resent.
       </p>
       <p className='text-xs text-muted-foreground'>
         Artifact <span className='font-mono'>{shortDigest(job.artifact.digest)}</span>

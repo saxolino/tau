@@ -1,0 +1,9 @@
+{
+  "$schema": "https://tau.new/schemas/tau-v1.json",
+  "name": "Fibbia · strumenti manuali",
+  "description": "Fibbia a due pezzi per verificare le modifiche manuali e lo STEP: telaio con traversino e ardiglione separato.",
+  "tags": ["smlib", "accessori", "fibbia"],
+  "assets": {
+    "main": { "entryPath": "main.ts" }
+  }
+}

@@ -305,7 +305,7 @@ describe('a renewal GitHub refuses for good (R-U3)', () => {
 });
 
 describe('opening a GitHub-bound project', () => {
-  it('should withdraw the credential for its repository when there is no Tau session (R-U2)', async () => {
+  it('should withdraw the credential for its repository when there is no SinopiaCAD session (R-U2)', async () => {
     setRevisionSessionUser(undefined);
 
     const scripted = mountBound();
@@ -315,7 +315,12 @@ describe('opening a GitHub-bound project', () => {
 
     expect(githubToken).not.toHaveBeenCalled();
     expect(scripted.frames()).toStrictEqual([
-      { apiBaseUrl, origin: 'https://github.com', repositoryUrl, unavailable: 'Sign in to Tau to sync with GitHub.' },
+      {
+        apiBaseUrl,
+        origin: 'https://github.com',
+        repositoryUrl,
+        unavailable: 'Sign in to SinopiaCAD to sync with GitHub.',
+      },
     ]);
   });
 
@@ -334,7 +339,7 @@ describe('opening a GitHub-bound project', () => {
       apiBaseUrl,
       origin: 'https://github.com',
       repositoryUrl,
-      unavailable: 'Open this project in Tau to sync with GitHub.',
+      unavailable: 'Open this project in SinopiaCAD to sync with GitHub.',
     });
     expect(scripted.client.close).toHaveBeenCalledOnce();
   });
@@ -365,7 +370,7 @@ describe('opening a GitHub-bound project', () => {
         apiBaseUrl,
         origin: 'https://github.com',
         repositoryUrl,
-        unavailable: "Tau couldn't reach GitHub. Try again shortly.",
+        unavailable: "SinopiaCAD couldn't reach GitHub. Try again shortly.",
       },
     ]);
     /* The open's first request met the withdrawn credential. */
@@ -672,7 +677,7 @@ describe('replacing a backup with another remote (R2)', () => {
     expect(githubProjectBinding.get(projectId)?.repositoryId).toBe(99);
   });
 
-  it('should keep a Tau Cloud backup unbound and drop the refused repository credential', async () => {
+  it('should keep a SinopiaCAD Cloud backup unbound and drop the refused repository credential', async () => {
     githubProjectBinding.remove(projectId);
     const tauRemote = { kind: 'tau', url: 'http://localhost:4000/v1/git/alpha.git' } as const;
     const scripted = await mountBackedUp(tauRemote);
@@ -688,7 +693,7 @@ describe('replacing a backup with another remote (R2)', () => {
     expect(githubProjectBinding.get(projectId)).toBeUndefined();
   });
 
-  it('should keep the GitHub binding when Tau Cloud refuses to replace it', async () => {
+  it('should keep the GitHub binding when SinopiaCAD Cloud refuses to replace it', async () => {
     const scripted = await mountBackedUp(githubRemote);
 
     await regionCommands?.connectRemote('tau');
@@ -700,7 +705,7 @@ describe('replacing a backup with another remote (R2)', () => {
       phase: 'connected',
       refusedReplacement: {
         kind: 'tau',
-        error: 'Syncing files to Tau Cloud is a paid plan feature.',
+        error: 'Syncing files to SinopiaCAD Cloud is a paid plan feature.',
         reason: 'notEntitled',
         attempt: 1,
       },

@@ -7,12 +7,12 @@ import type { ProjectAvailability } from '#hooks/use-project-availability.js';
 import { useRevisionClient, useRevisionCommands, useRevisionStatus } from '#hooks/use-revision-status.js';
 
 const messages = {
-  connecting: ['Connecting to Tau Cloud', 'Opening this project on this device.'],
+  connecting: ['Connecting to SinopiaCAD Cloud', 'Opening this project on this device.'],
   downloading: ['Downloading project files', 'Your model will open when its files are ready.'],
   preparing: ['Preparing project files', 'Getting your downloaded files ready to use.'],
   offline: ['Connect to download this project', 'This project is not on this device yet. Reconnect, then try again.'],
   failed: ['Couldn’t download this project', 'The download did not finish. Try again to continue.'],
-  account: ['Sign in to continue', 'Use the account that opened this project from Tau Cloud.'],
+  account: ['Sign in to continue', 'Use the account that opened this project from SinopiaCAD Cloud.'],
   ready: ['Project files ready', ''],
 } satisfies Record<ProjectAvailability, readonly [string, string]>;
 

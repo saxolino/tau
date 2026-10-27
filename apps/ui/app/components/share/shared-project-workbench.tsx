@@ -58,7 +58,7 @@ const SharedRunConsent = ({
       </h1>
       <p className='mt-2 text-sm text-muted-foreground'>
         {isDesktopTarget()
-          ? 'This model is code written by its author. Running it executes that code in Tau on your computer, with access to your signed-in session. Run it only if you trust where it came from.'
+          ? 'This model is code written by its author. Running it executes that code in SinopiaCAD on your computer, with access to your signed-in session. Run it only if you trust where it came from.'
           : 'This model is code written by its author. Running it executes that code in this browser, with access to this site and your signed-in session. Run it only if you trust where it came from.'}
       </p>
       <div className='mt-6 flex flex-col gap-3 sm:flex-row sm:justify-center'>

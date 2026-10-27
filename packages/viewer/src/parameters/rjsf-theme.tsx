@@ -269,8 +269,8 @@ function FieldTemplate(props: FieldTemplateProps<Record<string, unknown>, RJSFSc
   const inferredHint =
     fieldProjection?.guessed === true
       ? fieldProjection.inferredFields?.includes('unit') === true
-        ? 'Inferred unit'
-        : 'Inferred semantics'
+        ? (formContext.presentationOptions?.inferredHint?.('unit') ?? 'Inferred unit')
+        : (formContext.presentationOptions?.inferredHint?.('semantics') ?? 'Inferred semantics')
       : undefined;
 
   const handleReset = () => {
@@ -295,7 +295,9 @@ function FieldTemplate(props: FieldTemplateProps<Record<string, unknown>, RJSFSc
               aria-label={`Parameter: ${prettyLabel}`}
             >
               <HighlightText text={prettyLabel} searchTerm={formContext.searchTerm} />
-              {required ? <span className='text-feature/50'>*</span> : null}
+              {required && formContext.presentationOptions?.hideRequiredMark !== true ? (
+                <span className='text-feature/50'>*</span>
+              ) : null}
             </span>
             {inferredHint ? (
               <Tooltip>
@@ -317,7 +319,7 @@ function FieldTemplate(props: FieldTemplateProps<Record<string, unknown>, RJSFSc
           {fieldHasValue && canReset ? (
             <ModifiedIndicator
               onReset={handleReset}
-              tooltip={`Reset ${prettyLabel}`}
+              tooltip={formContext.presentationOptions?.resetLabel?.(prettyLabel) ?? `Reset ${prettyLabel}`}
               tooltipSide='left'
               className='group-hover/field:**:data-[slot=dot]:opacity-0 group-hover/field:**:data-[slot=icon]:opacity-100'
             />
@@ -522,6 +524,15 @@ function ArrayFieldTemplate(
       setIsOpen(true);
     }
   }, [formContext.searchTerm, shouldShowArray]);
+
+  // A host that shows this array its own way takes the whole field.
+  const hosted = formContext.presentationOptions?.arrayField?.(
+    arrayPath ?? [],
+    Array.isArray(props.formData) ? (props.formData as readonly unknown[]) : [],
+  );
+  if (hosted !== undefined) {
+    return hosted;
+  }
 
   // Don't render the array if it wouldn't be visible
   if (!shouldShowArray) {

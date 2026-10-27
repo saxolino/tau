@@ -299,7 +299,7 @@ export function GithubGistManagement({
           <AlertDialogHeader>
             <AlertDialogTitle>Unpublish this GitHub Gist?</AlertDialogTitle>
             <AlertDialogDescription>
-              This permanently deletes the Gist from GitHub. Existing Tau and GitHub links will stop working.
+              This permanently deletes the Gist from GitHub. Existing SinopiaCAD and GitHub links will stop working.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

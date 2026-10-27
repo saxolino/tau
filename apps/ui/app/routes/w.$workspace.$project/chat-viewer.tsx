@@ -3,7 +3,26 @@ import { useProjectAvailability } from '#hooks/use-project-availability.js';
 import { ProjectSyncPlaceholder } from '#routes/w.$workspace.$project/project-sync-placeholder.js';
 import { interactiveViewContent } from '#lib/interactive-view-content.js';
 import type { AppCapabilitiesManifest } from '#types/runtime-client.alias.js';
+import { useSelector } from '@xstate/react';
+import { useManualEdits } from '#hooks/use-manual-edits.js';
+import { useManualFaceTool } from '#hooks/use-manual-face-tool.js';
+import { useManualDirectTool } from '#hooks/use-manual-direct-tool.js';
+import { useManualSketchTool } from '#hooks/use-manual-sketch-tool.js';
+import { ManualSketchBar } from '#routes/w.$workspace.$project/manual-sketch-bar.js';
+import { matchesManualSidecarRevision } from '#services/manual-face-draft.js';
+import { formatNumber, useTranslation } from '#i18n/translate.js';
+import { useProjectWorkspace } from '#routes/w.$workspace.$project/project-workspace-context.js';
+import { cn } from '@taucad/ui/utils/cn';
+import { useManualInspectorDraft } from '#routes/w.$workspace.$project/manual-inspector-draft.js';
+import { ManualEditPanel } from '#routes/w.$workspace.$project/manual-edit-panel.js';
 import { memo, useEffect, useCallback, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { createPortal } from 'react-dom';
+import { manualDocumentSchema } from '@taucad/smlib/manual-operations';
+import { randomUuid } from '@taucad/utils/id';
+import { useSelectedPiece } from '#hooks/use-selected-piece.js';
+import { useProducibilityOverlay } from '#routes/w.$workspace.$project/producibilita-context.js';
+import { faceDirection } from '#lib/inspector-selection.js';
+import { GestureQuota } from '#routes/w.$workspace.$project/gesture-quota.js';
 import type { FileEntry } from '@taucad/types';
 import { asKnownArtifact } from '@taucad/runtime';
 import type { Evaluation, Rendering, RuntimeDocument, ViewSubscription } from '@taucad/runtime';
@@ -475,7 +494,7 @@ const ChatViewerContent = memo(function ({
     <CadProvider cadRef={cadActor}>
       <ExactMeasurementProvider measure={measureExact}>
         <GraphicsProvider graphicsRef={graphicsActor} seed={cameraSeed}>
-          <ViewerContent viewId={viewId} entryPath={entryPath} profile={profile} />
+          <ViewerContent viewId={viewId} entryPath={entryPath} profile={profile} panelApi={panelApi} />
         </GraphicsProvider>
       </ExactMeasurementProvider>
     </CadProvider>
@@ -505,12 +524,60 @@ const ViewerContent = memo(function ({
   viewId,
   entryPath,
   profile,
+  panelApi,
 }: {
   readonly viewId: string;
   readonly entryPath: string;
   readonly profile: 'editor' | 'shared';
+  readonly panelApi: ChatViewerProps['panelApi'];
 }): React.JSX.Element {
-  const { projectRef, entriesRecord, viewRecords } = useProject();
+  const { projectRef, entriesRecord, viewRecords, modelInteractionRef } = useProject();
+  const { t, language } = useTranslation();
+  const workspace = useProjectWorkspace({ enableNoContext: true });
+  const [localManualOpen, setLocalManualOpen] = useState(false);
+  const isManualOwner = workspace?.manualViewId === viewId;
+  // One work mode: the tools are on whenever the inspector is on screen to hold them, for the viewer that owns them.
+  const inspectorSlot = isManualOwner ? workspace.inspectorSlot : undefined;
+  const isManualEditOpen = workspace ? inspectorSlot !== undefined : localManualOpen;
+  const registerManualViewer = workspace?.registerManualViewer;
+  const subscribePanelActive = useCallback(
+    (listener: () => void) => {
+      if (!registerManualViewer) {
+        return () => undefined;
+      }
+      const subscription = panelApi.onDidActiveChange(() => {
+        listener();
+      });
+      return () => {
+        subscription.dispose();
+      };
+    },
+    [panelApi, registerManualViewer],
+  );
+  const readPanelActive = useCallback(
+    () => (registerManualViewer ? panelApi.isActive : true),
+    [panelApi, registerManualViewer],
+  );
+  const isActiveViewer = useSyncExternalStore(subscribePanelActive, readPanelActive, readPanelActive);
+  const { draftLayout, isToolOpen, onDraftLayoutChange } = useManualInspectorDraft({
+    isOpen: isManualEditOpen,
+    isActive: isActiveViewer,
+  });
+  const manualManifest = useSelector(
+    modelInteractionRef,
+    (state) => state.context.unitsById[deriveModelInteractionUnitId({ sourceFile: entryPath })]?.manifest,
+  );
+  const manualTargets = useMemo(
+    () => [
+      ...new Set(
+        Object.values(manualManifest?.nodesById ?? {}).flatMap((node) => {
+          const name = node.extras?.['manualTargetName'];
+          return typeof name === 'string' && name.length > 0 ? [name] : [];
+        }),
+      ),
+    ],
+    [manualManifest],
+  );
   const viewCommands = useWorkbenchViewCommands();
   const cadRef = useCad();
   const evaluation = useCadSelector(selectCadEvaluation, undefined);
@@ -518,6 +585,14 @@ const ViewerContent = memo(function ({
   const runtimeDocument = useCadSelector(selectCadDocument, undefined);
   const capabilities = useCadSelector(selectCadCapabilities, undefined);
   const kernelId = useCadSelector(selectCadActiveKernelId, undefined);
+  const manualEdits = useManualEdits(entryPath, profile === 'editor' && kernelId === 'smlib');
+  useEffect(() => {
+    return registerManualViewer?.(viewId, profile === 'editor' && kernelId === 'smlib', isActiveViewer);
+  }, [profile, kernelId, registerManualViewer, viewId, isActiveViewer]);
+  // Loading only gates the manual-edit readiness below, so any other viewer must not re-render on every
+  // loading flip (a render transition that presents no geometry re-renders nothing).
+  const isManualCapable = profile === 'editor' && kernelId === 'smlib';
+  const isCadLoading = useCadSelector((snapshot) => isManualCapable && selectIsCadLoading(snapshot), false);
   const savedView = viewRecords.get(viewId);
   const selectedKernelView = savedView?.selectedKernelView;
   const offeredViewId = selectedKernelView ?? (evaluation?.success ? evaluation.views[0]?.id : undefined);
@@ -651,8 +726,218 @@ const ViewerContent = memo(function ({
   const previews = useSyncExternalStore(subscribePreviews, getPreviewSnapshot, getPreviewSnapshot);
   const presentedArtifact = useGraphicsSelector((state) => state.context.artifact);
   const presentedArtifactKey = useGraphicsSelector((state) => state.context.artifactKey);
+  // E1: the check in focus in the inspector, tinted on the model it was measured on.
+  const producibilityOverlay = useProducibilityOverlay();
   const presentedSourceFile = useGraphicsSelector((state) => state.context.artifactSourceFile);
   const presentedKey = useGraphicsSelector((state) => state.context.gltfPresentation.presentedKey);
+  // Only the settled key (a primitive): selecting the whole presentation object re-rendered the viewer on every
+  // graphics transition, which the render-count test forbids.
+  const settledPresentedKey = useGraphicsSelector((state) => {
+    const { phase, requestedRevision, presentedRevision, presentedKey: key } = state.context.gltfPresentation;
+    return phase === 'presented' && requestedRevision === presentedRevision ? key : undefined;
+  });
+  const manualProjectionReady =
+    profile === 'editor' &&
+    kernelId === 'smlib' &&
+    !isCadLoading &&
+    !failureIssues?.length &&
+    !unavailable &&
+    evaluation?.success === true &&
+    !evaluation.transient &&
+    rendering?.success === true &&
+    !rendering.transient &&
+    rendering.evaluationId === evaluation.id &&
+    rendering.view === offeredViewId &&
+    canonicalJson(rendering.sourceRevision ?? {}) === canonicalJson(evaluation.sourceRevision ?? {}) &&
+    matchesManualSidecarRevision(manualEdits.contentDigest, rendering.sourceRevision, entryPath);
+  const showManualProjection = (nextId: 'drawing' | 'model'): void => {
+    const snapshot = cadRef?.getSnapshot();
+    const current = snapshot?.context;
+    if (
+      !manualProjectionReady ||
+      !snapshot ||
+      selectIsCadLoading(snapshot) ||
+      current?.document !== runtimeDocument ||
+      current?.evaluation !== evaluation ||
+      !evaluation.views.some((view) => view.id === nextId)
+    ) {
+      return;
+    }
+    setLocalInstanceChoice(viewId, undefined);
+    void viewCommands.edit(viewId, (current) => {
+      const record = current ?? newViewRecord(entryPath);
+      return {
+        ...record,
+        selectedKernelView: nextId === evaluation.views[0]?.id ? undefined : nextId,
+        kernelViews: record.kernelViews?.map((view) =>
+          view.id === nextId ? { ...view, authoredInstance: undefined } : view,
+        ),
+      };
+    });
+  };
+  const hasManualDrawing =
+    manualProjectionReady &&
+    evaluation.views.some((view) => view.id === 'drawing' && view.mimeType === 'image/svg+xml');
+  const hasManualModel =
+    manualProjectionReady &&
+    evaluation.views.some((view) => view.id === 'model' && view.mimeType === 'model/gltf-binary');
+  const faceReady =
+    profile === 'editor' &&
+    kernelId === 'smlib' &&
+    !isCadLoading &&
+    !failureIssues?.length &&
+    !unavailable &&
+    evaluation?.success === true &&
+    !evaluation.transient &&
+    rendering?.success === true &&
+    !rendering.transient &&
+    rendering.evaluationId === evaluation.id &&
+    rendering.hash === presentedArtifactKey &&
+    presentedSourceFile === entryPath &&
+    settledPresentedKey === rendering.hash &&
+    matchesManualSidecarRevision(manualEdits.contentDigest, rendering.sourceRevision, entryPath);
+  const manualUnitId = deriveModelInteractionUnitId({ sourceFile: entryPath });
+  // A piece picked by a tool is the page's one selection: the measures, the chip and the agent follow it.
+  const selectManualPiece = useCallback(
+    (componentId: string) => {
+      modelInteractionRef.send({ type: 'selectComponent', unitId: manualUnitId, componentId, source: 'viewer' });
+    },
+    [modelInteractionRef, manualUnitId],
+  );
+  const faceTool = useManualFaceTool({
+    edits: manualEdits,
+    manifest: manualManifest,
+    runtimeDocument,
+    renderStamp: rendering?.success ? `${rendering.evaluationId}:${rendering.requestId}:${rendering.hash}` : undefined,
+    artifactKey: presentedKey,
+    ready: faceReady,
+    open: isToolOpen,
+    onSelectPiece: selectManualPiece,
+  });
+  const directTool = useManualDirectTool({
+    edits: manualEdits,
+    manifest: manualManifest,
+    runtimeDocument,
+    renderStamp: rendering?.success ? `${rendering.evaluationId}:${rendering.requestId}:${rendering.hash}` : undefined,
+    artifactKey: presentedKey,
+    ready: faceReady,
+    open: isToolOpen,
+    onSelectPiece: selectManualPiece,
+  });
+  // A piece chosen elsewhere (the measures list, a chip, the agent's summary) gets the body handles; a cleared
+  // selection drops the face or the edges the tools held.
+  const sharedPiece = useSelectedPiece(entryPath);
+  const sharedPieceId = sharedPiece?.node.id;
+  const sharedPieceName = sharedPiece?.node.extras?.['manualTargetName'];
+  // E4: the sketch on the model; while it is open the face and body tools step aside.
+  const sketch = useManualSketchTool({
+    edits: manualEdits,
+    manifest: manualManifest,
+    ready: faceReady,
+    open: isToolOpen,
+    targets: manualTargets,
+    selectedPiece: typeof sharedPieceName === 'string' ? sharedPieceName : undefined,
+  });
+  const isSketching = sketch.controls.active;
+  const selectDirectPiece = directTool.controls.onSelectPiece;
+  const clearFace = faceTool.controls.onClear;
+  const cancelDirect = directTool.controls.onCancel;
+  const directMode = directTool.controls.mode;
+  const directPieceId = directTool.controls.selected?.componentId;
+  const facePieceId = faceTool.controls.selected?.componentId;
+  useEffect(() => {
+    if (!isToolOpen || !faceReady) {
+      return;
+    }
+    if (sharedPieceId === undefined) {
+      if (facePieceId !== undefined) {
+        clearFace?.();
+      }
+      if (directPieceId !== undefined) {
+        cancelDirect();
+      }
+      return;
+    }
+    if (directMode === 'translate' || directMode === 'rotate' || directMode === 'scale') {
+      if (directPieceId !== sharedPieceId) {
+        selectDirectPiece?.(sharedPieceId);
+      }
+    } else if (facePieceId !== undefined && facePieceId !== sharedPieceId) {
+      clearFace?.();
+    } else if (
+      (directMode === 'fillet' || directMode === 'chamfer') &&
+      directPieceId !== undefined &&
+      directPieceId !== sharedPieceId
+    ) {
+      cancelDirect();
+    }
+  }, [
+    isToolOpen,
+    faceReady,
+    sharedPieceId,
+    directMode,
+    directPieceId,
+    facePieceId,
+    selectDirectPiece,
+    clearFace,
+    cancelDirect,
+  ]);
+  // The face or the edges narrow the inspector's title and the assistant's suggestions.
+  const setInspectorSubSelection = isManualOwner ? workspace.setInspectorSubSelection : undefined;
+  const faceNormal = faceTool.controls.selected?.normal;
+  const subDirection = faceNormal ? faceDirection(faceNormal) : undefined;
+  const edgeCount = directTool.controls.selected?.edgeCount ?? 0;
+  const isEdgeMode = directMode === 'fillet' || directMode === 'chamfer';
+  useEffect(() => {
+    if (!setInspectorSubSelection) {
+      return;
+    }
+    setInspectorSubSelection(
+      facePieceId !== undefined && subDirection !== undefined
+        ? { kind: 'face', componentId: facePieceId, direction: subDirection }
+        : isEdgeMode && directPieceId !== undefined && edgeCount > 0
+          ? { kind: 'edge', componentId: directPieceId, edgeCount }
+          : undefined,
+    );
+  }, [setInspectorSubSelection, facePieceId, subDirection, isEdgeMode, directPieceId, edgeCount]);
+  useEffect(() => () => setInspectorSubSelection?.(undefined), [setInspectorSubSelection]);
+  // The inspector's size cells scale a piece in proportion through the same manual history.
+  const setScalePiece = isManualOwner ? workspace.setScalePiece : undefined;
+  const manualDocument = manualEdits.document;
+  const commitManual = manualEdits.commit;
+  useEffect(() => {
+    if (!setScalePiece) {
+      return;
+    }
+    if (!faceReady || !manualDocument) {
+      setScalePiece(undefined);
+      return;
+    }
+    setScalePiece(async (componentId, factor) => {
+      const extras = manualManifest?.nodesById[componentId]?.extras;
+      const name = extras?.['manualTargetName'];
+      const bounds = extras?.['manualBounds'] as { min?: number[]; max?: number[] } | undefined;
+      if (typeof name !== 'string' || !bounds?.min || !bounds.max || !(factor > 0) || !Number.isFinite(factor)) {
+        return false;
+      }
+      const origin = [0, 1, 2].map((axis) => ((bounds.min![axis] ?? 0) + (bounds.max![axis] ?? 0)) / 2) as [
+        number,
+        number,
+        number,
+      ];
+      const next = manualDocumentSchema.safeParse({
+        ...manualDocument,
+        operations: [
+          ...manualDocument.operations,
+          { id: randomUuid(), type: 'scale', target: { name }, origin, factor },
+        ],
+      });
+      return next.success ? commitManual(next.data) : false;
+    });
+    return () => {
+      setScalePiece(undefined);
+    };
+  }, [setScalePiece, faceReady, manualDocument, commitManual, manualManifest]);
   const viewerActionMenuData = partMenu.openMenuData;
   const viewerPart =
     viewerActionMenuData?.node.kind === 'part' && viewerActionMenuData.node.primitiveRefs?.length
@@ -768,145 +1053,250 @@ const ViewerContent = memo(function ({
     }
   }, [closePartMenu, isGeometryUnitClosed]);
 
+  const manualPanel = (onClose: (() => void) | undefined): React.JSX.Element => (
+    <ManualEditPanel
+      key={entryPath}
+      onDraftLayoutChange={onDraftLayoutChange}
+      document={manualEdits.document}
+      targets={manualTargets}
+      onCommit={manualEdits.commit}
+      onUndo={manualEdits.undo}
+      onRedo={manualEdits.redo}
+      canUndo={manualEdits.canUndo}
+      canRedo={manualEdits.canRedo}
+      isLoading={manualEdits.loading}
+      isSaving={manualEdits.saving}
+      error={manualEdits.error}
+      faceControls={faceTool.controls}
+      directControls={directTool.controls}
+      sketchControls={sketch.controls}
+      onShowProfiles={
+        hasManualDrawing && offeredViewId !== 'drawing'
+          ? () => {
+              showManualProjection('drawing');
+            }
+          : undefined
+      }
+      onShowModel={
+        hasManualModel && offeredViewId === 'drawing'
+          ? () => {
+              showManualProjection('model');
+            }
+          : undefined
+      }
+      onClose={onClose}
+      historySlot={isManualOwner ? workspace.inspectorHistorySlot : undefined}
+    />
+  );
+  const sketchQuota = isSketching ? sketch.controls.liveQuota : undefined;
+  const sketchQuotaText = sketchQuota
+    ? `${sketchQuota.kind === 'radius' ? 'R ' : ''}${sketchQuota.values
+        .map((value) => formatNumber(value, language, { minimumFractionDigits: 2, maximumFractionDigits: 2 }))
+        .join(' × ')} mm`
+    : undefined;
+  const gestureQuota =
+    sketchQuotaText ??
+    (faceTool.controls.isDragging && faceTool.controls.action !== 'hole'
+      ? faceTool.controls.distance
+      : directTool.controls.isDragging && directTool.controls.preview
+        ? directTool.controls.preview
+        : undefined);
   return (
-    <ViewerStage
-      graphicsRef={graphicsActor}
-      regionId={`viewport-gizmo-container-${viewId}`}
-      data-testid='chat-viewer-layout'
-      partMenu={partMenu}
-      decoratePartMenu={decoratePartMenu}
-      isModelShown={!isGeometryUnitClosed && Boolean(artifact && presentedArtifact)}
-      status={overlayFailureMessage ? { kind: 'failed', message: overlayFailureMessage } : undefined}
-      statusExtra={
-        <>
-          <ChatViewerStatus />
-          {unavailable && profile !== 'editor' ? (
-            <div role='alert' className='rounded-md border border-border bg-background/95 p-3 text-sm shadow-sm'>
-              <p>{unavailable}</p>
-              <Button size='sm' variant='outline' className='mt-2' onClick={restoreDefaultView}>
-                Use default view
-              </Button>
-            </div>
-          ) : null}
-        </>
-      }
-      onKeyDown={(event) => {
-        if (
-          event.altKey ||
-          event.ctrlKey ||
-          event.metaKey ||
-          event.nativeEvent.isComposing ||
-          evaluation?.success !== true ||
-          evaluation.views.length < 2
-        ) {
-          return;
-        }
-        const { target } = event;
-        if (
-          !(target instanceof HTMLElement) ||
-          target.isContentEditable ||
-          target.closest('input, textarea, select, [contenteditable], [role="textbox"], .monaco-editor')
-        ) {
-          return;
-        }
-        const index = Number(event.key) - 1;
-        const next = Number.isInteger(index) && index >= 0 && index < 3 ? evaluation.views[index] : undefined;
-        if (!next) {
-          return;
-        }
-        event.preventDefault();
-        setLocalInstanceChoice(viewId, undefined);
-        void viewCommands.edit(viewId, (current) => ({
-          ...(current ?? newViewRecord(entryPath)),
-          selectedKernelView: next.id,
-        }));
-      }}
-      renderCanvas={({ eventSource, gizmoContainer, onComponentSecondaryPointerCandidate }) =>
-        isGeometryUnitClosed ? null : (
-          <CadViewer
-            enableZoom
-            enablePan
-            secondaryMouseButtonMode='camera-pan'
-            enableGizmo={enableGizmo}
-            enableGrid={enableGrid}
-            enableAxes={enableAxes}
-            enableSurfaces={enableSurfaces}
-            enableLines={enableLines}
-            enableMatcap={enableMatcap}
-            upDirection={upDirection}
-            artifact={artifact ? presentedArtifact : undefined}
-            artifactHash={presentedArtifactKey}
-            sourceFile={presentedSourceFile}
-            // Keep R3F on default offsetX/Y compute; eventPrefix='client'
-            // is window-relative and mis-rays docked panels.
-            eventSource={eventSource}
-            gizmoContainer={gizmoContainer}
-            onModelComponentSecondaryPointerCandidate={onComponentSecondaryPointerCandidate}
-          />
-        )
-      }
-      /* Bottom controls: the bar is centred on the last line and grows upward as tools start. In the editor it starts
+    <div className='@container/manual-viewer relative h-full min-h-0 min-w-0'>
+      <div className='flex h-full min-h-0 min-w-0'>
+        <ViewerStage
+          className='min-h-0 min-w-0 flex-1'
+          graphicsRef={graphicsActor}
+          regionId={`viewport-gizmo-container-${viewId}`}
+          data-testid='chat-viewer-layout'
+          partMenu={partMenu}
+          decoratePartMenu={decoratePartMenu}
+          isModelShown={!isGeometryUnitClosed && Boolean(artifact && presentedArtifact)}
+          status={overlayFailureMessage ? { kind: 'failed', message: overlayFailureMessage } : undefined}
+          statusExtra={
+            <>
+              <ChatViewerStatus />
+              {unavailable && profile !== 'editor' ? (
+                <div role='alert' className='rounded-md border border-border bg-background/95 p-3 text-sm shadow-sm'>
+                  <p>{unavailable}</p>
+                  <Button size='sm' variant='outline' className='mt-2' onClick={restoreDefaultView}>
+                    Use default view
+                  </Button>
+                </div>
+              ) : null}
+            </>
+          }
+          onKeyDown={(event) => {
+            if (
+              event.altKey ||
+              event.ctrlKey ||
+              event.metaKey ||
+              event.nativeEvent.isComposing ||
+              evaluation?.success !== true ||
+              evaluation.views.length < 2
+            ) {
+              return;
+            }
+            const { target } = event;
+            if (
+              !(target instanceof HTMLElement) ||
+              target.isContentEditable ||
+              target.closest('input, textarea, select, [contenteditable], [role="textbox"], .monaco-editor')
+            ) {
+              return;
+            }
+            const index = Number(event.key) - 1;
+            const next = Number.isInteger(index) && index >= 0 && index < 3 ? evaluation.views[index] : undefined;
+            if (!next) {
+              return;
+            }
+            event.preventDefault();
+            setLocalInstanceChoice(viewId, undefined);
+            void viewCommands.edit(viewId, (current) => ({
+              ...(current ?? newViewRecord(entryPath)),
+              selectedKernelView: next.id,
+            }));
+          }}
+          renderCanvas={({ eventSource, gizmoContainer, onComponentSecondaryPointerCandidate }) =>
+            isGeometryUnitClosed ? null : (
+              <CadViewer
+                planarFaceTool={isSketching ? sketch.planeTool : faceTool.tool}
+                directEditTool={isSketching ? undefined : directTool.tool}
+                sketchTool={sketch.tool}
+                producibilityOverlay={producibilityOverlay}
+                enableZoom
+                enablePan
+                secondaryMouseButtonMode='camera-pan'
+                enableGizmo={enableGizmo}
+                enableGrid={enableGrid}
+                enableAxes={enableAxes}
+                enableSurfaces={enableSurfaces}
+                enableLines={enableLines}
+                enableMatcap={enableMatcap}
+                upDirection={upDirection}
+                artifact={artifact ? presentedArtifact : undefined}
+                artifactHash={presentedArtifactKey}
+                sourceFile={presentedSourceFile}
+                // Keep R3F on default offsetX/Y compute; eventPrefix='client'
+                // is window-relative and mis-rays docked panels.
+                eventSource={eventSource}
+                gizmoContainer={gizmoContainer}
+                onModelComponentSecondaryPointerCandidate={onComponentSecondaryPointerCandidate}
+              />
+            )
+          }
+          /* Bottom controls: the bar is centred on the last line and grows upward as tools start. In the editor it starts
          with the view menus and the build status, and the issues list unfolds above its controls. The AR button
          (mobile iOS only) has the line above it, so the bar never covers it. In a pane narrower than the bar, the
          bar starts at the left edge, keeping the grid readout and Section in view. */
-      controls={
-        <>
-          <div className='flex w-full items-end gap-2 [&>*]:pointer-events-auto'>
-            <ArButton artifact={artifact} runtimeDocument={runtimeDocument} className='ml-auto shrink-0' />
-          </div>
-          {profile === 'editor' ? (
-            <ViewerIssues
-              entryPath={entryPath}
-              notice={
-                unavailable
-                  ? { message: unavailable, actionLabel: 'Use default view', onAct: restoreDefaultView }
+          controls={
+            <>
+              <div className='flex w-full items-end gap-2 [&>*]:pointer-events-auto'>
+                <ArButton artifact={artifact} runtimeDocument={runtimeDocument} className='ml-auto shrink-0' />
+              </div>
+              {profile === 'editor' ? (
+                <ViewerIssues
+                  entryPath={entryPath}
+                  notice={
+                    unavailable
+                      ? { message: unavailable, actionLabel: 'Use default view', onAct: restoreDefaultView }
+                      : undefined
+                  }
+                >
+                  {({ segment, list }) => (
+                    <ChatViewerControls
+                      captureRendering={captureRendering}
+                      kernelSettings={
+                        cadRef ? (
+                          <ViewerKernelSettings viewId={viewId} entryPath={entryPath} cadActor={cadRef} />
+                        ) : undefined
+                      }
+                      leading={
+                        <>
+                          {cadRef ? (
+                            <ViewerProjectionPicker viewId={viewId} entryPath={entryPath} cadActor={cadRef} />
+                          ) : null}
+                          {kernelId === 'smlib' && !workspace ? (
+                            <Button
+                              size='sm'
+                              variant={isManualEditOpen ? 'secondary' : 'ghost'}
+                              aria-pressed={isManualEditOpen}
+                              onClick={() => {
+                                setLocalManualOpen(!isManualEditOpen);
+                              }}
+                            >
+                              {t('project.topBar.modify')}
+                            </Button>
+                          ) : null}
+                          {segment}
+                        </>
+                      }
+                      aboveControls={
+                        <>
+                          <ManualSketchBar controls={sketch.controls} />
+                          {list}
+                        </>
+                      }
+                    />
+                  )}
+                </ViewerIssues>
+              ) : (
+                <ChatViewerControls shouldEnableCapture={false} captureRendering={captureRendering} />
+              )}
+            </>
+          }
+        >
+          <SelectedPieceChip entryPath={entryPath} location='viewer' />
+          {gestureQuota === undefined ? null : (
+            <GestureQuota
+              value={gestureQuota}
+              editing={
+                isSketching && sketch.controls.typing && sketchQuota
+                  ? {
+                      label: t(`sketch.quota.${sketchQuota.kind}`),
+                      onSubmit: sketch.controls.onQuotaSubmit,
+                      onCancel: sketch.controls.onQuotaCancel,
+                    }
                   : undefined
               }
-            >
-              {({ segment, list }) => (
-                <ChatViewerControls
-                  captureRendering={captureRendering}
-                  kernelSettings={
-                    cadRef ? (
-                      <ViewerKernelSettings viewId={viewId} entryPath={entryPath} cadActor={cadRef} />
-                    ) : undefined
-                  }
-                  leading={
-                    <>
-                      {cadRef ? (
-                        <ViewerProjectionPicker viewId={viewId} entryPath={entryPath} cadActor={cadRef} />
-                      ) : null}
-                      {segment}
-                    </>
-                  }
-                  aboveControls={list}
-                />
-              )}
-            </ViewerIssues>
-          ) : (
-            <ChatViewerControls shouldEnableCapture={false} captureRendering={captureRendering} />
+            />
           )}
-        </>
-      }
-    >
-      <SelectedPieceChip entryPath={entryPath} location='viewer' />
-      {!artifact && !overlayFailureMessage ? <GeometryStatus isEmpty={emptyModel} /> : null}
-      {/* Reopen-renderer overlay — shown when the geometry unit was closed */}
-      {isGeometryUnitClosed && (
-        <div className='pointer-events-none absolute inset-0 z-20 flex items-center justify-center'>
-          <Button
-            type='button'
-            variant='outline'
-            size='sm'
-            className='pointer-events-auto shadow-lg'
-            onClick={handleReopenRenderer}
+          {!artifact && !overlayFailureMessage ? <GeometryStatus isEmpty={emptyModel} /> : null}
+          {/* Reopen-renderer overlay — shown when the geometry unit was closed */}
+          {isGeometryUnitClosed && (
+            <div className='pointer-events-none absolute inset-0 z-20 flex items-center justify-center'>
+              <Button
+                type='button'
+                variant='outline'
+                size='sm'
+                className='pointer-events-auto shadow-lg'
+                onClick={handleReopenRenderer}
+              >
+                <PlayCircle />
+                Reopen renderer
+              </Button>
+            </div>
+          )}
+        </ViewerStage>
+        {profile === 'editor' && kernelId === 'smlib' && workspace && inspectorSlot
+          ? createPortal(manualPanel(undefined), inspectorSlot)
+          : null}
+        {profile === 'editor' && kernelId === 'smlib' && !workspace ? (
+          <div
+            hidden={!isManualEditOpen}
+            inert={!isManualEditOpen}
+            className={cn(
+              'absolute inset-y-0 right-0 z-20 h-full max-w-full min-h-0 shrink-0 overflow-y-auto border-l bg-sidebar @4xl/manual-viewer:static',
+              draftLayout === 'profile' ? 'w-full @4xl/manual-viewer:w-140' : 'w-96',
+            )}
           >
-            <PlayCircle />
-            Reopen renderer
-          </Button>
-        </div>
-      )}
-    </ViewerStage>
+            {manualPanel(() => {
+              setLocalManualOpen(false);
+            })}
+          </div>
+        ) : null}
+      </div>
+    </div>
   );
 });
 

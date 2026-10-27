@@ -55,6 +55,11 @@ export type SliderInputProperties = Omit<
   readonly onInputEscape?: () => void;
   readonly onStep?: (direction: -1 | 1, modifiers: { shift: boolean }) => void;
   readonly onFocusChange?: (isFocused: boolean) => void;
+  /**
+   * A plausible band of values drawn as a darker stretch of the track (SinopiaCAD: the range a photo recognition
+   * read, `from`–`to` in the same units as `value`). Absent, the track is plain.
+   */
+  readonly band?: Readonly<{ from: number; to: number }>;
 };
 
 const getDecimalCount = (value: number): number => {
@@ -152,6 +157,7 @@ export const SliderInput = ({
   onInputEscape,
   onStep,
   onFocusChange,
+  band,
   onPointerDown,
   onPointerMove,
   onPointerUp,
@@ -173,6 +179,8 @@ export const SliderInput = ({
 
   const range = max - min;
   const fillPercent = range > 0 ? clamp(((value - min) / range) * 100, 0, 100) : 0;
+  const bandStart = band && range > 0 ? clamp(((Math.min(band.from, band.to) - min) / range) * 100, 0, 100) : 0;
+  const bandEnd = band && range > 0 ? clamp(((Math.max(band.from, band.to) - min) / range) * 100, 0, 100) : 0;
   const lowerLimit = hasMinimum ? min : undefined;
   const upperLimit = hasMaximum ? max : undefined;
 
@@ -406,6 +414,14 @@ export const SliderInput = ({
         )}
         style={{ width: `${fillPercent}%` }}
       />
+      {band && bandEnd > bandStart ? (
+        <div
+          data-slot='slider-input-band'
+          aria-hidden='true'
+          className='pointer-events-none absolute inset-y-0 border-b-2 border-titanium bg-titanium/15'
+          style={{ left: `${bandStart}%`, width: `${bandEnd - bandStart}%` }}
+        />
+      ) : null}
 
       {leadingContent ? (
         <span

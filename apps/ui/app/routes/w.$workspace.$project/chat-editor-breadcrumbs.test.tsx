@@ -171,7 +171,7 @@ describe('ChatEditorBreadcrumbs', () => {
       </TooltipProvider>,
     );
     const badges = screen.getAllByRole('button', { name: 'Artifact' });
-    const description = 'Supporting data used by Tau. Not included in revisions.';
+    const description = 'Supporting data used by SinopiaCAD. Not included in revisions.';
     expect(badges).toHaveLength(2);
     expect(badges[0]).toHaveAccessibleDescription(description);
     expect(badges[1]).toHaveAccessibleDescription(description);

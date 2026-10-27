@@ -38,7 +38,10 @@ import type { Handle } from '#types/matches.types.js';
  * disallows crawling; only this meta tag keeps an already-known URL out of the
  * index.
  */
-export const meta: MetaFunction = () => [{ title: 'Tau usage' }, { name: 'robots', content: 'noindex, nofollow' }];
+export const meta: MetaFunction = () => [
+  { title: 'SinopiaCAD usage' },
+  { name: 'robots', content: 'noindex, nofollow' },
+];
 
 export const handle: Handle = {
   enableOverflowY: true,
@@ -70,8 +73,8 @@ function UsageFreshness({
   readonly saveOutcome: SavedUsageOutcome | undefined;
 }): React.JSX.Element {
   const labels: Record<UsageSnapshotResult['status'], string> = {
-    'signed-out': 'Sign in to see your Tau usage.',
-    loading: 'Loading your Tau usage…',
+    'signed-out': 'Sign in to see your SinopiaCAD usage.',
+    loading: 'Loading your SinopiaCAD usage…',
     refreshing: 'Refreshing…',
     ready: 'snapshot' in usage ? `Updated ${formatInstant(usage.snapshot.asOf)}` : '',
     'unable-to-refresh': 'Showing saved usage; unable to refresh',
@@ -191,10 +194,10 @@ export default function UsagePage(): React.JSX.Element {
   return (
     <PageContent className='space-y-6'>
       <div className='flex flex-col gap-1'>
-        <PageHeader title='Tau usage' />
+        <PageHeader title='SinopiaCAD usage' />
         <p className='text-muted-foreground'>
-          Usage through the Tau LLM provider across your devices. Local and connected external providers are billed by
-          them, not by Tau, and are not shown here.
+          Usage through the SinopiaCAD LLM provider across your devices. Local and connected external providers are
+          billed by them, not by Tau, and are not shown here.
         </p>
       </div>
 

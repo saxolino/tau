@@ -66,7 +66,7 @@ export const ChatErrorCredits = memo(function ({
   const resolvedDescription =
     shortfall === undefined || routeId === undefined
       ? (description ?? fallbackDescription)
-      : `${resumable ? 'Tau paused this turn: ' : ''}${shortfall} more ${shortfall === 1n ? 'credit' : 'credits'} needed for ${resolveModel(routeId).name}.`;
+      : `${resumable ? 'SinopiaCAD paused this turn: ' : ''}${shortfall} more ${shortfall === 1n ? 'credit' : 'credits'} needed for ${resolveModel(routeId).name}.`;
 
   return (
     <ChatErrorCard

@@ -168,11 +168,11 @@ export default function MachineRoute(): React.JSX.Element {
       <PageHeader title='Machine' />
       <PanelEmptyState
         icon={Printer}
-        title='Open this machine in Tau desktop'
+        title='Open this machine in SinopiaCAD desktop'
         description='This browser cannot connect to the machine host.'
       >
         <Button asChild>
-          <a href={machineDeepLink({ hostId, machineId }, scheme)}>Open Tau desktop</a>
+          <a href={machineDeepLink({ hostId, machineId }, scheme)}>Open SinopiaCAD desktop</a>
         </Button>
       </PanelEmptyState>
     </div>

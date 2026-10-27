@@ -11,7 +11,7 @@ import { InlineTextEditor } from '#components/inline-text-editor.js';
 import { useProject } from '#hooks/use-project.js';
 import { useProjects } from '#hooks/use-projects.js';
 import { useTranslation } from '#i18n/translate.js';
-import { ChatLaneToggle } from '#routes/w.$workspace.$project/chat-lane-toggle.js';
+import { InspectorLaneToggle } from '#routes/w.$workspace.$project/inspector-lane.js';
 import { ProjectSaveStatus } from '#routes/w.$workspace.$project/project-save-status.js';
 import {
   projectWorkspaceKeyCombinations,
@@ -42,7 +42,7 @@ function ProjectName(): React.JSX.Element {
       ariaLabel={t('project.topBar.rename')}
       saveLabel={t('common.save')}
       isDisabled={name === undefined}
-      className='h-7 max-w-80 min-w-0 text-foreground [&_[data-slot=display-text]]:font-medium'
+      className='h-7 max-w-[min(26rem,36vw)] min-w-0 text-foreground [&_[data-slot=display-text]]:font-medium'
       renderDisplay={(value) => (
         <span data-slot='display-text' className='truncate' title={t('project.topBar.renameHint')}>
           {value}
@@ -56,10 +56,11 @@ function ProjectName(): React.JSX.Element {
 }
 
 /**
- * The project page's one top bar (UI-UX-SinopiaCAD §3.1), across Misure, the model and the agent: on the left the
- * Misure toggle and the path «Progetti › name» (the name renames in place), on the right the save status in words,
- * «Versioni», «Esporta», «Invia a Sinopia» and the «Agente» toggle. No branch, no Share, no file names: those are
- * Tau's and stay out of a designer's way. «Invia a Sinopia» opens the version handoff for the linked project.
+ * The project page's one top bar (UI-UX-SinopiaCAD §3.1), across Misure, the model and the inspector. On the left the
+ * Misure toggle, the path «SinopiaCAD › name» (the name renames in place) and, beside the name, where the work is
+ * saved, in words. On the right one filled action, «Invia a Sinopia»; Versioni and Esporta are glyphs with their name in
+ * the tooltip; then the inspector's toggle. There is one work mode: no Assistente/Modifica switch, nothing to choose
+ * before working. No branch, no Share, no file names.
  *
  * @returns The bar.
  */
@@ -77,22 +78,24 @@ export function ProjectTopBar(): React.JSX.Element {
       data-slot='project-top-bar'
       className={
         // The window's own controls float over the bar's start while the sidebar is closed; the bar leaves them room.
-        '@container/topbar flex h-9 shrink-0 items-center gap-1 border-b bg-sidebar pr-1 pl-1 md:group-data-[sidebar-open=false]/app-shell:pl-(--titlebar-controls-width)'
+        '@container/topbar flex h-12 shrink-0 items-center gap-2 bg-sidebar pr-3 pl-1 md:group-data-[sidebar-open=false]/app-shell:pl-(--titlebar-controls-width)'
       }
     >
       <WorkbenchLaneToggle place='viewer' fold={topBarFold} />
       <Separator orientation='vertical' className='mx-1 data-[orientation=vertical]:h-4' />
-      <nav aria-label={t('project.topBar.breadcrumb')} className='flex min-w-0 items-center'>
+      <nav aria-label={t('project.topBar.breadcrumb')} className='flex min-w-0 shrink items-center'>
         <ol className='flex min-w-0 items-center gap-0.5 text-sm'>
-          <li className='shrink-0'>
+          <li className='hidden shrink-0 @3xl/topbar:list-item'>
             <Link
               to='/projects'
-              className='rounded-sm px-1.5 py-1 text-muted-foreground outline-none hover:text-foreground focus-visible:focus-outline'
+              aria-label={t('project.topBar.projects')}
+              title={t('project.topBar.projects')}
+              className='rounded-sm px-1.5 py-1 font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:focus-outline'
             >
-              {t('project.topBar.projects')}
+              SinopiaCAD
             </Link>
           </li>
-          <li aria-hidden className='shrink-0 text-muted-foreground'>
+          <li aria-hidden className='hidden shrink-0 text-muted-foreground @3xl/topbar:list-item'>
             <ChevronRight className='size-3.5' />
           </li>
           <li aria-current='page' className='min-w-0'>
@@ -100,16 +103,16 @@ export function ProjectTopBar(): React.JSX.Element {
           </li>
         </ol>
       </nav>
-      <div className='min-w-2 flex-1' />
-      <div role='group' aria-label={t('project.topBar.actions')} className='flex min-w-0 shrink items-center gap-1'>
+      <div className='hidden min-w-0 shrink @2xl/topbar:flex'>
         <ProjectSaveStatus />
+      </div>
+      <div className='min-w-2 flex-1' />
+      <div role='group' aria-label={t('project.topBar.actions')} className='flex shrink-0 items-center gap-1'>
         {/* Settings records that need a person; nothing while every record is fine. */}
         <RecordIssuesAction fallbackFocus={restoreRecordRecoveryFocus} />
         <PaneButton
           // Where focus returns after a settings record is repaired (it was Share's, which SinopiaCAD hides).
           ref={registerRecordRecoveryFocus}
-          size='label'
-          className={topBarFold.className}
           aria-label={t('project.topBar.versions')}
           tooltip={t('project.topBar.versionsTooltip')}
           tooltipSide='bottom'
@@ -118,11 +121,8 @@ export function ProjectTopBar(): React.JSX.Element {
           }}
         >
           <History aria-hidden className='size-3.5' />
-          <span className={topBarFold.labelClassName}>{t('project.topBar.versions')}</span>
         </PaneButton>
         <PaneButton
-          size='label'
-          className={topBarFold.className}
           aria-label={t('project.topBar.export')}
           aria-keyshortcuts='Control+D'
           tooltipSide='bottom'
@@ -139,10 +139,11 @@ export function ProjectTopBar(): React.JSX.Element {
           }}
         >
           <Download aria-hidden className='size-3.5' />
-          <span className={topBarFold.labelClassName}>{t('project.topBar.export')}</span>
         </PaneButton>
+        {/* The page's one filled action: a version of the model goes to the Sinopia project. */}
         <Button
-          size='xs'
+          size='sm'
+          className='ml-1'
           aria-label={t('project.topBar.sendToSinopia')}
           onClick={() => {
             setSendOpen(true);
@@ -155,7 +156,7 @@ export function ProjectTopBar(): React.JSX.Element {
           <SendToSinopiaDialog isOpen={isSendOpen} onOpenChange={setSendOpen} link={link} linking={linking} />
         ) : null}
         <Separator orientation='vertical' className='mx-1 data-[orientation=vertical]:h-4' />
-        <ChatLaneToggle place='viewer' fold={topBarFold} />
+        <InspectorLaneToggle place='viewer' fold={topBarFold} />
       </div>
     </section>
   );

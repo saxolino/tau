@@ -301,7 +301,8 @@ describe('IndexedDbStorageProvider', () => {
       const stale = await openStaleLegacyConnection();
       const provider = new IndexedDbStorageProvider();
 
-      await expect(provider.getProjectLibraryState('proj_missing')).rejects.toThrow(/other tau tabs/i);
+      // The product name in the error is SinopiaCAD now, no longer Tau.
+      await expect(provider.getProjectLibraryState('proj_missing')).rejects.toThrow(/other SinopiaCAD tabs/i);
       stale.close();
     });
 

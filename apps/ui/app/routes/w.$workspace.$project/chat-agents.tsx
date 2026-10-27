@@ -241,7 +241,7 @@ const AgentCredits = ({ operationIds }: { readonly operationIds: readonly string
   const credits = useReceiptCredits(operationIds);
   const summary = formatReceiptTotal(sumReceiptCredits(operationIds, credits));
   return (
-    <span aria-label={`Tau credits: ${summary}`} className='ml-auto shrink-0 font-mono'>
+    <span aria-label={`SinopiaCAD credits: ${summary}`} className='ml-auto shrink-0 font-mono'>
       {summary}
     </span>
   );

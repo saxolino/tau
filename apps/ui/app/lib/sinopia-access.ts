@@ -10,11 +10,15 @@
  * 1. Second factor (`MfaChallengeGate`, `verdictFromAssurance`): an account with a verified factor confirms it in this
  *    session (`aal2`) first; until then Sinopia's restrictive policies hide its rows.
  * 2. Profile (`authStore.fetchUserProfile`): `profiles.role` is an account role (`normalizePersistedRole`).
- * 3. Beta door (`BetaGate`, `useBetaStatus`, `get_my_beta_status()`): designers only; `needs_profile` and
- *    `waitlisted` stay out, `active` and `not_applicable` go on.
+ * 3. Beta door (`BetaGate`, `get_my_beta_status()`): designers only. Only administrators get in here, so the door
+ *    never applies and is not read.
  * 4. Profession (`ProtectedRoute`, `needs_profession_selection()`): a Google account that still has to choose its
- *    profession goes to Sinopia's onboarding, unless the beta door has taken it (then the door decides).
+ *    profession goes to Sinopia's onboarding.
  * 5. Terms (`TermsGate`, `user_consents` row `terms`): the current Terms are accepted.
+ *
+ * On top of Sinopia's gates, SinopiaCAD is a reserved preview: after the second factor only an administrator
+ * (`profiles.role` = `superadmin`, Sinopia's one admin role) goes on; any other account is `reserved`. Fail-closed: a
+ * profile that cannot be read is `unverified`, never allowed.
  *
  * A read that fails never reads as a refusal. Sinopia then shows «Riprova» instead of its app (`sessionError`,
  * `BetaGateRetry`) and SinopiaCAD does the same; the one exception is Sinopia's own: when only the beta status cannot be
@@ -22,11 +26,15 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
 
-/** What the check found: the account goes in, confirms its second factor, is sent to sinopialab.com, or is unknown. */
+/**
+ * What the check found: the account goes in, confirms its second factor, is sent to sinopialab.com, is kept out of the
+ * reserved preview (`reserved`: a Sinopia account, but not an administrator), or is unknown.
+ */
 export type SinopiaAccess =
   | Readonly<{ verdict: 'allowed' }>
   | Readonly<{ verdict: 'second-factor' }>
   | Readonly<{ verdict: 'refused'; reason: SinopiaRefusal }>
+  | Readonly<{ verdict: 'reserved' }>
   | Readonly<{ verdict: 'unverified' }>;
 
 /** Why sinopialab.com would keep the account out of its app. */
@@ -87,13 +95,11 @@ const legacyRoles: Readonly<Record<string, string>> = {
   project_manager: 'supervisor',
 };
 
-const betaStates = new Set(['not_applicable', 'needs_profile', 'waitlisted', 'active']);
-type BetaState = 'not_applicable' | 'needs_profile' | 'waitlisted' | 'active';
-
 type Read<T> = Readonly<{ ok: true; value: T }> | Readonly<{ ok: false }>;
 
 const allowed: SinopiaAccess = { verdict: 'allowed' };
 const unverified: SinopiaAccess = { verdict: 'unverified' };
+const reserved: SinopiaAccess = { verdict: 'reserved' };
 const refused = (reason: SinopiaRefusal): SinopiaAccess => ({
   verdict: 'refused',
   reason,
@@ -152,24 +158,6 @@ const readNeedsProfession = async (supabase: SupabaseClient): Promise<boolean> =
   return data;
 };
 
-/** `get_my_beta_status()`, validated as Sinopia's `readMyBetaStatus` and `betaRpc` validate it. */
-const readBetaState = async (supabase: SupabaseClient): Promise<BetaState> => {
-  const result = await supabase.rpc('get_my_beta_status');
-  if (result.error !== null) {
-    throw result.error;
-  }
-  const data: unknown = result.data;
-  const state = fieldOf(data, 'state');
-  if (
-    fieldOf(data, 'success') === false ||
-    typeof fieldOf(data, 'open') !== 'boolean' ||
-    !betaStates.has(String(state))
-  ) {
-    throw new TypeError('get_my_beta_status answered an unknown state');
-  }
-  return state as BetaState;
-};
-
 /** The accepted Terms version, whatever it is; `undefined` when the account never accepted them. */
 const readTermsVersion = async (supabase: SupabaseClient, userId: string): Promise<string | undefined> => {
   const { data, error } = await supabase
@@ -201,35 +189,22 @@ export const checkSinopiaAccess = async (supabase: SupabaseClient, userId: strin
     return { verdict: 'second-factor' };
   }
 
-  /* One round trip. The beta status is read alongside, but only a designer's counts, as only designers ask for it. */
-  const [role, needsProfession, beta, terms] = await Promise.all([
+  /* One round trip. */
+  const [role, needsProfession, terms] = await Promise.all([
     read('the profile', async () => readRole(supabase, userId)),
     read('the profession step', async () => readNeedsProfession(supabase)),
-    read('the beta status', async () => readBetaState(supabase)),
     read('the Terms consent', async () => readTermsVersion(supabase, userId)),
   ]);
 
   if (!role.ok || !needsProfession.ok) {
     return unverified;
   }
-  if (role.value === undefined) {
-    return refused('no-profile');
+  /* Reserved preview (SinopiaCAD addition): administrators only, whatever the other gates would say. */
+  if (role.value !== 'superadmin') {
+    return reserved;
   }
-
-  let betaState: BetaState | undefined = 'not_applicable';
-  if (role.value === 'designer') {
-    betaState = beta.ok ? beta.value : terms.ok && terms.value !== undefined ? 'not_applicable' : undefined;
-  }
-  if (betaState === undefined) {
-    return unverified;
-  }
-  if (betaState === 'needs_profile') {
-    return refused('beta-profile');
-  }
-  if (betaState === 'waitlisted') {
-    return refused('waitlisted');
-  }
-  if (needsProfession.value && betaState === 'not_applicable') {
+  /* An administrator is no designer: Sinopia's beta door (`BetaGate`) does not apply, so the profession step does. */
+  if (needsProfession.value) {
     return refused('profession');
   }
 

@@ -194,7 +194,7 @@ function SignedOutNotice(): React.JSX.Element {
     <ShareNotice
       icon={<LogIn className='size-6 text-muted-foreground' aria-hidden />}
       title='Sign in to open this link.'
-      detail='Sign-in opens in your browser. Tau Desktop keeps the link and opens it once you are signed in.'
+      detail='Sign-in opens in your browser. SinopiaCAD Desktop keeps the link and opens it once you are signed in.'
       action={
         <Button asChild>
           <Link to={signIn}>Sign in</Link>
@@ -282,7 +282,7 @@ export default function DesktopShareRoute(): React.JSX.Element {
       return (
         <ShareNotice
           icon={<CircleAlert className='size-6 text-muted-foreground' aria-hidden />}
-          title='Tau cannot open this link.'
+          title='SinopiaCAD cannot open this link.'
           detail='It is not a project, invitation, import or sign-in link. Check the link you were sent.'
           action={goToProjects}
         />

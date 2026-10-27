@@ -1179,20 +1179,20 @@ export function findMeasurementTargets(
     const body = faceIndex === undefined ? -1 : (graph.triangleBody[faceIndex] ?? -1);
     for (const feature of graph.features) {
       if (feature.kind === 'face' && feature.id === featureId && (filter === 'auto' || filter === 'face')) {
-        add(feature, 'face', localHit, 0, feature.id.startsWith('topology:') ? 'CAD face tessellation' : 'Mesh face');
+        add(feature, 'face', localHit, 0, feature.id.startsWith('topology:') ? 'Faccia' : 'Faccia');
       }
       if (feature.kind === 'body' && feature.id === `body:${body}` && filter === 'body') {
-        add(feature, 'body', localHit, 0, 'Mesh body');
+        add(feature, 'body', localHit, 0, 'Corpo');
       }
       if (feature.kind === 'body' && feature.id === `body:${body}` && (filter === 'auto' || filter === 'point')) {
-        add(feature, 'surface', localHit, 0, 'Mesh surface point', `:${faceIndex ?? ''}`);
+        add(feature, 'surface', localHit, 0, 'Punto sulla superficie', `:${faceIndex ?? ''}`);
       }
     }
   }
   for (const feature of graph.features) {
     if (feature.kind === 'body') {
       if (filter === 'body') {
-        point(feature, 'body', feature.bounds.getCenter(new THREE.Vector3()), 'Mesh body');
+        point(feature, 'body', feature.bounds.getCenter(new THREE.Vector3()), 'Corpo');
       }
       continue;
     }
@@ -1211,11 +1211,11 @@ export function findMeasurementTargets(
     switch (feature.kind) {
       case 'edge': {
         if (!feature.closed) {
-          point(feature, 'endpoint', feature.points[0]!, 'Edge endpoint', ':start');
-          point(feature, 'endpoint', feature.points.at(-1)!, 'Edge endpoint', ':end');
+          point(feature, 'endpoint', feature.points[0]!, 'Estremo dello spigolo', ':start');
+          point(feature, 'endpoint', feature.points.at(-1)!, 'Estremo dello spigolo', ':end');
         }
         const midpoint = halfwayOnPath(feature.points, feature.closed);
-        point(feature, 'midpoint', midpoint, 'Edge midpoint');
+        point(feature, 'midpoint', midpoint, 'Metà spigolo');
         const nearest = closestOnPolyline(feature.points, feature.closed, matrix, mousePos, width, height);
         if (nearest) {
           add(
@@ -1223,7 +1223,7 @@ export function findMeasurementTargets(
             filter === 'point' ? 'nearest' : 'edge',
             nearest.point,
             nearest.distance,
-            filter === 'point' ? 'Nearest point on mesh edge' : 'Mesh edge',
+            filter === 'point' ? 'Punto più vicino sullo spigolo' : 'Spigolo',
           );
         }
 
@@ -1231,11 +1231,11 @@ export function findMeasurementTargets(
       }
       case 'circle': {
         if (filter !== 'point') {
-          point(feature, 'center', feature.center, 'Fitted circle center');
+          point(feature, 'center', feature.center, 'Centro del cerchio');
         }
         const nearest = closestOnPolyline(feature.points, true, matrix, mousePos, width, height);
         if (nearest) {
-          add(feature, 'nearest', nearest.point, nearest.distance, 'Nearest on mesh boundary');
+          add(feature, 'nearest', nearest.point, nearest.distance, 'Punto più vicino sul bordo');
         }
 
         break;
@@ -1249,7 +1249,7 @@ export function findMeasurementTargets(
             feature,
             'centroid',
             feature.centroid,
-            feature.centroidOnSurface ? 'Face centroid' : 'Derived face centroid',
+            feature.centroidOnSurface ? 'Centro della faccia' : 'Centro della faccia',
           );
         }
 
@@ -1365,7 +1365,7 @@ export function measureFeature(
         value: pathLength(points, feature.closed),
         evidence: 'mesh',
         witnesses: points,
-        label: 'Mesh edge length',
+        label: 'Lunghezza dello spigolo',
       },
     ];
   }
@@ -1392,7 +1392,7 @@ export function measureFeature(
         value: radius,
         evidence: 'fitted',
         witnesses: [center, positive],
-        label: 'Fitted radius construction',
+        label: 'Costruzione del raggio',
         fit,
       },
       {
@@ -1400,7 +1400,7 @@ export function measureFeature(
         value: radius * 2,
         evidence: 'fitted',
         witnesses: [negative, positive],
-        label: 'Fitted diameter construction',
+        label: 'Costruzione del diametro',
         fit,
       },
     ];
@@ -1438,7 +1438,7 @@ export function measureFeature(
           center.clone().addScaledVector(axis, minimum - centerProjection),
           center.clone().addScaledVector(axis, maximum - centerProjection),
         ],
-        label: `${['X', 'Y', 'Z'][index]} extent construction`,
+        label: `${['X', 'Y', 'Z'][index]} estensione`,
       };
     });
   }
@@ -1651,7 +1651,7 @@ function finiteFeatureDistance(a: MeasurementTarget, b: MeasurementTarget): Feat
       value: best[0].distanceTo(best[1]),
       evidence: 'mesh',
       witnesses: best,
-      label: 'Bounded mesh feature distance',
+      label: 'Distanza tra elementi',
     }
   );
 }
@@ -1665,7 +1665,7 @@ export function measureTargetPair(a: MeasurementTarget, b: MeasurementTarget): F
       value: a.position.distanceTo(b.position),
       evidence,
       witnesses: [a.position.clone(), b.position.clone()],
-      label: a.kind === 'center' && b.kind === 'center' ? 'Center distance' : 'Selected points distance',
+      label: a.kind === 'center' && b.kind === 'center' ? 'Distanza tra centri' : 'Distanza tra punti',
     },
   ];
   const aEdge = a.kind === 'edge' && a.feature.kind === 'edge';
@@ -1688,7 +1688,7 @@ export function measureTargetPair(a: MeasurementTarget, b: MeasurementTarget): F
         value: pair[0].distanceTo(pair[1]),
         evidence: 'mesh',
         witnesses: pair,
-        label: 'Bounded mesh edge distance',
+        label: 'Distanza tra spigoli',
       });
     }
     if (!a.feature.closed && !b.feature.closed && first.length === 2 && second.length === 2) {
@@ -1700,7 +1700,7 @@ export function measureTargetPair(a: MeasurementTarget, b: MeasurementTarget): F
           value: Math.atan2(new THREE.Vector3().crossVectors(va, vb).length(), va.dot(vb)),
           evidence: 'mesh',
           witnesses: [],
-          label: 'Edge direction angle',
+          label: 'Angolo tra spigoli',
         });
       }
     }
@@ -1725,7 +1725,7 @@ export function measureTargetPair(a: MeasurementTarget, b: MeasurementTarget): F
         value: point.distanceTo(best),
         evidence: 'mesh',
         witnesses: [point.clone(), best],
-        label: 'Point to bounded mesh edge',
+        label: 'Punto-spigolo',
       });
     }
   } else if (
@@ -1755,7 +1755,7 @@ export function measureTargetPair(a: MeasurementTarget, b: MeasurementTarget): F
         value: Math.abs(offset),
         evidence: 'mesh',
         witnesses: [first, first.clone().addScaledVector(normalA, offset)],
-        label: 'Supporting plane spacing',
+        label: 'Distanza tra piani',
       });
     }
   }

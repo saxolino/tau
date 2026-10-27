@@ -103,7 +103,7 @@ describe('ChatMessageToolRequestJob', () => {
     ).toHaveAttribute('aria-expanded', 'true');
     expect(
       screen.getByText(
-        "The machine hasn't confirmed the start. Check the machine; Tau updates this when the machine reports the run.",
+        "The machine hasn't confirmed the start. Check the machine; SinopiaCAD updates this when the machine reports the run.",
       ),
     ).toBeVisible();
     /* Whether it prints is unknown, so nothing invites a second start. */

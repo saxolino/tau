@@ -37,7 +37,7 @@ function ShellHandoff({ handoff }: { readonly handoff: ShellAuthHandoff }): Reac
       <div className='w-full max-w-md text-center'>
         <h1 className='text-lg font-medium'>Sign-in is unavailable</h1>
         <p className='mt-2 text-sm text-muted-foreground'>
-          Tau could not reach the desktop app&apos;s sign-in service. Restart Tau and try again.
+          SinopiaCAD could not reach the desktop app&apos;s sign-in service. Restart SinopiaCAD and try again.
         </p>
       </div>
     );
@@ -51,7 +51,7 @@ function ShellHandoff({ handoff }: { readonly handoff: ShellAuthHandoff }): Reac
     <div className='w-full max-w-md text-center'>
       <h1 className='text-lg font-medium'>Continue in your browser</h1>
       <p className='mt-2 text-sm text-muted-foreground'>
-        Tau signs you in through your browser, then hands the session back to this window.
+        SinopiaCAD signs you in through your browser, then hands the session back to this window.
       </p>
       <Button
         className='mt-6'
@@ -149,8 +149,8 @@ export default function AuthPage(): React.JSX.Element {
               </div>
             </>
           ) : (
-            <p role='status' aria-label='Opening Tau' aria-busy='true' className='text-sm text-muted-foreground'>
-              Opening Tau…
+            <p role='status' aria-label='Opening SinopiaCAD' aria-busy='true' className='text-sm text-muted-foreground'>
+              Opening SinopiaCAD…
             </p>
           )}
         </div>

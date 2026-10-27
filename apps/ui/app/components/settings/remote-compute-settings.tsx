@@ -20,7 +20,7 @@ const placementCopy = {
   remote: 'Rendering on the selected remote device',
   'device-offline': 'The selected remote device is offline or revoked',
   busy: 'The selected remote device is at capacity',
-  'version-mismatch': 'This Tau and the remote runtime versions do not match',
+  'version-mismatch': 'This SinopiaCAD and the remote runtime versions do not match',
   disconnected: 'The remote runtime disconnected',
 } as const;
 
@@ -80,13 +80,15 @@ export function RemoteComputeSettings(): React.JSX.Element {
   return (
     <SettingsSectionCard aria-labelledby='remote-compute-title'>
       <CardHeader>
-        <CardTitle id='remote-compute-title'>Tau Host</CardTitle>
+        <CardTitle id='remote-compute-title'>SinopiaCAD Host</CardTitle>
       </CardHeader>
       <CardContent className='flex flex-col gap-4'>
         {pairingCode ? (
           <div className='rounded-md border border-primary/40 p-3'>
-            <p className='text-sm font-medium'>Pair Tau Host {pairingCode}</p>
-            <p className='mb-3 text-xs text-muted-foreground'>Approve only if this code is visible in your Tau CLI.</p>
+            <p className='text-sm font-medium'>Pair SinopiaCAD Host {pairingCode}</p>
+            <p className='mb-3 text-xs text-muted-foreground'>
+              Approve only if this code is visible in your SinopiaCAD CLI.
+            </p>
             <Button
               size='sm'
               disabled={busy}

@@ -41,7 +41,7 @@ type GlassPrismDebugBridge = Readonly<{
 
 type GlassPrismDebugGlobal = typeof globalThis & { __TAU_GLASS_PRISM__?: GlassPrismDebugBridge };
 
-const pageTitle = 'Glass prism loader — Tau';
+const pageTitle = 'Glass prism loader — SinopiaCAD';
 const pageDescription =
   'A refraction-inspired loading indicator: a white beam meets a glass body that flows between five morphologies and leaves it as a spectrum, traced through the glass every frame.';
 /** Milliseconds between renderer statistics reads for the readout. */

@@ -36,6 +36,9 @@ const withoutTimeout = (entry: Entry | undefined): Entry => {
   const { renderTimeout: _removed, ...rest } = entry ?? {};
   return rest;
 };
+/** Materials are written only when a piece has one, so records without materials stay as they were. */
+const materialsOf = (materials: Components['materials']): Pick<Components, 'materials'> =>
+  materials && materials.length > 0 ? { materials } : {};
 const mergeEntry = (existing: Entry | undefined, fields: Patch['fields']): Entry => ({
   ...(Object.hasOwn(fields, 'renderTimeout') ? withoutTimeout(existing) : existing),
   ...(fields.renderTimeout === undefined ? {} : { renderTimeout: fields.renderTimeout }),
@@ -46,6 +49,11 @@ const mergeEntry = (existing: Entry | undefined, fields: Patch['fields']): Entry
           hidden: fields.components.hidden ?? existing?.components?.hidden ?? [],
           isolated: fields.components.isolated ?? existing?.components?.isolated ?? [],
           opacity: fields.components.opacity ?? existing?.components?.opacity ?? [],
+          ...materialsOf(
+            Object.hasOwn(fields.components, 'materials')
+              ? fields.components.materials
+              : existing?.components?.materials,
+          ),
         },
       }),
 });
@@ -430,6 +438,9 @@ export function createWorkbenchEntriesStore(
         if (!same(before[field], after[field])) {
           Object.assign(components, { [field]: after[field] });
         }
+      }
+      if (!same(before.materials ?? [], after.materials ?? [])) {
+        components.materials = after.materials ?? [];
       }
       if (Object.keys(components).length > 0) {
         fields.components = components;

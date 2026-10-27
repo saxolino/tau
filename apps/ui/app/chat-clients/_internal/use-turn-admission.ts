@@ -65,8 +65,8 @@ export const useTurnAdmission = (liveExecution: CadAgentExecution): TurnAdmissio
           new Error(
             availability.status === 'pending'
               ? daemonHostId === undefined
-                ? 'Tau is still checking whether this project can run the agent in your browser.'
-                : 'Tau is still looking for that agent host.'
+                ? 'SinopiaCAD is still checking whether this project can run the agent in your browser.'
+                : 'SinopiaCAD is still looking for that agent host.'
               : availability.reason,
           ),
           { code: 'CHAT_PLACEMENT_UNAVAILABLE' },
@@ -96,7 +96,7 @@ export const useTurnAdmission = (liveExecution: CadAgentExecution): TurnAdmissio
         // external-agent turns only.
         if (!isBrowserAgentHostProviderKind(resolved.provider.id)) {
           throw Object.assign(
-            new Error(`Tau cannot run the ${resolved.provider.id} provider wire. Pick a different model.`),
+            new Error(`SinopiaCAD cannot run the ${resolved.provider.id} provider wire. Pick a different model.`),
             { code: 'CHAT_PLACEMENT_UNAVAILABLE' },
           );
         }

@@ -1,4 +1,5 @@
 import { annotateParameterAssumptions } from '#parameter-assumptions.js';
+import { completaSchemaFamiglia } from '#famiglie/schema-famiglia.js';
 /**
  * SMLib Kernel Module
  *
@@ -49,8 +50,12 @@ import {
 } from '@taucad/geometry-core';
 import type { GlbResources } from '@taucad/geometry-core';
 
-import type { ShapeConfig } from '#model.js';
-import { smlibDetectPattern, smlibModuleName } from '#smlib.constants.js';
+import { createManualReplaySource } from '#manual-replay.js';
+import { applyManualOperations } from '#manual-evaluator.js';
+import type { ManualDocument } from '#manual-operations.js';
+import { manualEntryPath, parseManualDocument } from '#manual-operations.js';
+import { sinopiaFamiglieModuleName, smlibDetectPattern, smlibModuleName } from '#smlib.constants.js';
+import { creaModuloFamiglie } from '#famiglie/modulo.js';
 import { smlibExportSchemas, smlibOptionsSchema, smlibRenderSchema } from '#smlib.schemas.js';
 import {
   countMesh,
@@ -66,6 +71,11 @@ import type { DrawingEntry, NamedInputShape, SmlibLibrary } from '#utils/render-
 import { convertSmlibGeometriesToGltf } from '#utils/smlib-to-gltf.js';
 
 const kernelId = 'smlib';
+const kernelVersion = '1.5.0';
+// Cache metadata can change without invalidating saved face/edge provenance.
+// Preserve the canonical payload's kernelVersion key and 1.3.0 replay identity;
+// bump this separately when replay semantics change and require new witnesses.
+const manualReplaySemanticsVersion = '1.3.0';
 
 /**
  * Live SMLib native handle: the shapes `main` returned, the model's GLB resources and the entry
@@ -80,7 +90,7 @@ type NativeHandle = GlbResources & {
   mechanism?: unknown;
 };
 
-type ShapeMetadata = Omit<ShapeConfig, 'shape'> & { name: string };
+type ShapeMetadata = Omit<NamedInputShape, 'shape'>;
 
 /** Structured-cloneable shape snapshot: exact B-rep in SMLib's lossless `.smb` text, or mesh arrays. */
 type SerializedShape =
@@ -165,6 +175,20 @@ function registerSmlibModule(runtime: KernelServices, library: SmlibLibrary): vo
   });
 }
 
+/**
+ * Register the SinopiaCAD parametric families as `@sinopia/famiglie`, bound to the untraced library: a family builds
+ * many intermediate bodies, and its result reaches the kernel as plain shape configs of that same library.
+ * @param runtime - Kernel services.
+ * @param library - The loaded SMLib library facade.
+ */
+function registerFamiglieModule(runtime: KernelServices, library: SmlibLibrary): void {
+  registerKernelModule(runtime, {
+    name: sinopiaFamiglieModuleName,
+    exports: creaModuloFamiglie(library),
+    version: '1.0.0',
+  });
+}
+
 function extractDefaultName(module: unknown): string | undefined {
   if (!isRecordObject(module)) {
     return undefined;
@@ -245,7 +269,7 @@ export const smlibKernel = defineKernel({
     [smlibModuleName]: { name: smlibPackage.name, version: smlibPackage.version },
   },
   name: 'SmlibKernel',
-  version: '1.0.0',
+  version: kernelVersion,
   optionsSchema: smlibOptionsSchema,
   views: {
     model: {
@@ -297,12 +321,20 @@ export const smlibKernel = defineKernel({
       defaultScope: 'kernel-setup',
     });
     registerSmlibModule(runtime, libraryTrace.tracedLibrary);
+    registerFamiglieModule(runtime, library);
     logger.debug(`SMLib kernel initialized (smlibwasm ${module.version}, libraryTracing: ${options.libraryTracing})`);
     return { library, libraryTrace };
   },
 
   async resolve({ entryPath }, runtime) {
-    return runtime.bundler.resolveDependencies(entryPath);
+    const dependencies = await runtime.bundler.resolveDependencies(entryPath);
+    const sidecar = manualEntryPath(entryPath);
+    return {
+      ...dependencies,
+      resolved: (await runtime.filesystem.exists(sidecar))
+        ? [...new Set([...dependencies.resolved, sidecar])]
+        : dependencies.resolved,
+    };
   },
 
   async describe({ entryPath }, runtime) {
@@ -322,7 +354,10 @@ export const smlibKernel = defineKernel({
       errorContext.entryUrl = executeResult.entryUrl;
 
       const defaultParameters = extractDefaultParameters(executeResult.value);
-      const jsonSchema = annotateParameterAssumptions(await jsonSchemaFromJson(defaultParameters), executeResult.value);
+      const jsonSchema = annotateParameterAssumptions(
+        completaSchemaFamiglia(await jsonSchemaFromJson(defaultParameters), executeResult.value),
+        executeResult.value,
+      );
       return createKernelSuccess({
         parameters: createKernelParameterDeclaration(defaultParameters, jsonSchema, {
           id: 'urn:taucad:smlib:parameters',
@@ -398,11 +433,31 @@ export const smlibKernel = defineKernel({
           formatError: (error) => formatSmlibError(error, errorContext),
         });
 
-        const entries = normalizeRenderShapes(
+        const sourceEntries = normalizeRenderShapes(
           context.library,
           model ? modelShapes : shapes,
           extractDefaultName(executeResult.value),
         );
+        const sidecar = manualEntryPath(entryPath);
+        const document: ManualDocument = (await runtime.filesystem.exists(sidecar))
+          ? parseManualDocument(await runtime.filesystem.readFile(sidecar, 'utf8'))
+          : { version: 1, operations: [] };
+        const replaySource = await createManualReplaySource({
+          entryPath,
+          dependencies: bundleResult.dependencies,
+          unresolvedPaths: bundleResult.unresolvedPaths,
+          parameters,
+          kernelVersion: manualReplaySemanticsVersion,
+          libraryVersion: smlibPackage.version,
+          runtime,
+        });
+        const entries = await applyManualOperations({
+          library: context.library,
+          entries: sourceEntries,
+          document,
+          replaySource,
+        });
+        runtime.signal.throwIfAborted();
         const handle: NativeHandle = {
           shapes: entries.filter(({ shape }) => !isDrawingShape(context.library, shape)),
           drawings: entries
@@ -689,26 +744,13 @@ export const smlibKernel = defineKernel({
 type ExportCoordinateSystem = 'y-up' | 'z-up' | undefined;
 
 /**
- * A name as STEP text: smlibwasm writes ASCII only and turns any other character into `?`, so other characters
- * become ISO 10303-21 `\X2\`/`\X4\` directives and a backslash is doubled. Readers decode the original name.
+ * A name as the STEP writer takes it. smlibwasm 0.5 writes names as ISO 10303-21 text itself (`\X2\…\X0\` for
+ * accented letters, `\X4\` beyond the basic plane, a doubled backslash), so the authored name goes as it is: encoding it
+ * here too (as 0.3 needed) wrote the directives literally, and «Pietrina più» came back as `Pietrina pi\X2\00F9\X0\`.
  * @param name - The authored name.
- * @returns ASCII text that reads back as `name`.
+ * @returns The same name.
  */
-const toStepName = (name: string): string => {
-  let text = '';
-  for (const character of name) {
-    const code = character.codePointAt(0)!;
-    if (character === '\\') {
-      text += String.raw`\\`;
-    } else if (code < 0x80) {
-      text += character;
-    } else {
-      const hex = code.toString(16).toUpperCase();
-      text += code > 0xff_ff ? `\\X4\\${hex.padStart(8, '0')}\\X0\\` : `\\X2\\${hex.padStart(4, '0')}\\X0\\`;
-    }
-  }
-  return text;
-};
+const toStepName = (name: string): string => name;
 
 /**
  * A body to export: faces become sheets, and y-up turns the Z-up model about X by −90°.

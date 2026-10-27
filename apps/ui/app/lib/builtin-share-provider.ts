@@ -12,7 +12,7 @@ import type { ShareSnapshotFileRole } from '@taucad/share/snapshot';
 
 export const builtinShareProviderDescriptor = {
   id: 'builtin',
-  label: 'Tau catalog',
+  label: 'SinopiaCAD catalog',
   capabilities: ['project.resolve'],
 } as const satisfies ShareProviderDescriptor;
 

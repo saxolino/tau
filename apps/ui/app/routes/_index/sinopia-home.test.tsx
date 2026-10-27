@@ -245,9 +245,10 @@ describe('SinopiaHome', () => {
     );
     expect(pickerInput()).toHaveAttribute('accept', 'image/jpeg,image/png,image/webp,image/gif');
     expect(screen.getByRole('heading', { level: 2, name: 'I tuoi progetti' })).toBeInTheDocument();
+    // The lane's toggle is now worded «assistente» (the always-visible assistant), not «agente».
     // The lane: the same hide button as the project page's agent lane, and the one composer, inside the home draft's provider.
     const lane = agentLane();
-    expect(within(lane).getByRole('button', { name: 'Nascondi l’agente' })).toHaveAttribute(
+    expect(within(lane).getByRole('button', { name: 'Nascondi l’assistente' })).toHaveAttribute(
       'aria-keyshortcuts',
       'Control+C',
     );
@@ -412,10 +413,10 @@ describe('SinopiaHome', () => {
     const user = userEvent.setup();
     renderHome();
 
-    await user.click(within(agentLane()).getByRole('button', { name: 'Nascondi l’agente' }));
+    await user.click(within(agentLane()).getByRole('button', { name: 'Nascondi l’assistente' }));
 
     expect(screen.queryByRole('complementary', { name: 'Agente' })).not.toBeInTheDocument();
-    const closedToggle = screen.getByRole('button', { name: 'Agente' });
+    const closedToggle = screen.getByRole('button', { name: 'Assistente' });
     expect(closedToggle).toHaveAttribute('aria-pressed', 'false');
     expect(closedToggle).toHaveAttribute('aria-keyshortcuts', 'Control+C');
     expect(globalThis.localStorage.getItem('tau-chat-op-lane')).toBe('false');
@@ -453,7 +454,7 @@ describe('SinopiaHome', () => {
     renderHome();
 
     expect(screen.queryByRole('complementary', { name: 'Agente' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Agente' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Assistente' })).not.toBeInTheDocument();
     expect(screen.getByRole('region', { name: 'Messaggio per l’agente' })).toContainElement(
       screen.getByRole('textbox'),
     );
@@ -496,7 +497,7 @@ describe('SinopiaHome', () => {
     renderHome();
     await userEvent.click(await screen.findByRole('button', { name: 'Spring necklace' }));
     await userEvent.click(await screen.findByRole('button', { name: 'Seleziona tutte' }));
-    await userEvent.click(screen.getByRole('button', { name: 'Usa 1 immagini' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Usa 1 immagine' }));
     await waitFor(() => {
       expect(addDraftAttachment).toHaveBeenCalledOnce();
     });

@@ -1,0 +1,915 @@
+/* oxlint-disable new-cap -- SMLib exposes capitalized shape factory functions. */
+/* eslint-disable @typescript-eslint/naming-convention -- chiavi dei dati della specifica (processi, materiali, varianti, taglie): snake_case come in Sinopia. */
+import type * as Smlib from '@classcad/smlibwasm';
+import type {
+  DefinizioneParametro,
+  Esito,
+  Famiglia,
+  OpzioniFamiglia,
+  PezzoFamiglia,
+  Processo,
+  RisultatoCostruzione,
+} from '#famiglie/famiglia.js';
+import { emettiMainFamiglia } from '#famiglie/emetti-main.js';
+import { estrudiSformato, ovale } from '#famiglie/profili.js';
+import { poligonoSemplice } from '#famiglie/fondo-pianta-canonica.js';
+import { schizzoLogo } from '#famiglie/logo.js';
+import { ErroreLogo, leggiLogoSvg, trattoMinimoLogo } from '#famiglie/logo-svg.js';
+import type { LogoLetto } from '#famiglie/logo-svg.js';
+import { aspettoMateriale } from '#famiglie/materiali.js';
+import { normalizzaConParametri, predefinitiDaParametri, radianti, schemaDaParametri } from '#famiglie/parametri.js';
+import { sogliaParete, sogliaSformo, sogliaTratto } from '#famiglie/processi.js';
+import {
+  esitiPezzi,
+  esitiSformo,
+  esito,
+  esitoMinimo,
+  mm,
+  normalizzaForma,
+  sformoDuePiani,
+} from '#famiglie/verifiche-comuni.js';
+
+/**
+ * Famiglia `placca` (specifica §1.5): piastra su XY con la faccia a vista +Z, testo centrato in rilievo o inciso,
+ * bordo in rilievo, perni o fori di fissaggio sotto.
+ *
+ * L'ovale è a quattro centri (`profili.ts`): archi tangenti invece dell'ellisse, sformo e offset esatti e rapidi.
+ * In pressofusione la piastra e il bordo sono sformati nell'estrusione (piano di divisione sul retro, z = 0) e i
+ * perni sono coni. Il testo no: `extrude` con `taper` rifiuta le lettere Lato con spigoli collineari (H, T, 1…) e
+ * costa ≈ 270 ms quando riesce (esiti T-D1-02), quindi le lettere hanno i fianchi dritti e la verifica lo dice.
+ */
+
+type Lib = typeof Smlib;
+
+/**
+ * Varianti della famiglia placca.
+ * @public
+ */
+export type VariantePlacca = 'rettangolo' | 'ovale' | 'cerchio' | 'scudo';
+
+/**
+ * Parametri della famiglia placca, annidati per pezzo.
+ * @public
+ */
+export type ParametriPlacca = {
+  piastra: {
+    forma: VariantePlacca | 'contorno';
+    contorno: Array<[number, number]>;
+    lunghezza: number;
+    larghezza: number;
+    spessore: number;
+    raggioAngoli: number;
+    bombatura: number;
+  };
+  bordo: { rilievo: number; larghezza: number };
+  testo: {
+    contenuto: string;
+    altezza: number;
+    modo: 'rilievo' | 'inciso' | 'nessuno';
+    profondita: number;
+    font: 'lato' | 'sinopia';
+  };
+  logo: {
+    svg: string;
+    modo: 'rilievo' | 'inciso' | 'nessuno';
+    larghezza: number;
+    profondita: number;
+    x: number;
+    y: number;
+  };
+  fissaggio: { tipo: 'nessuno' | 'perni' | 'fori' | 'ribattini'; perno: { diametro: number; lunghezza: number } };
+  costruzione: {
+    processo: 'pressofusione_zama' | 'tranciatura_lamiera' | 'fusione_cera_persa';
+    materiale: 'zama' | 'ottone' | 'argento_925' | 'inox';
+    sformo: number;
+  };
+};
+
+const varianti = ['rettangolo', 'ovale', 'cerchio', 'scudo'] as const;
+
+/**
+ * Larghezza del tratto più sottile di Lato Regular rispetto all'altezza delle maiuscole (traversa della H).
+ * @public
+ */
+export const trattoLato = 0.099;
+
+const parametri: readonly DefinizioneParametro[] = [
+  {
+    chiave: 'piastra.forma',
+    unita: 'enum',
+    valori: [...varianti, 'contorno'],
+    default: 'rettangolo',
+    fonteDefault: 'mestiere',
+    descrizione: 'Forma della placca',
+  },
+  {
+    chiave: 'piastra.contorno',
+    unita: 'contorno',
+    default: [],
+    lunghezzaMassima: 64,
+    fonteDefault: 'scelta_nostra',
+    descrizione:
+      'Punti del contorno (forma «contorno»): curva chiusa che passa per i punti, portata a lunghezza × larghezza',
+  },
+  {
+    chiave: 'piastra.lunghezza',
+    unita: 'mm',
+    min: 6,
+    max: 120,
+    default: 30,
+    fonteDefault: 'mestiere',
+    critico: true,
+    silhouetteSensibile: true,
+    descrizione: 'Lunghezza (diametro per il cerchio)',
+  },
+  {
+    chiave: 'piastra.larghezza',
+    unita: 'mm',
+    min: 4,
+    max: 60,
+    default: 12,
+    fonteDefault: 'mestiere',
+    critico: true,
+    silhouetteSensibile: true,
+    descrizione: 'Larghezza',
+  },
+  {
+    chiave: 'piastra.spessore',
+    unita: 'mm',
+    min: 0.6,
+    max: 5,
+    default: 1.5,
+    fonteDefault: 'mestiere',
+    descrizione: 'Spessore (zama 1,5 · ottone tranciato 0,8)',
+  },
+  {
+    chiave: 'piastra.raggioAngoli',
+    unita: 'mm',
+    min: 0,
+    max: 20,
+    default: 2,
+    fonteDefault: 'mestiere',
+    silhouetteSensibile: true,
+    descrizione: 'Raggio degli angoli',
+  },
+  {
+    chiave: 'piastra.bombatura',
+    unita: 'mm',
+    min: 0,
+    max: 4,
+    default: 0,
+    fonteDefault: 'scelta_nostra',
+    descrizione: 'Bombatura della faccia a vista',
+  },
+  {
+    chiave: 'bordo.rilievo',
+    unita: 'mm',
+    min: 0,
+    max: 1,
+    default: 0.3,
+    fonteDefault: 'mestiere',
+    descrizione: 'Rilievo del bordo (0 = senza)',
+  },
+  {
+    chiave: 'bordo.larghezza',
+    unita: 'mm',
+    min: 0.4,
+    max: 3,
+    default: 0.8,
+    fonteDefault: 'mestiere',
+    descrizione: 'Larghezza del bordo',
+  },
+  {
+    chiave: 'testo.contenuto',
+    unita: 'testo',
+    lunghezzaMassima: 24,
+    default: '',
+    fonteDefault: 'scelta_nostra',
+    descrizione: 'Testo del logo',
+  },
+  {
+    chiave: 'testo.altezza',
+    unita: 'mm',
+    min: 2,
+    max: 40,
+    default: 5,
+    fonteDefault: 'mestiere',
+    descrizione: 'Altezza delle maiuscole',
+  },
+  {
+    chiave: 'testo.modo',
+    unita: 'enum',
+    valori: ['rilievo', 'inciso', 'nessuno'],
+    default: 'rilievo',
+    fonteDefault: 'scelta_nostra',
+    descrizione: 'Testo in rilievo o inciso',
+  },
+  {
+    chiave: 'testo.profondita',
+    unita: 'mm',
+    min: 0.2,
+    max: 1.5,
+    default: 0.4,
+    fonteDefault: 'mestiere',
+    descrizione: 'Rilievo o profondità del testo',
+  },
+  {
+    chiave: 'testo.font',
+    unita: 'enum',
+    valori: ['lato', 'sinopia'],
+    default: 'lato',
+    fonteDefault: 'scelta_nostra',
+    descrizione: 'Carattere',
+  },
+  {
+    chiave: 'logo.svg',
+    fuoriRiconoscimento: true,
+    unita: 'testo',
+    lunghezzaMassima: 6000,
+    default: '',
+    fonteDefault: 'scelta_nostra',
+    descrizione: 'Logo: testo SVG con contorni pieni e chiusi (path, rect, circle, polygon)',
+  },
+  {
+    chiave: 'logo.modo',
+    fuoriRiconoscimento: true,
+    unita: 'enum',
+    valori: ['rilievo', 'inciso', 'nessuno'],
+    default: 'rilievo',
+    fonteDefault: 'scelta_nostra',
+    descrizione: 'Logo in rilievo o inciso',
+  },
+  {
+    chiave: 'logo.larghezza',
+    fuoriRiconoscimento: true,
+    unita: 'mm',
+    min: 2,
+    max: 80,
+    default: 10,
+    fonteDefault: 'scelta_nostra',
+    descrizione: 'Larghezza del logo sulla faccia (la scala)',
+  },
+  {
+    chiave: 'logo.profondita',
+    fuoriRiconoscimento: true,
+    unita: 'mm',
+    min: 0.2,
+    max: 1.5,
+    default: 0.3,
+    fonteDefault: 'mestiere',
+    descrizione: 'Rilievo o profondità del logo',
+  },
+  {
+    chiave: 'logo.x',
+    fuoriRiconoscimento: true,
+    unita: 'mm',
+    min: -60,
+    max: 60,
+    default: 0,
+    fonteDefault: 'scelta_nostra',
+    descrizione: 'Posizione del logo: sposta lungo la lunghezza dal centro',
+  },
+  {
+    chiave: 'logo.y',
+    fuoriRiconoscimento: true,
+    unita: 'mm',
+    min: -30,
+    max: 30,
+    default: 0,
+    fonteDefault: 'scelta_nostra',
+    descrizione: 'Posizione del logo: sposta lungo la larghezza dal centro',
+  },
+  {
+    chiave: 'fissaggio.tipo',
+    unita: 'enum',
+    valori: ['nessuno', 'perni', 'fori', 'ribattini'],
+    default: 'perni',
+    fonteDefault: 'mestiere',
+    descrizione: 'Fissaggio',
+  },
+  {
+    chiave: 'fissaggio.perno.diametro',
+    unita: 'mm',
+    min: 1,
+    max: 3,
+    default: 1.5,
+    fonteDefault: 'mestiere',
+    descrizione: 'Diametro dei perni o dei fori',
+  },
+  {
+    chiave: 'fissaggio.perno.lunghezza',
+    unita: 'mm',
+    min: 2,
+    max: 8,
+    default: 4,
+    fonteDefault: 'mestiere',
+    descrizione: 'Lunghezza dei perni',
+  },
+  {
+    chiave: 'fissaggio.interasse',
+    unita: 'mm',
+    default: 18,
+    fonteDefault: 'derivato',
+    derivato: (p) => 0.6 * (p as ParametriPlacca).piastra.lunghezza,
+    descrizione: 'Interasse dei perni: 0,6 × lunghezza',
+  },
+  {
+    chiave: 'costruzione.processo',
+    unita: 'enum',
+    valori: ['pressofusione_zama', 'tranciatura_lamiera', 'fusione_cera_persa'],
+    default: 'pressofusione_zama',
+    fonteDefault: 'mestiere',
+    descrizione: 'Processo produttivo',
+  },
+  {
+    chiave: 'costruzione.materiale',
+    unita: 'enum',
+    valori: ['zama', 'ottone', 'argento_925', 'inox'],
+    default: 'zama',
+    fonteDefault: 'mestiere',
+    descrizione: 'Materiale',
+  },
+  {
+    chiave: 'costruzione.sformo',
+    unita: 'deg',
+    min: 0.5,
+    max: 2,
+    default: 1,
+    fonteDefault: 'mestiere',
+    descrizione: 'Sformo dei fianchi in pressofusione',
+  },
+];
+
+const varianteDi = (opzioni?: OpzioniFamiglia): VariantePlacca =>
+  varianti.includes(opzioni?.variante as VariantePlacca) ? (opzioni!.variante as VariantePlacca) : 'rettangolo';
+
+const predefiniti = (variante?: string): ParametriPlacca =>
+  predefinitiDaParametri<ParametriPlacca>(parametri, { 'piastra.forma': varianteDi({ variante }) });
+
+const materialiDelProcesso: Readonly<
+  Record<ParametriPlacca['costruzione']['processo'], ReadonlyArray<ParametriPlacca['costruzione']['materiale']>>
+> = {
+  pressofusione_zama: ['zama'],
+  tranciatura_lamiera: ['ottone', 'inox'],
+  fusione_cera_persa: ['ottone', 'argento_925'],
+};
+
+const vincoli = (p: ParametriPlacca): Array<{ chiave: string; messaggio: string }> => {
+  const violati: Array<{ chiave: string; messaggio: string }> = [];
+  if (!materialiDelProcesso[p.costruzione.processo].includes(p.costruzione.materiale)) {
+    violati.push({ chiave: 'costruzione.materiale', messaggio: 'Materiale non adatto al processo.' });
+  }
+  if (p.testo.modo === 'inciso' && p.testo.profondita > p.piastra.spessore * 0.6) {
+    violati.push({ chiave: 'testo.profondita', messaggio: 'L’incisione supera il 60 % dello spessore.' });
+  }
+  if (p.logo.modo === 'inciso' && p.logo.profondita > p.piastra.spessore * 0.6) {
+    violati.push({ chiave: 'logo.profondita', messaggio: 'L’incisione del logo supera il 60 % dello spessore.' });
+  }
+  if (p.bordo.larghezza * 2 >= Math.min(p.piastra.lunghezza, p.piastra.larghezza)) {
+    violati.push({ chiave: 'bordo.larghezza', messaggio: 'Il bordo chiude la placca.' });
+  }
+  return violati;
+};
+
+const normalizza = (grezzi: unknown, opzioni?: OpzioniFamiglia): ParametriPlacca => {
+  const variante = opzioni?.variante === undefined ? undefined : varianteDi(opzioni);
+  const p = normalizzaConParametri(parametri, grezzi, predefiniti(variante));
+  // Un contorno dato esplicitamente vince sulla variante.
+  if (variante && p.piastra.forma !== 'contorno') {
+    p.piastra.forma = variante;
+  }
+  if (p.piastra.forma === 'cerchio') {
+    p.piastra.larghezza = Math.min(60, p.piastra.lunghezza);
+  }
+  if (!materialiDelProcesso[p.costruzione.processo].includes(p.costruzione.materiale)) {
+    p.costruzione.materiale = materialiDelProcesso[p.costruzione.processo][0]!;
+  }
+  p.testo.profondita =
+    p.testo.modo === 'inciso' ? Math.min(p.testo.profondita, p.piastra.spessore * 0.6) : p.testo.profondita;
+  p.logo.profondita =
+    p.logo.modo === 'inciso' ? Math.min(p.logo.profondita, p.piastra.spessore * 0.6) : p.logo.profondita;
+  // L'SVG su una riga sola: finisce nel `main.ts` come un letterale e nell'impronta dei parametri.
+  p.logo.svg = p.logo.svg.replaceAll(/\s+/g, ' ').trim();
+  p.bordo.larghezza = Math.min(p.bordo.larghezza, Math.min(p.piastra.lunghezza, p.piastra.larghezza) / 2 - 0.5);
+  return p;
+};
+
+/**
+ * La forma «contorno»: la curva chiusa per i punti dati (spline, poi poligono se la spline non chiude una regione),
+ * riportata a lunghezza × larghezza e centrata; undefined se i punti non bastano o il poligono si autointerseca.
+ */
+function sagomaDaContorno(lib: Lib, p: ParametriPlacca): Smlib.Sketch | undefined {
+  const { contorno, lunghezza, larghezza } = p.piastra;
+  if (contorno.length < 3 || !poligonoSemplice(contorno)) {
+    return undefined;
+  }
+  const xs = contorno.map(([x]) => x);
+  const ys = contorno.map(([, y]) => y);
+  const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+  if (x1 - x0 <= 0 || y1 - y0 <= 0) {
+    return undefined;
+  }
+  const scalati = contorno.map(([x, y]): [number, number] => [
+    ((x - (x0 + x1) / 2) * lunghezza) / (x1 - x0),
+    ((y - (y0 + y1) / 2) * larghezza) / (y1 - y0),
+  ]);
+  // In senso antiorario (normale +Z): una faccia girata al contrario rifiuta l'estrusione sformata.
+  let area = 0;
+  for (const [indice, [x, y]] of scalati.entries()) {
+    const [xn, yn] = scalati[(indice + 1) % scalati.length]!;
+    area += x * yn - xn * y;
+  }
+  const punti = area < 0 ? scalati.toReversed() : scalati;
+  try {
+    const curva = lib.makeFace(lib.Spline(...punti, { closed: true }));
+    const { size } = curva.bbox();
+    // La spline può uscire dai punti: si riporta l'ingombro a lunghezza × larghezza.
+    return curva.scale([lunghezza / size.x, larghezza / size.y, 1], curva.bbox().center);
+  } catch {
+    return lib.Polygon(punti);
+  }
+}
+
+/** Il contorno della piastra (schizzo su XY, centrato). */
+function sagoma(lib: Lib, p: ParametriPlacca, esiti: Esito[] = []): Smlib.Sketch {
+  const { forma, lunghezza, larghezza, raggioAngoli } = p.piastra;
+  const r = Math.min(raggioAngoli, 0.49 * Math.min(lunghezza, larghezza));
+  if (forma === 'contorno') {
+    const daContorno = sagomaDaContorno(lib, p);
+    if (daContorno) {
+      return daContorno.translate(-daContorno.bbox().center.x, -daContorno.bbox().center.y);
+    }
+    esiti.push(
+      esito('avviso', 'CONTORNO', {
+        messaggio: 'Contorno assente, con meno di 3 punti o che si autointerseca: placca rettangolare.',
+        pezzo: 'Placca',
+      }),
+    );
+  }
+  if (forma === 'ovale') {
+    return ovale(lib, lunghezza / 2, larghezza / 2);
+  }
+  if (forma === 'cerchio') {
+    return lib.Circle(lunghezza / 2);
+  }
+  if (forma === 'scudo') {
+    const tallone = Math.min(lunghezza, larghezza) / 2;
+    const scudo = lib.Hull(
+      lib.Rectangle(lunghezza, larghezza / 2).translate(0, larghezza / 4),
+      lib.Pos(0, -larghezza / 2 + tallone).mul(lib.Circle(tallone)),
+    );
+    return r > 0.05
+      ? scudo.fillet(r, [
+          [-lunghezza / 2, larghezza / 2],
+          [lunghezza / 2, larghezza / 2],
+        ])
+      : scudo;
+  }
+  return lib.Rectangle(lunghezza, larghezza, r > 0.05 ? { fillet: r } : {});
+}
+
+/**
+ * Il contorno ristretto di `distanza`: offset (esatto: archi e rette restano tali; l'ovale è a quattro centri) e il
+ * cerchio a raggio ridotto.
+ */
+function sagomaRistretta(
+  lib: Lib,
+  p: ParametriPlacca,
+  richiesta: { base: Smlib.Sketch; distanza: number },
+): Smlib.Sketch {
+  const { base: sagomaPiena, distanza } = richiesta;
+  if (distanza <= 0) {
+    return sagomaPiena;
+  }
+  const { forma, lunghezza } = p.piastra;
+  if (forma === 'cerchio') {
+    return lib.Circle(lunghezza / 2 - distanza);
+  }
+  try {
+    return sagomaPiena.offset(-distanza, { corners: 'round' });
+  } catch {
+    // Offset rifiutato (curve libere, distanze piccole): restringimento in scala attorno al centro.
+    const { size, center } = sagomaPiena.bbox();
+    return sagomaPiena.scale([(size.x - 2 * distanza) / size.x, (size.y - 2 * distanza) / size.y, 1], center);
+  }
+}
+
+/** Il testo ridotto finché sta nello spazio dentro il bordo (passi del 10 %), con l'altezza effettiva. */
+function testoChesta(
+  lib: Lib,
+  p: ParametriPlacca,
+  spazio: Smlib.Sketch,
+): { testo: Smlib.Sketch; altezza: number } | undefined {
+  const contenuto = p.testo.contenuto.trim();
+  if (p.testo.modo === 'nessuno' || contenuto.length === 0) {
+    return undefined;
+  }
+  const testo = lib.Text(contenuto, p.testo.altezza);
+  const { size, center } = testo.bbox();
+  let fattore = Math.min(1, spazio.bbox().size.x / size.x, spazio.bbox().size.y / size.y);
+  for (let tentativo = 0; tentativo < 12; tentativo++) {
+    const riquadro = lib
+      .Pos(center.x * fattore, center.y * fattore)
+      .mul(lib.Rectangle(size.x * fattore, size.y * fattore));
+    if (spazio.intersect(riquadro).area >= riquadro.area * (1 - 1e-6)) {
+      break;
+    }
+    fattore *= 0.9;
+  }
+  return { testo: fattore < 1 ? testo.scale(fattore) : testo, altezza: p.testo.altezza * fattore };
+}
+
+/** Pezzo e altezza effettiva del testo (per le verifiche). */
+const altezzeTesto = new WeakMap<WeakKey, number>();
+
+/** Il logo letto dai parametri: undefined se non c'è; un SVG illeggibile dà un avviso e nessun logo. */
+function logoLetto(p: ParametriPlacca, esiti: Esito[]): LogoLetto | undefined {
+  if (p.logo.modo === 'nessuno' || p.logo.svg.trim().length === 0) {
+    return undefined;
+  }
+  try {
+    return leggiLogoSvg(p.logo.svg);
+  } catch (error) {
+    if (error instanceof ErroreLogo) {
+      esiti.push(esito('avviso', error.codice, { messaggio: `Logo non inserito: ${error.message}`, pezzo: 'Placca' }));
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+/** Il logo ridotto (passi del 10 %) finché sta nello spazio dentro il bordo, alla sua posizione. */
+function logoChesta(
+  lib: Lib,
+  p: ParametriPlacca,
+  contesto: {
+    spazio: Smlib.Sketch;
+    ingombroTesto: { min: { x: number; y: number }; max: { x: number; y: number } } | undefined;
+  },
+  esiti: Esito[],
+): { schizzo: Smlib.Sketch; dati: DatiLogo } | undefined {
+  const logo = logoLetto(p, esiti);
+  if (!logo) {
+    return undefined;
+  }
+  for (const avviso of logo.avvisi) {
+    esiti.push(esito('info', 'LOGO_SVG', { messaggio: avviso, pezzo: 'Placca' }));
+  }
+  const proporzione = logo.altezza / logo.larghezza;
+  let larghezza = p.logo.larghezza;
+  for (let tentativo = 0; tentativo < 14; tentativo++) {
+    const riquadro = lib.Pos(p.logo.x, p.logo.y).mul(lib.Rectangle(larghezza, larghezza * proporzione));
+    if (contesto.spazio.intersect(riquadro).area >= riquadro.area * (1 - 1e-6)) {
+      if (larghezza < p.logo.larghezza - 1e-9) {
+        esiti.push(
+          esito('avviso', 'LOGO_RIDOTTO', {
+            messaggio: `Logo ridotto a ${mm(larghezza, 1)} di larghezza perché stia nella piastra.`,
+            valore: larghezza,
+            soglia: p.logo.larghezza,
+            pezzo: 'Placca',
+          }),
+        );
+      }
+      const { ingombroTesto } = contesto;
+      if (
+        ingombroTesto &&
+        Math.abs(p.logo.x) < (ingombroTesto.max.x - ingombroTesto.min.x + larghezza) / 2 &&
+        Math.abs(p.logo.y) < (ingombroTesto.max.y - ingombroTesto.min.y + larghezza * proporzione) / 2
+      ) {
+        esiti.push(
+          esito('avviso', 'LOGO_SU_TESTO', {
+            messaggio: 'Il logo si sovrappone al testo: spostalo o riduci uno dei due.',
+            pezzo: 'Placca',
+          }),
+        );
+      }
+      return {
+        schizzo: schizzoLogo(lib, logo, { larghezza, x: p.logo.x, y: p.logo.y }),
+        dati: { logo, scala: larghezza / logo.larghezza, larghezza },
+      };
+    }
+    larghezza *= 0.9;
+  }
+  esiti.push(
+    esito('avviso', 'LOGO_FUORI', {
+      messaggio: 'Il logo, alla posizione data, non sta dentro la placca: nessun logo.',
+      pezzo: 'Placca',
+    }),
+  );
+  return undefined;
+}
+
+/** Il logo come è stato costruito: contorni e scala, per le verifiche. */
+type DatiLogo = { logo: LogoLetto; scala: number; larghezza: number };
+const datiLogo = new WeakMap<WeakKey, DatiLogo>();
+
+function costruisciPlacca(lib: Lib, p: ParametriPlacca, esiti: Esito[]): Smlib.Part {
+  const { piastra, bordo, testo, fissaggio, costruzione } = p;
+  const zama = costruzione.processo === 'pressofusione_zama';
+  const sformo = zama ? costruzione.sformo : 0;
+  const base = sagoma(lib, p, esiti);
+  const bombata = piastra.bombatura > 0;
+  const altezzaPiastra = piastra.spessore + piastra.bombatura;
+  // Ovale: archi che si toccano fra loro, sformati col draft dei fianchi (col taper diventerebbero B-spline).
+  const archiTangenti = piastra.forma === 'ovale';
+  const sformata = (schizzo: Smlib.Sketch, altezza: number): Smlib.Part =>
+    sformo <= 0
+      ? schizzo.extrude(altezza)
+      : archiTangenti
+        ? estrudiSformato(lib, schizzo, { altezza, sformo })
+        : schizzo.extrude(altezza, { taper: sformo });
+  let corpo = sformata(base, altezzaPiastra);
+  // Calotta: sfera di corda = lunghezza e freccia = bombatura, appoggiata allo spessore sul bordo.
+  const raggioCalotta = bombata ? (piastra.lunghezza ** 2 / 4 + piastra.bombatura ** 2) / (2 * piastra.bombatura) : 0;
+  const centroCalotta = piastra.spessore + piastra.bombatura - raggioCalotta;
+  const calotta = (scarto: number): Smlib.Part => lib.Pos(0, 0, centroCalotta).mul(lib.Sphere(raggioCalotta + scarto));
+  if (bombata) {
+    corpo = corpo.intersect(calotta(0));
+  }
+  const ritiroCima = sformo > 0 ? piastra.spessore * Math.tan(radianti(sformo)) : 0;
+  // Sulle curve libere l'offset dello schizzo non coincide al centesimo col bordo della piastra sformata: il bordo in
+  // rilievo sta 0,02 mm dentro (altrimenti la fusione tocca solo lungo uno spigolo).
+  const cima = sagomaRistretta(lib, p, { base, distanza: ritiroCima + (piastra.forma === 'contorno' ? 0.02 : 0) });
+  const rilievi: Smlib.Part[] = [];
+  if (bordo.rilievo > 0) {
+    const cornice = cima.cut(sagomaRistretta(lib, p, { base, distanza: ritiroCima + bordo.larghezza }));
+    let solido = sformata(
+      lib.Pos(0, 0, piastra.spessore - 0.05).mul(cornice),
+      bordo.rilievo + 0.05 + piastra.bombatura,
+    );
+    if (bombata) {
+      solido = solido.intersect(calotta(bordo.rilievo));
+    }
+    rilievi.push(solido);
+  }
+  const spazio = sagomaRistretta(lib, p, {
+    base,
+    distanza: ritiroCima + (bordo.rilievo > 0 ? bordo.larghezza + 0.5 : 0.5),
+  });
+  const scritta = testoChesta(lib, p, spazio);
+  const incisi: Smlib.Part[] = [];
+  /** Un segno (testo, logo) sulla faccia a vista: in rilievo sulla cima, o inciso sotto di essa. */
+  const segno = (schizzo: Smlib.Sketch, modo: 'rilievo' | 'inciso', profondita: number): void => {
+    if (modo === 'rilievo') {
+      let solido = lib
+        .Pos(0, 0, piastra.spessore - 0.05)
+        .mul(schizzo)
+        .extrude(profondita + 0.05 + (bombata ? piastra.bombatura + 0.1 : 0));
+      if (bombata) {
+        solido = solido.intersect(calotta(profondita));
+      }
+      rilievi.push(solido);
+    } else {
+      let solido = lib
+        .Pos(0, 0, piastra.spessore - profondita - (bombata ? 0.5 : 0))
+        .mul(schizzo)
+        .extrude(profondita + 0.05 + (bombata ? piastra.bombatura + 1.5 : 0));
+      if (bombata) {
+        solido = solido.cut(calotta(-profondita));
+      }
+      incisi.push(solido);
+    }
+  };
+  if (scritta) {
+    if (scritta.altezza < testo.altezza - 1e-9) {
+      esiti.push(
+        esito('avviso', 'TESTO_RIDOTTO', {
+          messaggio: `Testo ridotto a ${mm(scritta.altezza, 1)} di altezza perché stia nella piastra.`,
+          valore: scritta.altezza,
+          soglia: testo.altezza,
+        }),
+      );
+    }
+    if (testo.font === 'sinopia') {
+      esiti.push(esito('avviso', 'FONT', 'Il carattere Sinopia non è ancora nel CAD: testo in Lato.'));
+    }
+    segno(scritta.testo, testo.modo === 'inciso' ? 'inciso' : 'rilievo', testo.profondita);
+  }
+  const marchio = logoChesta(lib, p, { spazio, ingombroTesto: scritta?.testo.bbox() }, esiti);
+  if (marchio) {
+    segno(marchio.schizzo, p.logo.modo === 'inciso' ? 'inciso' : 'rilievo', p.logo.profondita);
+  }
+  const interasse = 0.6 * piastra.lunghezza;
+  const posizioni: Array<[number, number]> = [
+    [-interasse / 2, 0],
+    [interasse / 2, 0],
+  ];
+  if (fissaggio.tipo !== 'nessuno') {
+    // Perni e fori stanno dentro la sagoma: l'area dell'intersezione del cerchio con la sagoma è quella del cerchio.
+    const r = fissaggio.perno.diametro / 2;
+    const fuori = posizioni.filter(([x, y]) => {
+      try {
+        return base.intersect(lib.Pos(x, y).mul(lib.Circle(r))).area < Math.PI * r * r * (1 - 1e-3);
+      } catch {
+        return true;
+      }
+    });
+    if (fuori.length > 0) {
+      esiti.push(
+        esito('avviso', 'FISSAGGIO_FUORI', {
+          messaggio: `${fuori.length === 1 ? 'Un perno o foro esce' : `${fuori.length} perni o fori escono`} dalla sagoma della placca: accorcia l’interasse (lunghezza) o riduci il diametro.`,
+          valore: fuori.length,
+          pezzo: 'Placca',
+        }),
+      );
+    }
+  }
+  if (fissaggio.tipo === 'perni') {
+    const r = fissaggio.perno.diametro / 2;
+    const { lunghezza } = fissaggio.perno;
+    // Lo sformo vale su tutta l'altezza del cono, compresi gli 0,5 mm dentro la piastra.
+    const punta = zama ? Math.max(0.3, r - (lunghezza + 0.5) * Math.tan(radianti(sformo))) : r;
+    for (const [x, y] of posizioni) {
+      const perno = zama
+        ? lib.Cone(punta, r, lunghezza + 0.5, { align: [lib.Align.CENTER, lib.Align.CENTER, lib.Align.MAX] })
+        : lib.Cylinder(r, lunghezza + 0.5, { align: [lib.Align.CENTER, lib.Align.CENTER, lib.Align.MAX] });
+      rilievi.push(lib.Pos(x, y, 0.5).mul(perno));
+    }
+  }
+  if (rilievi.length > 0) {
+    corpo = corpo.fuse(...rilievi);
+  }
+  const fori: Smlib.Part[] = [...incisi];
+  if (fissaggio.tipo === 'fori' || fissaggio.tipo === 'ribattini') {
+    for (const [x, y] of posizioni) {
+      fori.push(
+        lib.Pos(x, y, -1).mul(
+          lib.Cylinder(fissaggio.perno.diametro / 2, altezzaPiastra + 3, {
+            align: [lib.Align.CENTER, lib.Align.CENTER, lib.Align.MIN],
+          }),
+        ),
+      );
+    }
+    if (fissaggio.tipo === 'ribattini') {
+      esiti.push(
+        esito('info', 'RIBATTINI', 'Fori per ribattini: i ribattini si scelgono a catalogo, non sono modellati.'),
+      );
+    }
+  }
+  if (fori.length > 0) {
+    corpo = corpo.cut(...fori);
+  }
+  const normalizzata = normalizzaForma(lib, corpo);
+  if (scritta) {
+    altezzeTesto.set(normalizzata, scritta.altezza);
+  }
+  if (marchio) {
+    datiLogo.set(normalizzata, marchio.dati);
+  }
+  if (!normalizzata.isValid()) {
+    esiti.push(
+      esito('blocco', 'SOLIDO_NON_VALIDO', { messaggio: 'La placca non è un solido valido.', pezzo: 'Placca' }),
+    );
+  }
+  return normalizzata;
+}
+
+function costruisciConEsiti(lib: Lib, p: ParametriPlacca): RisultatoCostruzione {
+  const esiti: Esito[] = [];
+  try {
+    const forma = costruisciPlacca(lib, p, esiti);
+    return {
+      pezzi: [
+        {
+          name: 'Placca',
+          shape: forma,
+          ruolo: 'placca',
+          materiale: p.costruzione.materiale,
+          ...aspettoMateriale(p.costruzione.materiale),
+        },
+      ],
+      esiti,
+    };
+  } catch (error) {
+    esiti.push(
+      esito('blocco', 'SOLIDO_NON_VALIDO', {
+        messaggio: `Placca non costruita: ${(error as Error).message}`,
+        pezzo: 'Placca',
+      }),
+    );
+    return { pezzi: [], esiti };
+  }
+}
+
+// oxlint-disable-next-line eslint/max-params -- firma del contratto delle famiglie (§1.0): lib, pezzi, parametri, processo, opzioni.
+function verifiche(
+  lib: Lib,
+  pezzi: readonly PezzoFamiglia[],
+  p: ParametriPlacca,
+  processo: Processo = p.costruzione.processo,
+): Esito[] {
+  const esiti: Esito[] = [];
+  const placca = pezzi.find((pezzo) => pezzo.ruolo === 'placca');
+  const { piastra, testo, bordo } = p;
+  const altezza = placca ? altezzeTesto.get(placca.shape) : undefined;
+  if (altezza !== undefined) {
+    const sogliaDelTratto = sogliaTratto(processo);
+    esiti.push(
+      esitoMinimo('TRATTO_MIN', {
+        valore: trattoLato * altezza,
+        soglia: sogliaDelTratto,
+        cosa: `Tratto più sottile del testo (${mm(altezza, 1)} di altezza)`,
+        pezzo: 'Placca',
+      }),
+    );
+  }
+  const marchio = placca ? datiLogo.get(placca.shape) : undefined;
+  if (marchio) {
+    const soglia = sogliaTratto(processo);
+    esiti.push(
+      esitoMinimo('TRATTO_MIN_LOGO', {
+        valore: trattoMinimoLogo(marchio.logo, marchio.scala, soglia),
+        soglia,
+        cosa: `Tratto più sottile del logo (${mm(marchio.larghezza, 1)} di larghezza)`,
+        pezzo: 'Placca',
+      }),
+    );
+  }
+  const sogliaPiastra =
+    processo === 'pressofusione_zama'
+      ? 1
+      : processo === 'tranciatura_lamiera'
+        ? 0.6
+        : sogliaParete(processo, p.costruzione.materiale);
+  const incisioni = [
+    ...(testo.modo === 'inciso' && altezza !== undefined ? [testo.profondita] : []),
+    ...(p.logo.modo === 'inciso' && marchio ? [p.logo.profondita] : []),
+  ];
+  const parete = piastra.spessore - Math.max(0, ...incisioni);
+  esiti.push(
+    esitoMinimo('PARETE_MIN', {
+      valore: parete,
+      soglia: sogliaPiastra,
+      cosa: incisioni.length > 0 ? 'Spessore sotto l’incisione' : 'Spessore della placca',
+      pezzo: 'Placca',
+    }),
+  );
+  if (bordo.rilievo > 0.6 * piastra.spessore) {
+    esiti.push(
+      esito('avviso', 'BORDO_RILIEVO', {
+        messaggio: `Bordo di ${mm(bordo.rilievo)}: oltre il 60 % dello spessore.`,
+        valore: bordo.rilievo,
+        soglia: 0.6 * piastra.spessore,
+      }),
+    );
+  }
+  const minimoSformo = sogliaSformo(processo);
+  if (minimoSformo !== undefined && placca?.shape instanceof lib.Part) {
+    esiti.push(
+      ...esitiSformo(sformoDuePiani(placca.shape, { piano: 0, minimo: minimoSformo - 1e-3 }), {
+        soglia: minimoSformo,
+        pezzo: 'Placca',
+        dove: 'Placca (divisione sul retro)',
+      }),
+    );
+    if (marchio) {
+      esiti.push(
+        esito('avviso', 'SFORMO_LOGO', {
+          messaggio: 'Fianchi del logo a 0°: il kernel non sforma il profilo; lo sformo di 1° va dato sullo stampo.',
+          pezzo: 'Placca',
+          valore: 0,
+          soglia: minimoSformo,
+        }),
+      );
+    }
+    if (altezza !== undefined) {
+      esiti.push(
+        esito('avviso', 'SFORMO_TESTO', {
+          messaggio: 'Fianchi delle lettere a 0°: il kernel non sforma il testo; lo sformo di 1° va dato sullo stampo.',
+          pezzo: 'Placca',
+          valore: 0,
+          soglia: minimoSformo,
+        }),
+      );
+    }
+  }
+  esiti.push(...esitiPezzi(lib, pezzi));
+  return esiti;
+}
+
+/**
+ * La famiglia placca logo.
+ * @public
+ */
+export const placca: Famiglia<ParametriPlacca> = {
+  id: 'placca',
+  versione: 1,
+  varianti,
+  partTypes: ['ornament'],
+  schema: schemaDaParametri<ParametriPlacca>(parametri),
+  parametri,
+  predefiniti,
+  vincoli,
+  normalizza,
+  costruisci: (lib, p) => costruisciConEsiti(lib, p).pezzi,
+  costruisciConEsiti,
+  verifiche,
+  silhouette: { assi: ['z'], simmetrie: ['yz', 'xz'] },
+  materialiAmmessi: ['zama', 'ottone', 'argento_925', 'inox'],
+  emettiMain: (p, ipotesi, opzioni) =>
+    emettiMainFamiglia(
+      { id: 'placca', versione: 1, variante: varianteDi(opzioni ?? { variante: p.piastra.forma }) },
+      p,
+      ipotesi,
+    ),
+};

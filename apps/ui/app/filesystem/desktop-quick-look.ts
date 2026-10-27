@@ -16,7 +16,7 @@ type PreviewProjectFileOptions = {
 export const previewProjectFileInQuickLook = async (options: PreviewProjectFileOptions): Promise<void> => {
   const quickLook = desktopBridge()?.quickLook;
   if (!quickLook) {
-    throw new Error('Quick Look is not available in this build of Tau.');
+    throw new Error('Quick Look is not available in this build of SinopiaCAD.');
   }
   const config = await getProjectFileSystemConfig(options.projectId);
   if (config?.backend !== 'node') {

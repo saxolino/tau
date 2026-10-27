@@ -147,9 +147,9 @@ export function OpenInDesktop({ continueLabel }: OpenInDesktopProps): React.JSX.
           <div className='mb-2 flex size-10 items-center justify-center rounded-full bg-primary/10 text-primary'>
             <Spinner className='size-5' />
           </div>
-          <CardTitle className='text-xl font-semibold'>Opening Tau Desktop</CardTitle>
+          <CardTitle className='text-xl font-semibold'>Opening SinopiaCAD Desktop</CardTitle>
           <CardDescription>
-            Your browser asks whether to open Tau. Choose <strong>Open</strong> to continue there.
+            Your browser asks whether to open SinopiaCAD. Choose <strong>Open</strong> to continue there.
           </CardDescription>
         </CardHeader>
         <CardContent className='flex flex-col gap-2'>
@@ -160,7 +160,7 @@ export function OpenInDesktop({ continueLabel }: OpenInDesktopProps): React.JSX.
               setStage('not-opened');
             }}
           >
-            Tau Desktop didn’t open
+            SinopiaCAD Desktop didn’t open
           </Button>
         </CardContent>
       </Card>
@@ -174,9 +174,9 @@ export function OpenInDesktop({ continueLabel }: OpenInDesktopProps): React.JSX.
           <div className='mb-2 flex size-10 items-center justify-center rounded-full bg-primary/10 text-primary'>
             <CircleAlert className='size-5' aria-hidden='true' />
           </div>
-          <CardTitle className='text-xl font-semibold'>Tau Desktop didn’t open</CardTitle>
+          <CardTitle className='text-xl font-semibold'>SinopiaCAD Desktop didn’t open</CardTitle>
           <CardDescription>
-            Tau Desktop may not be installed on this computer, or the browser did not offer to open it.
+            SinopiaCAD Desktop may not be installed on this computer, or the browser did not offer to open it.
           </CardDescription>
         </CardHeader>
         <CardContent className='flex flex-col gap-2'>
@@ -188,7 +188,7 @@ export function OpenInDesktop({ continueLabel }: OpenInDesktopProps): React.JSX.
             <Button asChild variant='outline' className='w-full'>
               <a href={tauDesktopDownloadUrl} target='_blank' rel='noreferrer'>
                 <Download aria-hidden='true' />
-                Get Tau Desktop
+                Get SinopiaCAD Desktop
               </a>
             </Button>
           )}
@@ -211,7 +211,7 @@ export function OpenInDesktop({ continueLabel }: OpenInDesktopProps): React.JSX.
       <CardContent className='flex flex-col gap-2'>
         <Button className='w-full' onClick={handOff}>
           <ExternalLink aria-hidden='true' />
-          Open in Tau Desktop
+          Open in SinopiaCAD Desktop
         </Button>
         <Button
           variant='outline'
@@ -233,7 +233,7 @@ export function OpenInDesktop({ continueLabel }: OpenInDesktopProps): React.JSX.
             }}
           />
           <Label htmlFor={checkboxId} className='text-sm font-normal text-muted-foreground'>
-            Always open Tau links in the desktop app
+            Always open SinopiaCAD links in the desktop app
           </Label>
         </div>
       </CardContent>

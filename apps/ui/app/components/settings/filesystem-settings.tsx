@@ -124,15 +124,15 @@ function TauCloudProjectsSetting({ workspaces }: { readonly workspaces: readonly
   return (
     <SettingsSectionCard aria-labelledby='tau-cloud-projects-title'>
       <CardHeader>
-        <CardTitle id='tau-cloud-projects-title'>Tau Cloud Projects</CardTitle>
+        <CardTitle id='tau-cloud-projects-title'>SinopiaCAD Cloud Projects</CardTitle>
       </CardHeader>
       <CardContent className='flex flex-col gap-3'>
         <p className='text-sm text-muted-foreground'>
-          When you sign in, add every project backed up on Tau Cloud to this workspace. Each one downloads the first
-          time you open it.
+          When you sign in, add every project backed up on SinopiaCAD Cloud to this workspace. Each one downloads the
+          first time you open it.
         </p>
         <fieldset className='grid gap-2 sm:grid-cols-3'>
-          <legend className='sr-only'>Workspace for Tau Cloud projects</legend>
+          <legend className='sr-only'>Workspace for SinopiaCAD Cloud projects</legend>
           {options.map((option) => (
             <label
               key={option.key}

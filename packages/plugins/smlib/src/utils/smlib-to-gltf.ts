@@ -149,7 +149,17 @@ function buildNodeFromSmlibGeometry({
         })
       : undefined;
   const faceGroups = compactedFaces?.groups ?? [];
+  const manualFaces = faceGroups.flatMap(({ faceId }) => {
+    const nativeIndex = faces.faceGroups[faceId]?.faceId;
+    const native = geometry.manualFaces?.find(({ index }) => index === nativeIndex);
+    return native ? [{ faceId, ...native }] : [];
+  });
   const edgeGroups = edges.edgeGroups.map((group, edgeId) => ({ ...group, edgeId }));
+  const manualEdges = edgeGroups.flatMap(({ edgeId }) => {
+    const nativeIndex = edges.edgeGroups[edgeId]?.edgeId;
+    const native = geometry.manualEdges?.find(({ index }) => index === nativeIndex);
+    return native ? [{ edgeId, ...native }] : [];
+  });
 
   if (compactedFaces && compactedFaces.indices.length > 0) {
     const positions = transformVertexArray(faces.vertices, transformOptions);
@@ -294,6 +304,17 @@ function buildNodeFromSmlibGeometry({
         faceGroupUnit: 'indices-v1',
         edgeGroupUnit: 'xyz-scalars-v1',
         ...geometry.physical,
+        ...(geometry.manual
+          ? {
+              manualTargetName: geometry.manual.targetName,
+              manualBodySignature: geometry.manual.bodySignature,
+              manualOperationIds: geometry.manual.operationIds,
+              ...(geometry.manual.replayWitness ? { manualReplayWitness: geometry.manual.replayWitness } : {}),
+              manualFaces,
+              manualEdges,
+              ...(geometry.manualBounds ? { manualBounds: geometry.manualBounds } : {}),
+            }
+          : {}),
       },
       capabilities: {
         exports: [

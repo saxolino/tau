@@ -319,7 +319,7 @@ describe('ImportRoute GitHub card', () => {
     expect(screen.getByText('Desktop handoff offer')).toBeInTheDocument();
 
     expect(
-      await screen.findByText("Tau couldn't find a public repository at this address.", {}, { timeout: 3000 }),
+      await screen.findByText("SinopiaCAD couldn't find a public repository at this address.", {}, { timeout: 3000 }),
     ).toBeInTheDocument();
     expect(
       screen.getByText('Check the public repository address or choose a repository from your GitHub account.'),
@@ -487,7 +487,7 @@ describe('ImportRoute GitHub card', () => {
     await user.keyboard('{Enter}');
     expect(await screen.findByRole('heading', { name: 'Review repository' })).toBeInTheDocument();
     expect(
-      await screen.findByText("Tau couldn't find a public repository at this address.", {}, { timeout: 3000 }),
+      await screen.findByText("SinopiaCAD couldn't find a public repository at this address.", {}, { timeout: 3000 }),
     ).toBeInTheDocument();
     expect(getRepository).toHaveBeenCalledTimes(1);
     expect(screen.queryByText('Desktop handoff offer')).not.toBeInTheDocument();

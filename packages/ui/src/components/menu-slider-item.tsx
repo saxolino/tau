@@ -10,6 +10,10 @@ import type { SliderInputProperties } from '#components/slider-input.js';
 import { cn } from '#utils/cn.js';
 import { clamp } from '#utils/number.js';
 
+/** A value with its unit: «0,5 mm» with a space, but «90°» and «50%» without. */
+const withUnit = (value: number | string, unit: string): string =>
+  /^[°%′″]/u.test(unit) ? `${value}${unit}` : unit === '' ? String(value) : `${value} ${unit}`;
+
 /**
  * Properties of {@link MenuSliderItem}.
  *
@@ -94,7 +98,7 @@ export const MenuSliderItem = ({
     }
     className={cn(menuItemVariants(), 'w-full focus-within:text-foreground', className)}
     aria-label={ariaLabel}
-    aria-valuetext={trailingAdornment ? `${value}${trailingAdornment}` : undefined}
+    aria-valuetext={trailingAdornment ? withUnit(value, trailingAdornment) : undefined}
     onScrubChange={onValueChange}
     onInputCommit={onValueChange}
     onStep={onStep}
@@ -203,7 +207,7 @@ const MenuSliderRow = ({ item: Item, ...properties }: MenuSliderRowProperties): 
   return (
     <Item
       // The focused row reads its value, so a step is heard; typeahead still matches the label alone.
-      aria-label={`${ariaLabel}, ${value}${trailingAdornment}`}
+      aria-label={`${ariaLabel}, ${withUnit(value, trailingAdornment)}`}
       textValue={ariaLabel}
       className={cn(menuItemVariants(), 'p-0')}
       onSelect={preventDefault}

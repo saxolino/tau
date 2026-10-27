@@ -198,7 +198,7 @@ export default function AcceptInvitation(): React.JSX.Element {
     return withDesktopOffer(
       <InvitationNotice
         title='Sign in to accept this invitation'
-        detail='Tau records who works on a project, so it needs to know who you are before it can add you to this one.'
+        detail='SinopiaCAD records who works on a project, so it needs to know who you are before it can add you to this one.'
         action={
           <Button asChild>
             <Link to={signIn}>Sign in</Link>
@@ -227,7 +227,7 @@ export default function AcceptInvitation(): React.JSX.Element {
     return withDesktopOffer(
       <InvitationNotice
         title='Verify your email address, then open this link again.'
-        detail='An invitation is issued to an address, so Tau adds you only once that address is proven to be yours.'
+        detail='An invitation is issued to an address, so SinopiaCAD adds you only once that address is proven to be yours.'
         action={
           <Button asChild variant='outline'>
             <Link to='/settings/account'>Go to account settings</Link>
@@ -255,7 +255,7 @@ export default function AcceptInvitation(): React.JSX.Element {
     return withDesktopOffer(
       <InvitationNotice
         title='The invitation could not be accepted.'
-        detail='Tau Cloud did not answer. Open the link again in a moment.'
+        detail='SinopiaCAD Cloud did not answer. Open the link again in a moment.'
         action={
           <Button asChild variant='outline'>
             <Link to='/projects'>Go to projects</Link>

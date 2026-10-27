@@ -72,7 +72,7 @@ export const sinopiaTokenResponse = (
   };
 };
 
-/** What Sinopia's database says about the signed-in account. A complete, active designer by default. */
+/** What Sinopia's database says about the signed-in account. A complete administrator by default (SinopiaCAD is a reserved preview). */
 export type SinopiaTestAccount = {
   /** `profiles.role`. */
   readonly role?: string;
@@ -127,7 +127,7 @@ export const scriptSinopiaBackend = (
   account: SinopiaTestAccount = {},
 ): SinopiaTestBackend => {
   const calls: SinopiaTestCall[] = [];
-  const { role = 'designer', needsProfession = false, beta = 'active', terms = '2026-08-17', failing = [] } = account;
+  const { role = 'superadmin', needsProfession = false, beta = 'active', terms = '2026-08-17', failing = [] } = account;
   const profileRows = account.withoutProfile === true ? [] : [{ role }];
   const termsRows = account.withoutTerms === true ? [] : [{ version: terms }];
   const failure = () => Response.json({ message: 'boom', code: 'XX000' }, { status: 500 });

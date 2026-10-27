@@ -530,7 +530,7 @@ function SharedWorkerFallback({
         icon={OctagonAlert}
         iconClassName='text-feature'
         title="Couldn't start the file service"
-        description="Tau's file service did not start, so your files aren't available yet. Try again to restart it."
+        description="SinopiaCAD's file service did not start, so your files aren't available yet. Try again to restart it."
         className='p-6 [&_[data-slot=panel-empty-state-copy]]:mt-6'
       >
         <Button

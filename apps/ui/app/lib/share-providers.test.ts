@@ -144,12 +144,12 @@ describe('GitHub Gist API transport', () => {
   it('names the email mismatch and the account already linked elsewhere instead of asking for a retry', () => {
     const emailMismatch = parseGithubGistAuthorizationReturn('?shareAuth=github-gist&error=email_does_not_match');
     expect(emailMismatch).toMatchObject({ outcome: 'failed', remainingSearch: '' });
-    expect(emailMismatch?.failure).toMatch(/different email address from your Tau account/u);
+    expect(emailMismatch?.failure).toMatch(/different email address from your SinopiaCAD account/u);
     const linkedElsewhere = parseGithubGistAuthorizationReturn(
       '?shareAuth=github-gist&error=account_already_linked_to_different_user',
     );
     expect(linkedElsewhere?.outcome).toBe('failed');
-    expect(linkedElsewhere?.failure).toMatch(/already linked to another Tau account/u);
+    expect(linkedElsewhere?.failure).toMatch(/already linked to another SinopiaCAD account/u);
     expect(parseGithubGistAuthorizationReturn('?shareAuth=github-gist&error=state_mismatch')).toEqual({
       outcome: 'failed',
       remainingSearch: '',

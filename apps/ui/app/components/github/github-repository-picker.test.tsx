@@ -343,11 +343,13 @@ describe('GithubRepositoryPicker', () => {
 
     const option = await screen.findByRole('option', { name: /acme/u });
     expect(option).toHaveAttribute('aria-disabled', 'true');
-    expect(option).toHaveTextContent('Suspended on GitHub. An owner must unsuspend the Tau app for this account.');
+    expect(option).toHaveTextContent(
+      'Suspended on GitHub. An owner must unsuspend the SinopiaCAD app for this account.',
+    );
     expect(github.repositories).not.toHaveBeenCalledWith('connection-1', 20);
   });
 
-  it('should offer to install Tau on GitHub when the account has no installation', async () => {
+  it('should offer to install SinopiaCAD on GitHub when the account has no installation', async () => {
     const assign = vi.fn();
     vi.stubGlobal('location', { ...globalThis.location, assign });
     github.installations.mockResolvedValue({ totalCount: 0, page: 1, installations: [] });
@@ -359,7 +361,7 @@ describe('GithubRepositoryPicker', () => {
     expect(
       await screen.findByText('No personal or organization installation is available for this account.'),
     ).toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: 'Install Tau on GitHub' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Install SinopiaCAD on GitHub' }));
     await vi.waitFor(() => {
       expect(assign).toHaveBeenCalledWith('https://github.com/apps/tau/installations/new');
     });
@@ -468,7 +470,7 @@ describe('GithubRepositoryPicker', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Refresh' }));
 
     expect(
-      await screen.findByText('Tau can no longer reach octo/part on GitHub. Choose another repository.'),
+      await screen.findByText('SinopiaCAD can no longer reach octo/part on GitHub. Choose another repository.'),
     ).toHaveAttribute('role', 'status');
     expect(screen.getByRole('button', { name: 'Repository Select repository…' })).toBeDisabled();
     expect(screen.queryByRole('button', { name: 'Branch main' })).not.toBeInTheDocument();

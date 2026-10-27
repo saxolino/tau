@@ -1630,7 +1630,7 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
       /* D19: a project born with no remote backs up to Tau Cloud from its first
          revision — a template, a fork, a file or zip import. A caller that
          supplies the id is adopting an identity that has a remote of its own (a
-         Tau Cloud open, a materialized project, a linked GitHub import), so it
+         SinopiaCAD Cloud open, a materialized project, a linked GitHub import), so it
          is left alone. The session decides once it knows the account (W11). */
       if (options.id === undefined && account.status === 'disabled') {
         tauCloudIntent.set(projectId, 'default');
@@ -2231,7 +2231,7 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
       // A degraded view is lossy (dropped keys, clamped text), so writing it
       // back would erase what a person or a newer build wrote (blueprint R4).
       if (project.issue) {
-        throw new Error('tau.json needs repair before Tau can change it. Repair it, or fix it in the editor.');
+        throw new Error('tau.json needs repair before SinopiaCAD can change it. Repair it, or fix it in the editor.');
       }
       const updated = deepmerge(project.data, update) as ProjectManifest;
       await fileManager.recordFiles.writeFile(
@@ -2636,7 +2636,7 @@ export function ProjectManagerProvider({ children }: { readonly children: ReactN
           // A node folder was chosen in a native dialog: the shell already holds
           // it, so the probe short-circuits to granted.
           if (selection.backend === 'webaccess' && (await checkHandlePermission(selection.handle)) !== 'granted') {
-            throw new DOMException('Tau needs access to this workspace folder.', 'NotAllowedError');
+            throw new DOMException('SinopiaCAD needs access to this workspace folder.', 'NotAllowedError');
           }
           await fileManager.workspace.syncProjectRoots();
           signal.throwIfAborted();

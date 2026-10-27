@@ -131,7 +131,11 @@ describe('piece measures interactions', () => {
     setup();
     const user = userEvent.setup();
     expect(screen.getByText('2 pezzi · 1 pietra')).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Misure comuni' })).toBeVisible();
+    const general = screen.getByRole('button', { name: 'Misure comuni' });
+    expect(general).toBeVisible();
+    expect(general).toHaveAttribute('aria-expanded', 'false');
+    const pieces = [...document.querySelectorAll('[data-slot=piece-measures-group]')];
+    expect(pieces.at(-1)).toContainElement(general);
     await user.click(screen.getByRole('button', { name: 'Nascondi Stelo' }));
     expect(project.modelInteractionRef?.getSnapshot().context.unitsById['file:main.ts']?.hiddenComponentIds).toContain(
       stelo.id,
@@ -151,7 +155,7 @@ describe('piece measures interactions', () => {
     };
     setup();
     await userEvent.click(screen.getByRole('button', { name: /^Stelo/ }));
-    await userEvent.click(screen.getByRole('button', { name: 'Reset Spessore' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Ripristina Spessore' }));
     expect(source.replaceValues).toHaveBeenCalledWith('main.ts', manifest, { marquise: { lunghezza: 12 } });
   });
   it('should mark a stored value with a lock even if equal to the model default', async () => {

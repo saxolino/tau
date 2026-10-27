@@ -8,6 +8,8 @@ import {
   createSinopiaSender,
   readSinopiaDeliveries,
   recordSinopiaDelivery,
+  deliveryFileName,
+  sameProjectThumbnail,
   selectedSinopiaFiles,
   SinopiaSendError,
 } from '#services/sinopia-send.js';
@@ -23,6 +25,10 @@ const prepared: SinopiaSendFiles = {
   step: { status: 'verified', files: [createExportFile('step', 'model', new Uint8Array([1, 2]))] },
   glb: { status: 'ready', files: [createExportFile('glb', 'model', new Uint8Array([3, 4]))] },
   photo: { status: 'ready', files: [createExportFile('png', 'preview', new Uint8Array([5, 6]))] },
+  pdf: {
+    status: 'ready',
+    files: [{ name: 'Collana.pdf', bytes: new Uint8Array([37, 80, 68, 70]), mimeType: 'application/pdf' }],
+  },
 };
 type Asset = {
   id: string;
@@ -122,7 +128,11 @@ function fixture() {
   });
   const getClient = vi.fn(async () => ({ client, userId }));
   const sender = createSinopiaSender(getClient);
-  const send = async (id = deliveryId, signal = new AbortController().signal) =>
+  const send = async (
+    id = deliveryId,
+    signal = new AbortController().signal,
+    extra: Partial<Parameters<typeof sender.send>[0]> = {},
+  ) =>
     sender.send({
       link,
       projectId,
@@ -131,6 +141,7 @@ function fixture() {
       note: '  Marquise 12 × 5  ',
       deliveryId: id,
       signal,
+      ...extra,
     });
   return {
     assets,
@@ -164,6 +175,62 @@ function fixture() {
 }
 
 describe('Sinopia delivery', () => {
+  it('should carry each piece’s material, process and weight, the PDF sheet and a thumbnail (E3a)', async () => {
+    const test = fixture();
+    const thumbnail = `projects/${projectId}/cad/${modelId}/saves/abc/thumbnail.webp`;
+    await test.send(deliveryId, new AbortController().signal, {
+      selected: ['step', 'glb', 'pdf'],
+      pieces: [
+        {
+          nome: 'Telaio fibbia',
+          materiale: { chiave: 'ottone', nome: 'Ottone' },
+          processo: 'tranciatura_lamiera',
+          pesoGrammi: 12.3456,
+          volumeMm3: 1452.38912,
+        },
+        { nome: 'Ardiglione', processo: 'cnc' },
+      ],
+      fallbackThumbnailPath: thumbnail,
+    });
+    // The row exactly as it was posted (the fake keeps only the columns it checks).
+    const posted = test.requests.find(({ url, method }) => url.pathname === '/rest/v1/assets' && method === 'POST');
+    const { metadata } = JSON.parse(posted!.body) as {
+      metadata: Record<string, unknown> & { files: Array<Record<string, unknown>> };
+    };
+    expect(metadata['pezzi']).toEqual([
+      {
+        nome: 'Telaio fibbia',
+        materiale: 'ottone',
+        materiale_nome: 'Ottone',
+        processo: 'tranciatura_lamiera',
+        peso_g: 12.35,
+        volume_mm3: 1452.389,
+      },
+      { nome: 'Ardiglione', processo: 'cnc' },
+    ]);
+    // No photo was sent: the model's own preview in the same project is the version's thumbnail.
+    expect(metadata['thumbnail_path']).toBe(thumbnail);
+    expect(metadata.files.map((entry) => [entry['format'], entry['mime_type']])).toEqual([
+      ['step', 'application/step'],
+      ['glb', 'model/gltf-binary'],
+      ['pdf', 'application/pdf'],
+    ]);
+    expect([...test.uploaded].some((path) => path.endsWith('/tavola.pdf'))).toBe(true);
+  });
+  it('should never take a thumbnail from another project or model, and prefer the photo when sent', async () => {
+    expect(sameProjectThumbnail(`projects/${projectId}/cad/${modelId}/t.webp`, projectId, modelId)).toBe(
+      `projects/${projectId}/cad/${modelId}/t.webp`,
+    );
+    expect(sameProjectThumbnail(`projects/${projectId}/cad/other/t.webp`, projectId, modelId)).toBeUndefined();
+    expect(sameProjectThumbnail(`projects/${projectId}/cad/${modelId}/../x.webp`, projectId, modelId)).toBeUndefined();
+    expect(sameProjectThumbnail(undefined, projectId, modelId)).toBeUndefined();
+    const test = fixture();
+    await test.send(deliveryId, new AbortController().signal, {
+      fallbackThumbnailPath: `projects/${projectId}/cad/${modelId}/t.webp`,
+    });
+    expect((test.assets[0]?.metadata as Record<string, unknown>)['thumbnail_path']).toMatch(/\/preview\.png$/u);
+    expect(deliveryFileName('pdf')).toBe('tavola.pdf');
+  });
   it('should upload selected verified files privately and persist actual asset columns with AI metadata', async () => {
     const test = fixture();
     const sent = await test.send();

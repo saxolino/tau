@@ -52,7 +52,7 @@ export const ChatErrorUnauthorized = memo(function ({ className }: { readonly cl
       tone='neutral'
       className={className}
       title='Sign in to continue'
-      description='Your turn is paused. Sign in and Tau resumes where it stopped.'
+      description='Your turn is paused. Sign in and SinopiaCAD resumes where it stopped.'
       actions={
         <>
           <Button asChild variant='default' size='xs'>
