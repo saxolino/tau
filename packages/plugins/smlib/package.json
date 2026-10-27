@@ -3,7 +3,10 @@
   "version": "0.1.0-beta.8",
   "description": "SMLib kernel plugin for Tau",
   "type": "module",
-  "sideEffects": false,
+  "sideEffects": [
+    "./src/**/*.worker.ts",
+    "./dist/**/*.worker.mjs"
+  ],
   "private": false,
   "repository": {
     "type": "git",

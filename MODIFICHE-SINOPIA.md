@@ -994,3 +994,19 @@ Blocchi C1, C2, C5 e D4 del piano di Claude (`PIANO-CLAUDE-2026-10-26.md`), dall
   `services/sinopia-foto.ts`, `services/foto-campione-immagini.ts`, `i18n/messages/foto-campione.ts`).
 - **Consegna.** Il GLB di un modello SMLib porta la topologia B-rep (`services/project-export.ts`): Sinopia considera
   «generato» solo un pezzo che la porta.
+
+## 27 ottobre 2026 — i worker SMLib partono anche nella build di produzione
+
+- **Causa.** `packages/plugins/smlib/package.json` dichiarava `"sideEffects": false`, ma i moduli
+  `src/verifica/verifica.worker.ts` e `src/varianti/varianti.worker.ts` chiamano `expose()` appena importati, e i file
+  di worker dell'interfaccia (`apps/ui/app/workers/verifica-silhouette.worker.ts`, `varianti.worker.ts`) li importano
+  solo per quell'effetto. In sviluppo Vite non scarta nulla; nella build il bundler ha tolto l'import e i due worker
+  uscivano VUOTI (0 byte): nessun «pronto», e dopo 60 s «the worker did not start» (controlli dell'assistente,
+  verifica della sagoma D3).
+- **Correzione.** `sideEffects` elenca i moduli worker del pacchetto (`./src/**/*.worker.ts`,
+  `./dist/**/*.worker.mjs`), che tornano nella build per intero, anche quelli che verranno.
+- **Prova.** `scripts/sinopiacad/prova-worker.mjs` (nuovo) serve la build sotto `/cad/` con le intestazioni di
+  `vercel/vercel.json`, crea in Chromium headless i worker della producibilità, della verifica, delle varianti e della
+  consegna e aspetta il «pronto» di ciascuno (che arriva solo a kernel WebAssembly istanziato); controlla anche che
+  nessun `*.worker-*.js` sia vuoto. `scripts/sinopiacad/build.sh` la lancia dopo ogni build e fallisce se un worker
+  non risponde.
