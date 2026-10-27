@@ -18,7 +18,7 @@ export type ImmagineRaster = {
 
 const FIRMA = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] as const;
 
-async function trasforma(dati: Uint8Array, flusso: TransformStream<Uint8Array, Uint8Array>): Promise<Uint8Array> {
+async function trasforma(dati: Uint8Array, flusso: CompressionStream | DecompressionStream): Promise<Uint8Array> {
   const uscita = new Blob([dati as Uint8Array<ArrayBuffer>]).stream().pipeThrough(flusso);
   return new Uint8Array(await new Response(uscita).arrayBuffer());
 }
