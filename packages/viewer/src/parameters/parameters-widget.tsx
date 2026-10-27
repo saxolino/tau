@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { RJSFSchema, WidgetProps } from '@rjsf/utils';
-import { getSchemaType } from '@rjsf/utils';
+import { getDecimalSeparator, getSchemaType } from '@rjsf/utils';
 import { projectParameterField, resolveParameterBinding } from '@taucad/parameters';
 import { parseInput } from '@taucad/units/input';
 import { admitUnit } from '@taucad/units/unit';
@@ -21,6 +21,21 @@ const numericConstraint = (
 ): number | undefined => {
   const value = constraints?.[key];
   return typeof value === 'number' ? value : undefined;
+};
+
+/**
+ * A number RJSF hands over as text. With a browser whose decimal separator is not a point, RJSF's NumberField formats
+ * the number for its built-in text input («3.6» becomes «3,6»); read back as a plain `Number` that is NaN, and the field
+ * fell to the unset branch while the model used 3.6.
+ */
+const localizedNumber = (value: unknown): number => {
+  if (typeof value !== 'string') {
+    return Number(value);
+  }
+  const text = value.trim();
+  const separator = getDecimalSeparator();
+  const standard = Number(separator === '.' ? text : text.replace(separator, '.'));
+  return Number.isNaN(standard) && text !== '' ? Number(text.replace(',', '.')) : standard;
 };
 
 const isLengthUnit = (unit: string | undefined): boolean => {
@@ -178,7 +193,7 @@ export function ParametersWidget(
 
     case 'number':
     case 'integer': {
-      const numericValue = value === null ? Number.NaN : typeof value === 'number' ? value : Number(value);
+      const numericValue = value === null ? Number.NaN : typeof value === 'number' ? value : localizedNumber(value);
       const defaultNumericValue = typeof defaultValue === 'number' ? defaultValue : Number.NaN;
       if (instancePointer === undefined || fieldProjection === undefined) {
         throw new Error(`Numeric parameter '${name}' has no rendered instance path.`);

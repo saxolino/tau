@@ -8,6 +8,7 @@ import { SketchControls } from '#graphics/three/react/sketch-controls.jsx';
 import type { SketchTool } from '#graphics/three/react/sketch-tool.js';
 import { ProducibilityOverlayMesh } from '#graphics/three/react/producibility-overlay.jsx';
 import type { ProducibilityOverlay } from '#graphics/three/react/producibility-overlay.types.js';
+import type { ModelAssembly, ModelAssemblyAnchor } from '#graphics/three/react/model-assembly.js';
 import type { PlanarFaceTool } from '#graphics/three/react/planar-face-tool.js';
 import { installSectionClip, transferSectionClip } from '#graphics/three/materials/section-clip.js';
 import {
@@ -22,10 +23,11 @@ import { subscribeToMatcapLoad } from '#graphics/three/materials/matcap-material
 import { geometryReceiptAt, recordRendererSpan } from '#lib/renderer-telemetry.js';
 import { invalidateSceneTransparency } from '#graphics/three/utils/scene-transparency-revision.js';
 import { holdGeometryPresentation } from '#graphics/three/utils/geometry-presentation-admission.js';
-import { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect, useSyncExternalStore } from 'react';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import type { GLTF } from 'three/addons/loaders/GLTFLoader.js';
 import type {
+  Camera,
   Group,
   Object3D,
   Material,
@@ -372,6 +374,11 @@ type GltfMeshDisplayProperties = {
   readonly onModelComponentSecondaryPointerCandidate?: (
     target: ModelComponentSecondaryPointerTarget | undefined,
   ) => void;
+  /**
+   * The host's assembly: while it is armed, a first model after none enters one piece at a time and the entered pieces
+   * are measured on the canvas. Absent, every model is drawn whole at once.
+   */
+  readonly assembly?: ModelAssembly;
 };
 
 type GltfPresentationTimings = Partial<Record<keyof GltfPresentationTelemetry['durations'], number>>;
@@ -2045,6 +2052,74 @@ export function applyGltfEdgeThemeColor(scene: Group, edgeColor: number): void {
   }
 }
 
+const noAssemblyHidden: readonly string[] = Object.freeze([]);
+const noAssemblySubscription = (): void => undefined;
+
+/** A model's pieces in construction order, as an assembly enters them. */
+const modelPartIds = (manifest: GeometryComponentManifest): string[] =>
+  manifest.nodeOrder.filter((id) => manifest.nodesById[id]?.kind === 'part');
+
+/** The surface meshes of each piece an assembly enters: a mesh belongs to the piece it, or one of its ancestors, is. */
+const collectAssemblyMeshes = (
+  scene: Group,
+  manifest: GeometryComponentManifest,
+  componentIds: readonly string[],
+): ReadonlyMap<string, readonly Mesh[]> => {
+  const pieces = new Set(componentIds);
+  const meshes = new Map<string, Mesh[]>();
+  for (const object of getComponentInventory(scene)) {
+    const componentId = getObjectComponentId(object);
+    if (!componentId || !isSurfaceObject(object)) {
+      continue;
+    }
+    const piece = pieces.has(componentId)
+      ? componentId
+      : getComponentAncestorIds(manifest, componentId).find((id) => pieces.has(id));
+    if (piece !== undefined) {
+      meshes.set(piece, [...(meshes.get(piece) ?? []), object]);
+    }
+  }
+  return meshes;
+};
+
+const _assemblyBounds = new Box3();
+const _assemblyMeshBounds = new Box3();
+const _assemblyCentre = new Vector3();
+
+/**
+ * Where a piece's centre falls on the canvas.
+ *
+ * @param meshes - The piece's surface meshes.
+ * @param camera - The viewer's camera.
+ * @param size - The canvas size, in CSS pixels.
+ * @returns The anchor in CSS pixels from the canvas's top-left corner, or undefined without geometry.
+ */
+const projectAssemblyAnchor = (
+  meshes: readonly Mesh[] | undefined,
+  camera: Camera,
+  size: Readonly<{ width: number; height: number }>,
+): ModelAssemblyAnchor | undefined => {
+  _assemblyBounds.makeEmpty();
+  for (const mesh of meshes ?? []) {
+    const { geometry } = mesh;
+    if (!geometry.boundingBox) {
+      geometry.computeBoundingBox();
+    }
+    if (geometry.boundingBox) {
+      // The first frame of a new model draws before Three has composed its world matrices.
+      mesh.updateWorldMatrix(true, false);
+      _assemblyBounds.union(_assemblyMeshBounds.copy(geometry.boundingBox).applyMatrix4(mesh.matrixWorld));
+    }
+  }
+  if (_assemblyBounds.isEmpty()) {
+    return undefined;
+  }
+  _assemblyBounds.getCenter(_assemblyCentre).project(camera);
+  const x = ((_assemblyCentre.x + 1) / 2) * size.width;
+  const y = ((1 - _assemblyCentre.y) / 2) * size.height;
+  return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : undefined;
+};
+
 /**
  * This component renders a GLTF mesh.
  *
@@ -2081,6 +2156,7 @@ export function GltfMesh({
   enableSurfaces = true,
   enableLines = true,
   onModelComponentSecondaryPointerCandidate,
+  assembly,
 }: GltfMeshDisplayProperties): React.JSX.Element | undefined {
   const graphicsActor = useGraphics();
   const graphicsBackendThree = useThreeGraphicsBackend();
@@ -2164,6 +2240,48 @@ export function GltfMesh({
     }),
     [isViewerHoverSuppressed, kinematicsHoveredComponentIds, modelUnitState],
   );
+  // The host's assembly veils the pieces of a new model that have not entered yet; the interaction state keeps them.
+  const subscribeAssembly = useCallback(
+    (listener: () => void) => assembly?.subscribe(listener) ?? noAssemblySubscription,
+    [assembly],
+  );
+  const readAssemblyHidden = useCallback(() => assembly?.hiddenComponentIds() ?? noAssemblyHidden, [assembly]);
+  const assemblyHiddenIds = useSyncExternalStore(subscribeAssembly, readAssemblyHidden, readAssemblyHidden);
+  const assemblyPresentationRef = useRef<{
+    presentation: PreparedGltfPresentation | undefined;
+    pieceCount: number;
+  }>({ presentation: undefined, pieceCount: 0 });
+  const assemblyHiddenMergeRef = useRef<
+    { base: readonly string[]; pending: readonly string[]; merged: readonly string[] } | undefined
+  >(undefined);
+  const assemblyMeshesRef = useRef<
+    { key: string; scene: Group; meshes: ReadonlyMap<string, readonly Mesh[]> } | undefined
+  >(undefined);
+  useEffect(
+    () => () => {
+      assembly?.finish();
+    },
+    [assembly],
+  );
+  useFrame(({ camera, size }) => {
+    const run = assembly?.getSnapshot().run;
+    if (!assembly || !run || !scene || !componentManifest) {
+      return;
+    }
+    let cached = assemblyMeshesRef.current;
+    if (cached?.key !== run.key || cached.scene !== scene) {
+      cached = { key: run.key, scene, meshes: collectAssemblyMeshes(scene, componentManifest, run.componentIds) };
+      assemblyMeshesRef.current = cached;
+    }
+    const anchors: Record<string, ModelAssemblyAnchor> = {};
+    for (const componentId of run.componentIds.slice(0, run.entered)) {
+      const anchor = projectAssemblyAnchor(cached.meshes.get(componentId), camera, size);
+      if (anchor) {
+        anchors[componentId] = anchor;
+      }
+    }
+    assembly.measure(anchors, { width: size.width, height: size.height });
+  });
   const getModelPickableMeshes = useCallback((): readonly Mesh[] => {
     if (!scene) {
       modelPickableMeshesSceneRef.current = undefined;
@@ -2515,12 +2633,55 @@ export function GltfMesh({
       }
     }
 
+    let assemblyHidden = noAssemblyHidden;
+    if (assembly) {
+      // A new presentation is offered to the assembly here, before its first frame, so no piece flashes in early.
+      if (assemblyPresentationRef.current.presentation !== presentation) {
+        const componentIds = modelPartIds(componentManifest);
+        assembly.present({
+          componentIds,
+          manifest: componentManifest,
+          previousCount: assemblyPresentationRef.current.pieceCount,
+        });
+        assemblyPresentationRef.current = { presentation, pieceCount: componentIds.length };
+      }
+      assemblyHidden = assembly.hiddenComponentIds();
+      // Picking a piece that has not entered yet, from the measures, is working on the model: draw it all now.
+      if (
+        assemblyHidden.length > 0 &&
+        (modelVisualState.selectedComponentIds.some((id) => assemblyHidden.includes(id)) ||
+          (modelVisualState.focusedComponentId !== undefined &&
+            assemblyHidden.includes(modelVisualState.focusedComponentId)))
+      ) {
+        assembly.finish();
+        assemblyHidden = assembly.hiddenComponentIds();
+      }
+    }
+    const shownVisualState = isSubElementSelected
+      ? { ...modelVisualState, selectedComponentIds: [] }
+      : modelVisualState;
+    let { hiddenComponentIds } = shownVisualState;
+    if (assemblyHidden.length > 0) {
+      const merge = assemblyHiddenMergeRef.current;
+      hiddenComponentIds =
+        merge?.base === hiddenComponentIds && merge.pending === assemblyHidden
+          ? merge.merged
+          : [...hiddenComponentIds, ...assemblyHidden];
+      assemblyHiddenMergeRef.current = {
+        base: shownVisualState.hiddenComponentIds,
+        pending: assemblyHidden,
+        merged: hiddenComponentIds,
+      };
+    }
     const emphasised = applyModelComponentVisualStateToScene({
       scene,
       componentManifest,
       inventory: getComponentInventory(scene),
       // A picked face or picked edges carry their own highlight; washing the whole piece would hide which one it is.
-      modelVisualState: isSubElementSelected ? { ...modelVisualState, selectedComponentIds: [] } : modelVisualState,
+      modelVisualState:
+        hiddenComponentIds === shownVisualState.hiddenComponentIds
+          ? shownVisualState
+          : { ...shownVisualState, hiddenComponentIds },
       enableSurfaces,
       enableLines,
     });
@@ -2529,6 +2690,8 @@ export function GltfMesh({
     invalidate();
   }, [
     activeEdgeColor,
+    assembly,
+    assemblyHiddenIds,
     componentManifest,
     enableLines,
     enableMatcap,
