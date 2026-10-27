@@ -302,7 +302,12 @@ describe('placca: scalini sotto la tolleranza', () => {
     // La parete vera è la lastra (1,5 mm) o il perno (≈ 1,3 mm), non il filo del bordo (0,79 mm).
     expect(parete?.valore).toBeGreaterThan(1.2);
     expect(risposta.controlli.find(({ codice }) => codice === 'SOTTOSQUADRO')?.livello).toBe('ok');
-    expect(risposta.controlli.find(({ codice }) => codice === 'TRATTO_MIN_BORDO')).toMatchObject({ livello: 'ok' });
+    // Il filo del bordo (0,8 mm) è sopra il tratto minimo della zama (0,4 mm).
+    expect(risposta.controlli.find(({ codice }) => codice === 'TRATTO_MIN')).toMatchObject({
+      livello: 'ok',
+      soglia: 0.4,
+    });
+    expect(risposta.controlli.find(({ codice }) => codice === 'TRATTO_MIN')?.valore).toBeCloseTo(0.79, 1);
   });
 
   it('should not read the 0.3 mm steps of a logo as walls or undercuts, raised or engraved', () => {

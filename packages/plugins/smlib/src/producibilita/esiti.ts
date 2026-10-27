@@ -1,5 +1,5 @@
 import type { Esito, Processo } from '#famiglie/famiglia.js';
-import { sogliaParete, sogliaSformo, soglieProcessi } from '#famiglie/processi.js';
+import { sogliaParete, sogliaSformo, soglieProcessi, sogliaTratto } from '#famiglie/processi.js';
 import { esitoMinimo, mm } from '#famiglie/verifiche-comuni.js';
 import type {
   ControlloProducibilita,
@@ -23,6 +23,7 @@ import type {
 export const codiciGeometrici = [
   'SOLIDO_CHIUSO',
   'PARETE_MIN',
+  'TRATTO_MIN',
   'SFORMO',
   'SOTTOSQUADRO',
   'FORO_MIN',
@@ -125,8 +126,31 @@ function pareteMinima(misure: MisurePezzo, { pezzo, processo, materiale }: Conte
     pezzo,
     fattoreBlocco: limiteBlocco / soglia,
   });
+  const scalini = new Set(misure.scalini);
   const facce = misure.spessori.flatMap((spessore, faccia) =>
-    spessore + 1e-9 < soglia ? [voce(faccia, spessore, limiteBlocco)] : [],
+    !scalini.has(faccia) && spessore + 1e-9 < soglia ? [voce(faccia, spessore, limiteBlocco)] : [],
+  );
+  return controllo(esito, { unita: 'mm', evidenza: 'facce', facce, conteggio: facce.length });
+}
+
+/**
+ * Il tratto minimo dei rilievi: la larghezza dei fianchi bassi (bordi, fili, lettere, logo) contro il tratto minimo del
+ * processo (`sogliaTratto`), non contro la parete. Assente se il pezzo non ha rilievi.
+ */
+function trattoMinimo(misure: MisurePezzo, { pezzo, processo }: Contesto): ControlloProducibilita | undefined {
+  if (!Number.isFinite(misure.trattoMinimo)) {
+    return undefined;
+  }
+  const soglia = sogliaTratto(processo);
+  const esito = esitoMinimo('TRATTO_MIN', {
+    valore: misure.trattoMinimo,
+    soglia,
+    cosa: 'Tratto più sottile dei rilievi',
+    pezzo,
+  });
+  const scalini = new Set(misure.scalini);
+  const facce = misure.spessori.flatMap((spessore, faccia) =>
+    scalini.has(faccia) && spessore + 1e-9 < soglia ? [voce(faccia, spessore, 0.8 * soglia)] : [],
   );
   return controllo(esito, { unita: 'mm', evidenza: 'facce', facce, conteggio: facce.length });
 }
@@ -299,6 +323,7 @@ export function controlliPezzo(
   return [
     chiuso,
     pareteMinima(misure, contesto),
+    ...[trattoMinimo(misure, contesto)].filter((riga) => riga !== undefined),
     ...sformoESottosquadri(misure, contesto),
     ...foriMinimi(misure, contesto),
     ...griffe(misure, contesto),
