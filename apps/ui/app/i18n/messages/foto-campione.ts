@@ -48,6 +48,7 @@ export const fotoCampioneMessages = defineMessages({
       cadModelNotFound: 'Il modello non è ancora nei tuoi progetti Sinopia: salvalo e riprova.',
       photoRefused:
         'Il modello d’immagine non ha fatto questa foto: prova un altro materiale o un’altra vista. Crediti rimborsati.',
+      levelPaused: 'Questo livello non è attivo ora (budget del fornitore): crediti rimborsati. Prova Standard.',
       rateLimited: 'Troppe foto in poco tempo: riprova fra qualche minuto.',
       restricted: 'Le foto del campione sono nel pilota riservato: il tuo account non è ancora abilitato.',
       inProgress: 'La stessa foto è ancora in preparazione: riprova tra poco.',
@@ -98,6 +99,7 @@ export const fotoCampioneMessages = defineMessages({
       insufficientCredits: 'Not enough credits: top up on Sinopia and try again.',
       cadModelNotFound: 'The model is not in your Sinopia projects yet: save it and try again.',
       photoRefused: 'The image model did not make this photo: try another material or view. Credits refunded.',
+      levelPaused: 'This level is not active right now (provider budget): credits refunded. Try Standard.',
       rateLimited: 'Too many photos in a short time: try again in a few minutes.',
       restricted: 'Sample photos are in a reserved pilot: your account is not enabled yet.',
       inProgress: 'The same photo is still being made: try again shortly.',

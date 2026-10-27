@@ -53,3 +53,26 @@ export function SinopiaReserved({ user }: { readonly user: SinopiaUser }): React
     </SinopiaAuthFrame>
   );
 }
+
+/**
+ * SinopiaCAD on the web without Sinopia's project configured: the workspace stays closed (fail-closed), because the
+ * administrator-only gate cannot run without it.
+ *
+ * @returns The screen.
+ */
+export function SinopiaNotConfigured(): React.JSX.Element {
+  const { t } = useTranslation();
+  const titleId = useId();
+
+  return (
+    <SinopiaAuthFrame
+      titleId={titleId}
+      title={t('auth.notConfigured.title')}
+      description={<span role='status'>{t('auth.notConfigured.description')}</span>}
+    >
+      <Button asChild>
+        <a href={sinopiaReservedBackUrl}>{t('auth.reserved.back')}</a>
+      </Button>
+    </SinopiaAuthFrame>
+  );
+}

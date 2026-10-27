@@ -30,6 +30,7 @@ export type CodiceErroreFoto =
   | 'REQUEST_IN_PROGRESS'
   | 'PHOTO_REFUSED'
   | 'PROVIDER_UNAVAILABLE'
+  | 'PROVIDER_SPEND_BLOCKED'
   | 'NETWORK';
 
 const codici = new Set<CodiceErroreFoto>([
@@ -45,6 +46,7 @@ const codici = new Set<CodiceErroreFoto>([
   'REQUEST_IN_PROGRESS',
   'PHOTO_REFUSED',
   'PROVIDER_UNAVAILABLE',
+  'PROVIDER_SPEND_BLOCKED',
 ]);
 
 /** A failed photo, with a code the gallery turns into words. */

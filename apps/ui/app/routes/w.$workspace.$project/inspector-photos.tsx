@@ -67,11 +67,21 @@ const messaggioErrore: Readonly<Partial<Record<CodiceErroreFoto, PlainMessageKey
   INSUFFICIENT_CREDITS: 'fotoCampione.errors.insufficientCredits',
   CAD_MODEL_NOT_FOUND: 'fotoCampione.errors.cadModelNotFound',
   PHOTO_REFUSED: 'fotoCampione.errors.photoRefused',
+  PROVIDER_SPEND_BLOCKED: 'fotoCampione.errors.levelPaused',
   RATE_LIMITED: 'fotoCampione.errors.rateLimited',
   BILLING_ACCOUNT_RESTRICTED: 'fotoCampione.errors.restricted',
   REQUEST_IN_PROGRESS: 'fotoCampione.errors.inProgress',
   AI_REQUEST_CONFLICT: 'fotoCampione.errors.conflict',
 };
+
+/**
+ * Answers after which Sinopia refunded the request: its id cannot be used again. A network error or a failed close
+ * («the photo is in the project») keep it, so the retry replays instead of charging twice.
+ */
+const rimborsata = (errore: ErroreFoto): boolean =>
+  errore.codice === 'PHOTO_REFUSED' ||
+  errore.codice === 'PROVIDER_SPEND_BLOCKED' ||
+  (errore.codice === 'PROVIDER_UNAVAILABLE' && errore.stato === 502);
 
 type Scelta = Readonly<{ vista: VistaFoto; materiale: MaterialeFoto; livello: LivelloFoto }>;
 /** A photo being made or one that failed: it holds its slot in the gallery until the next attempt. */
@@ -300,8 +310,10 @@ export function InspectorPhotos(): React.JSX.Element {
           return mappa;
         });
       };
+      let improntaChiesta: string | undefined;
       try {
         const impronta = await improntaFoto({ modello, ...scelta, materiale: materialeFoto });
+        improntaChiesta = impronta;
         // Let the card show before the maps take the main thread for a moment.
         await new Promise((resolve) => {
           setTimeout(resolve, 30);
@@ -373,6 +385,9 @@ export function InspectorPhotos(): React.JSX.Element {
         ) {
           pendenti.current.clear();
           void queryClient.invalidateQueries({ queryKey: ['sinopia', 'prezzi-cad'] });
+        } else if (improntaChiesta !== undefined && error instanceof ErroreFoto && rimborsata(error)) {
+          // Refunded: the request id is spent on Sinopia's side, the next click needs a new one.
+          pendenti.current.delete(improntaChiesta);
         }
         fine({
           ...scelta,

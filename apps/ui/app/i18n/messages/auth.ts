@@ -44,6 +44,10 @@ export const authMessages = defineMessages({
       back: 'Torna a Sinopia',
       signOut: 'Esci',
     },
+    notConfigured: {
+      title: 'SinopiaCAD non è collegato a Sinopia',
+      description: 'Manca la configurazione di Sinopia, quindi l’accesso resta chiuso. Riprova più tardi.',
+    },
     goToSinopia: 'Vai a sinopialab.com',
     refused: 'Accesso a SinopiaCAD',
     signOut: 'Esci',
@@ -107,6 +111,10 @@ export const authMessages = defineMessages({
         'The account {email} does not have access yet: for now SinopiaCAD is open only to the Sinopia administrator.',
       back: 'Back to Sinopia',
       signOut: 'Sign out',
+    },
+    notConfigured: {
+      title: 'SinopiaCAD is not connected to Sinopia',
+      description: 'Sinopia’s configuration is missing, so access stays closed. Try again later.',
     },
     goToSinopia: 'Go to sinopialab.com',
     refused: 'SinopiaCAD access',

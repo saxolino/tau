@@ -200,11 +200,27 @@ describe('SinopiaSessionGate', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('You’re on the Sinopia waiting list.');
   });
 
-  it('should gate nothing without a Sinopia project', () => {
+  it('should gate nothing without a Sinopia project on the dev server', () => {
     sinopia.state = { status: 'disabled' };
 
     renderGate();
 
     expect(screen.getByText('Workspace')).toBeInTheDocument();
+  });
+
+  it('should keep the workspace closed on a web build without a Sinopia project', () => {
+    vi.stubEnv('DEV', false);
+    try {
+      sinopia.state = { status: 'disabled' };
+
+      renderGate();
+
+      expect(screen.queryByText('Workspace')).not.toBeInTheDocument();
+      expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(
+        /not connected to Sinopia|non è collegato a Sinopia/,
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

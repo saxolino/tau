@@ -26,9 +26,9 @@ export const publicAsset = (path: string): string => `${baseUrl()}${path.replace
  * Take the router's basename off a path read from `location.pathname`, so it can go back to `navigate()` (which adds
  * the basename itself). A path outside the basename is returned unchanged.
  *
- * @param path - A same-origin path with its search and hash, e.g. `/cad/w/home/gear?chat=1`.
+ * @param path - A same-origin path with its search and hash, e.g. `/cad/w/home/gear?model=1`.
  * @param basename - The router's basename without the trailing slash (`''` or `/cad`).
- * @returns The path relative to the router, e.g. `/w/home/gear?chat=1`.
+ * @returns The path relative to the router, e.g. `/w/home/gear?model=1`.
  */
 export const stripBasename = (path: string, basename: string): string => {
   if (basename === '' || basename === '/') {
