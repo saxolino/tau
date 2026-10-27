@@ -32,7 +32,10 @@ import type { MascheraBinaria, MeshPiatta } from '#verifica/silhouette.js';
  *   lato, `pxPerMm` ±25 % solo se la scala è stimata. La geometria non si ricostruisce: la mesh della stima si fa una
  *   volta e ogni camera costa la proiezione (via B di `silhouette.ts`, ≈ 3 ms con il chamfer), nessuna chiamata al
  *   kernel. Prima del simplesso, centro e scala si allineano con i momenti (baricentro e area), il rollo con l'asse
- *   principale se la vista è poco confidente. Con confidenza della vista < 0,5: tre avvii (az, az + 180°, −az).
+ *   principale se la vista è poco confidente. Con confidenza della vista < 0,5: tre avvii (az, az + 180°, −az). Se
+ *   dopo gli avvii della vista dichiarata l'IoU resta sotto 0,5, la vista non spiega la maschera (per esempio la foto
+ *   della faccia di una fibbia chiamata «fronte»): si provano le 24 viste lungo gli assi e le tre migliori fanno la
+ *   fase A intera.
  * - **B, parametri** (60 per giro, fino a 3 giri): i parametri `silhouetteSensibile` della famiglia, normalizzati sui
  *   loro limiti, simplesso iniziale ±15 % del valore stimato; ogni valutazione ricostruisce (`costruisci` +
  *   `tessellate`) dentro `lib.scope`, quindi i corpi intermedi sono liberati subito. Fra un giro e l'altro la camera si
@@ -171,6 +174,47 @@ type Variabile = {
 type Geometria = { mesh: MeshPiatta | null; violazioni: number; prior: number; parametri: ParametriAnnidati };
 
 const VALUTAZIONI = { camera: 40, parametri: 60, congiunta: 60 } as const;
+
+/**
+ * IoU della fase A sotto cui la vista dichiarata non spiega la maschera e si provano le viste lungo gli assi.
+ *
+ * Il caso che l'ha reso necessario (27 ott 2026, prova `?prova=fibbia` di `/cad/nuovo`): la fibbia giace su XY con la
+ * faccia a vista +Z, ma il riconoscimento chiama «fronte» (azimuth 4, elevation 8) la foto della faccia, perché il
+ * prompt non dice a quale faccia del telaio della famiglia corrisponde la foto. La camera partiva di taglio sul pezzo,
+ * i limiti della fase A (±20° di elevation, ±15° di rollo) non arrivavano alla vista dall'alto e l'IoU restava 0,05.
+ */
+const SOGLIA_VISTA_ALTERNATIVA = 0.5;
+
+/** Avvii alternativi che passano alla fase A intera, i migliori per IoU dopo l'allineamento coi momenti. */
+const AVVII_ALTERNATIVI = 3;
+
+/**
+ * Le viste lungo gli assi del telaio della famiglia, con il pezzo girato di un quarto di giro nel piano: le 24
+ * orientazioni del cubo (sei direzioni di vista, quattro rolli; dall'alto e dal basso l'azimut coincide col rollo).
+ */
+const VISTE_ASSI: ReadonlyArray<Pick<CameraVerifica, 'azimuth' | 'elevation' | 'rollo'>> = [
+  ...[90, -90].flatMap((elevation) => [0, 90, 180, -90].map((rollo) => ({ azimuth: 0, elevation, rollo }))),
+  ...[0, 90, 180, -90].flatMap((azimuth) => [0, 90, 180, -90].map((rollo) => ({ azimuth, elevation: 0, rollo }))),
+];
+
+/**
+ * Scarto angolare in gradi fra due viste (direzione di vista e rollo insieme, nel modo più semplice).
+ * @param a - Una vista.
+ * @param b - L'altra.
+ * @returns La somma degli scarti di elevation, azimuth (se non sono entrambe polari) e rollo.
+ */
+const distanzaVista = (
+  a: Pick<CameraVerifica, 'azimuth' | 'elevation' | 'rollo'>,
+  b: Pick<CameraVerifica, 'azimuth' | 'elevation' | 'rollo'>,
+): number => {
+  const giro = (gradi: number): number => Math.abs(((((gradi + 180) % 360) + 360) % 360) - 180);
+  const polare = Math.abs(a.elevation) >= 89 && Math.abs(b.elevation) >= 89;
+  return (
+    Math.abs(a.elevation - b.elevation) +
+    (polare ? 0 : giro(a.azimuth - b.azimuth)) +
+    giro(polare ? a.rollo + a.azimuth - b.rollo - b.azimuth : a.rollo - b.rollo)
+  );
+};
 
 /**
  * Valori imposti nelle costruzioni della verifica che non cambiano il contorno esterno ma costano tempo: nel tacco la
@@ -734,6 +778,39 @@ export function verificaSilhouette(lib: typeof Smlib, ingresso: IngressoVerifica
       if (!corrente || risultato.valutazione.f < corrente.valutazione.f) {
         corrente = risultato;
         riferimento0 = camera;
+      }
+    }
+    // La vista dichiarata non spiega la maschera: le viste lungo gli assi (vedi `SOGLIA_VISTA_ALTERNATIVA`). Ognuna si
+    // allinea coi momenti e costa una proiezione; le migliori fanno la fase A intera, e vince l'obiettivo più basso.
+    if (meshStima && opzioni.avvii !== 1 && corrente && corrente.valutazione.iou < SOGLIA_VISTA_ALTERNATIVA) {
+      const meshAvvii = meshStima;
+      const { camera: dichiarata } = corrente.stato;
+      const candidate = VISTE_ASSI.filter((vista) => distanzaVista(vista, dichiarata) > 30)
+        .map((vista) => {
+          controllaTempo();
+          const camera = allinea({ ...vista, pxPerMm: pxPerMmIniziale, cx: 0, cy: 0 }, meshAvvii, true);
+          return { camera, iou: valuta({ camera, parametri: clona(base) }).iou };
+        })
+        .sort((a, b) => b.iou - a.iou)
+        .slice(0, AVVII_ALTERNATIVI);
+      for (const { camera } of candidate) {
+        controllaTempo();
+        vistaPrior = camera;
+        const variabili = variabiliCamera(camera, cameraNelPiano);
+        const risultato = fase(
+          'camera',
+          { camera, parametri: clona(base) },
+          variabili,
+          limiti.camera,
+          iouCamera,
+          passiCamera(variabili, camera),
+        );
+        fasi.push(risultato.esito);
+        avvii.push({ azimuth: camera.azimuth, f: risultato.valutazione.f, iou: risultato.valutazione.iou });
+        if (risultato.valutazione.f < corrente.valutazione.f) {
+          corrente = risultato;
+          riferimento0 = camera;
+        }
       }
     }
     vistaPrior = riferimento0;
