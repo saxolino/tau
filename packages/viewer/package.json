@@ -70,6 +70,7 @@
     "./graphics/three/post-processing-settings": "./src/graphics/three/post-processing-settings.ts",
     "./graphics/three/react/exact-measurement": "./src/graphics/three/react/exact-measurement.tsx",
     "./graphics/three/react/gltf-mesh": "./src/graphics/three/react/gltf-mesh.tsx",
+    "./graphics/three/react/model-assembly": "./src/graphics/three/react/model-assembly.ts",
     "./graphics/three/react/producibility-overlay.types": "./src/graphics/three/react/producibility-overlay.types.ts",
     "./graphics/three/render-frame-timing": "./src/graphics/three/render-frame-timing.ts",
     "./graphics/three/render-loop-observer": "./src/graphics/three/render-loop-observer.ts",
@@ -306,6 +307,11 @@
         "types": "./dist/graphics/three/react/gltf-mesh.d.mts",
         "import": "./dist/graphics/three/react/gltf-mesh.mjs",
         "default": "./dist/graphics/three/react/gltf-mesh.mjs"
+      },
+      "./graphics/three/react/model-assembly": {
+        "types": "./dist/graphics/three/react/model-assembly.d.mts",
+        "import": "./dist/graphics/three/react/model-assembly.mjs",
+        "default": "./dist/graphics/three/react/model-assembly.mjs"
       },
       "./graphics/three/react/producibility-overlay.types": {
         "types": "./dist/graphics/three/react/producibility-overlay.types.d.mts",
