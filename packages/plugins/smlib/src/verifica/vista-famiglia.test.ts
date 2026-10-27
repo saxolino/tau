@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { famiglie } from '#famiglie/registro.js';
 import { assiCamera } from '#verifica/camera.js';
-import { cameraDaFaccia, cameraDaVista } from '#verifica/vista-famiglia.js';
+import { cameraDaFaccia, cameraDaVista, vistaSenzaFaccia } from '#verifica/vista-famiglia.js';
 
 const vicino = (a: number, b: number, tolleranza = 1e-6): void => {
   expect(Math.abs(a - b)).toBeLessThan(tolleranza);
@@ -102,5 +102,19 @@ describe('camera di partenza dalla vista del riconoscimento', () => {
       'nome',
     );
     expect(cameraDaVista(famiglie.tacco!.viste, { azimuth: 12, elevation: 3, rollo: 0 }).origine).toBe('assoluta');
+  });
+});
+
+describe('vista registrata senza faccia', () => {
+  it('should start from the view name, or from the main face when the name does not resolve', () => {
+    const viste = famiglie.tacco!.viste;
+    const perNome = vistaSenzaFaccia(viste, 'fronte');
+    expect(perNome).toStrictEqual(viste.nomi.fronte);
+    const vecchia = cameraDaVista(viste, { nome: 'fronte', azimuth: 40, elevation: 70, rollo: 5 });
+    const completata = cameraDaVista(viste, { nome: 'fronte', ...perNome, rollo: 5 });
+    vicino(completata.azimuth, vecchia.azimuth);
+    vicino(completata.elevation, vecchia.elevation);
+    vicino(completata.rollo, vecchia.rollo);
+    expect(vistaSenzaFaccia(viste, undefined)).toStrictEqual({ faccia: viste.principale, azimuth: 0, elevation: 0 });
   });
 });

@@ -90,6 +90,22 @@ const dalNome = (viste: VisteFamiglia, nome: string | undefined): VistaPerNome |
 };
 
 /**
+ * La faccia e gli scarti per una vista registrata prima che la scheda nominasse la faccia: gli angoli di allora erano
+ * assoluti, quindi si riparte dal nome della vista (come fa `cameraDaVista`) o, se il nome non si risolve, dalla faccia
+ * principale vista dritta.
+ * @param viste - I dati `viste` della famiglia costruita.
+ * @param nome - Il nome della vista registrato.
+ * @returns Faccia, azimuth ed elevation da mettere nella scheda.
+ * @public
+ */
+export function vistaSenzaFaccia(viste: VisteFamiglia, nome: string | undefined): VistaPerNome {
+  const perNome = dalNome(viste, nome);
+  return perNome && viste.facce.some((faccia) => faccia.id === perNome.faccia)
+    ? perNome
+    : { faccia: viste.principale, azimuth: 0, elevation: 0 };
+}
+
+/**
  * La camera di partenza della verifica D3 da quello che il riconoscimento dice della vista.
  *
  * Ordine: la faccia dichiarata (se è una faccia di questa famiglia) con gli scarti del modello; altrimenti il nome
