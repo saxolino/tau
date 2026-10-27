@@ -1,3 +1,4 @@
+import type { PieceFinish, PieceMaterialId } from '#cad/piece-materials.js';
 import { createContext, useContext, useMemo } from 'react';
 import type { ReactNode } from 'react';
 import type { GraphicsBackendPreference } from '#graphics/graphics-settings.js';
@@ -71,6 +72,53 @@ export type ViewerLabels = {
   readonly measurement: MeasurementLabels;
   /** The words of the view settings menu. */
   readonly settings: SettingsLabels;
+  /** The material and finish choices of the settings menu. Absent, English. */
+  readonly materials?: MaterialLabels;
+};
+
+/**
+ * The words of the material choice: the menu row's names and every material and finish (English by default).
+ *
+ * @public
+ */
+export type MaterialLabels = {
+  readonly modelMaterial: string;
+  readonly modelFinish: string;
+  /** The choice that keeps the material written in the model. */
+  readonly asModelled: string;
+  /** Shown when the pieces differ. */
+  readonly mixed: string;
+  readonly names: Readonly<Record<PieceMaterialId, string>>;
+  readonly finishes: Readonly<Record<PieceFinish, string>>;
+};
+
+/**
+ * English material words.
+ *
+ * @public
+ */
+export const englishMaterialLabels: MaterialLabels = {
+  modelMaterial: 'Model material',
+  modelFinish: 'Finish',
+  asModelled: 'As modelled',
+  mixed: 'Mixed',
+  names: {
+    'gold-18k-yellow': '18 kt yellow gold',
+    'gold-18k-rose': '18 kt rose gold',
+    'gold-18k-white': '18 kt white gold, rhodium',
+    'silver-925': 'Sterling silver 925',
+    brass: 'Brass',
+    zamak: 'Zamak',
+    'stainless-steel': 'Stainless steel',
+    'palladium-plated': 'Palladium · nickel plating',
+    'gunmetal-plated': 'Gunmetal plating',
+    leather: 'Leather',
+    rubber: 'Rubber',
+    tr: 'TR',
+    tpu: 'TPU',
+    abs: 'ABS',
+  },
+  finishes: { polished: 'Polished', satin: 'Satin', sandblasted: 'Sandblasted' },
 };
 
 /**

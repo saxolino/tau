@@ -1,6 +1,15 @@
 import { useDeferredValue, useLayoutEffect, useMemo, useRef } from 'react';
 import type * as THREE from 'three';
-import { BackSide, CubeTexture, PMREMGenerator } from 'three';
+import {
+  BackSide,
+  BufferAttribute,
+  CubeTexture,
+  DoubleSide,
+  Object3D,
+  PlaneGeometry,
+  PMREMGenerator,
+  SphereGeometry,
+} from 'three';
 import { PMREMGenerator as WebGpuPmremGenerator } from 'three/webgpu';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { useThree, useFrame } from '@react-three/fiber';
@@ -114,6 +123,19 @@ export function Lights({
   // what it draws. The studio is also keyed on those values: new radiance remounts the capture
   // and its filter together. Only the environment's own geometry and radiance controls recapture.
   const roomEnvironment = useMemo(() => <RoomLightingEnvironment resolution={resolution} />, [resolution]);
+  const jewelryEnvironment = useMemo(
+    () => (
+      <OwnedLightingEnvironment
+        key={clampedSceneRadius}
+        resolution={resolution}
+        near={clampedSceneRadius * 0.01}
+        far={clampedSceneRadius * 40}
+      >
+        <JewelryLightTent radius={clampedSceneRadius} />
+      </OwnedLightingEnvironment>
+    ),
+    [clampedSceneRadius, resolution],
+  );
   const whiteEnvironment = useMemo(
     () => (
       <OwnedLightingEnvironment resolution={resolution} near={0.01} far={20}>
@@ -207,9 +229,129 @@ export function Lights({
       {/* Key direction stays upper-right in view space. */}
       <directionalLight ref={cameraLightReference} intensity={headlampBaseIntensity} color='white' />
 
+      {showEnvironment && lighting.environment === 'jewelry' ? jewelryEnvironment : null}
       {showEnvironment && lighting.environment === 'room' ? roomEnvironment : null}
       {showEnvironment && lighting.environment === 'white' ? whiteEnvironment : null}
       {showEnvironment && lighting.environment === 'studio' ? studioEnvironment : null}
+    </>
+  );
+}
+
+/**
+ * Radiance of the tent's dome by height in view space: a soft crown, a darker horizon and a dark floor, so polished
+ * walls read darker than the faces that take the light, as in a jeweller's photograph. The soft boxes give the
+ * bright reflections; the dome only keeps the shadows from going black.
+ */
+const jewelryDomeCrown = 0.45;
+const jewelryDomeHorizon = 0.24;
+const jewelryDomeFloor = 0.09;
+
+/** A dome whose vertex colours carry the crown-to-floor gradient; built once per mount. */
+function useJewelryDome(): SphereGeometry {
+  const geometry = useMemo(() => {
+    const sphere = new SphereGeometry(1, 48, 24);
+    const positions = sphere.getAttribute('position');
+    const colors = new Float32Array(positions.count * 3);
+    for (let index = 0; index < positions.count; index++) {
+      const height = positions.getY(index);
+      const radiance =
+        height >= 0
+          ? jewelryDomeHorizon + (jewelryDomeCrown - jewelryDomeHorizon) * Math.sqrt(height)
+          : jewelryDomeHorizon + (jewelryDomeFloor - jewelryDomeHorizon) * Math.min(1, -height * 1.6);
+      colors.set([radiance, radiance, radiance * 0.98], index * 3);
+    }
+    sphere.setAttribute('color', new BufferAttribute(colors, 3));
+    return sphere;
+  }, []);
+  useLayoutEffect(
+    () => () => {
+      geometry.dispose();
+    },
+    [geometry],
+  );
+  return geometry;
+}
+
+/**
+ * A soft box: a diffuser brightest at its centre and falling off towards its edges, so a curved polished surface
+ * shows a graded highlight instead of a flat rectangle. Faces the origin, where the model is.
+ */
+function SoftBox({
+  position,
+  size,
+  intensity,
+}: {
+  readonly position: readonly [number, number, number];
+  readonly size: readonly [number, number];
+  readonly intensity: number;
+}): React.JSX.Element {
+  const geometry = useMemo(() => {
+    const plane = new PlaneGeometry(1, 1, 12, 12);
+    const positions = plane.getAttribute('position');
+    const colors = new Float32Array(positions.count * 3);
+    for (let index = 0; index < positions.count; index++) {
+      const distance = Math.min(1, Math.hypot(positions.getX(index) * 2, positions.getY(index) * 2));
+      const radiance = intensity * (0.2 + 0.8 * (1 - distance * distance) ** 1.5);
+      colors.set([radiance, radiance, radiance], index * 3);
+    }
+    plane.setAttribute('color', new BufferAttribute(colors, 3));
+    return plane;
+  }, [intensity]);
+  useLayoutEffect(
+    () => () => {
+      geometry.dispose();
+    },
+    [geometry],
+  );
+  // Facing the origin, computed once rather than through an imperative `lookAt` after mount.
+  const quaternion = useMemo(() => {
+    const facing = new Object3D();
+    facing.position.set(...position);
+    facing.lookAt(0, 0, 0);
+    return facing.quaternion.clone();
+  }, [position]);
+  return (
+    <mesh
+      geometry={geometry}
+      position={position as [number, number, number]}
+      quaternion={quaternion}
+      scale={[size[0], size[1], 1]}
+    >
+      <meshBasicMaterial vertexColors side={DoubleSide} toneMapped={false} />
+    </mesh>
+  );
+}
+
+/**
+ * The jeweller's light tent, authored in view space (+Y up on screen, +Z towards the viewer) because the environment
+ * turns with the camera: a broad soft box overhead that top faces mirror, a key soft box front right, a softer fill
+ * on the left, two tall strips behind on either side for the long highlights along rims and bars, and a low bounce
+ * card that front walls mirror, so they read as metal instead of black.
+ */
+function JewelryLightTent({ radius }: { readonly radius: number }): React.JSX.Element {
+  const dome = useJewelryDome();
+  return (
+    <>
+      <color attach='background' args={[0, 0, 0]} />
+      <mesh geometry={dome} scale={radius * 20}>
+        <meshBasicMaterial vertexColors side={BackSide} toneMapped={false} />
+      </mesh>
+      <SoftBox position={[0, radius * 4, -radius * 2.5]} size={[radius * 7, radius * 4]} intensity={1} />
+      <SoftBox position={[radius * 3, radius * 1.5, radius * 3]} size={[radius * 3.5, radius * 3.5]} intensity={1.8} />
+      <SoftBox position={[-radius * 4, radius * 0.8, radius * 1.5]} size={[radius * 3, radius * 4]} intensity={1} />
+      <SoftBox position={[0, -radius * 3.5, radius * 2]} size={[radius * 9, radius * 3]} intensity={1} />
+      <Lightformer
+        form='rect'
+        intensity={3.5}
+        position={[-radius * 5, radius * 0.5, -radius * 2]}
+        scale={[radius * 0.6, radius * 7, 1]}
+      />
+      <Lightformer
+        form='rect'
+        intensity={3.5}
+        position={[radius * 5, radius * 0.5, -radius * 2]}
+        scale={[radius * 0.6, radius * 7, 1]}
+      />
     </>
   );
 }

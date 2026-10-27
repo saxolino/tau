@@ -30,6 +30,7 @@ const createModelInteractionContext = (hoveredComponentId?: string): ModelIntera
       hiddenComponentIds: [],
       isolatedComponentIds: [],
       opacityByComponentId: {},
+      materialByComponentId: {},
     },
   },
   unitOrder: [unitId],

@@ -6,6 +6,8 @@ import type {
   PersistedModelComponentDisplayUnitState,
 } from '#graphics/graphics-settings.js';
 import { omitEmptyComponentDisplayState } from '#graphics/graphics-settings.js';
+import { normalizePieceMaterialChoice } from '#cad/piece-materials.js';
+import type { PieceMaterialChoice } from '#cad/piece-materials.js';
 
 /**
  * The surface that raised a model interaction.
@@ -35,6 +37,8 @@ export type ModelInteractionUnitState = {
   readonly hiddenComponentIds: readonly string[];
   readonly isolatedComponentIds: readonly string[];
   readonly opacityByComponentId: Readonly<Record<string, number>>;
+  /** The material each piece is shown and weighed in; a piece without one keeps the model's own. */
+  readonly materialByComponentId: Readonly<Record<string, PieceMaterialChoice>>;
 };
 
 /**
@@ -84,6 +88,15 @@ export type ModelInteractionEvent =
       source?: ModelInteractionSource;
     }
   | { type: 'resetComponentOpacities'; unitId: string; source?: ModelInteractionSource }
+  | {
+      type: 'setComponentMaterial';
+      unitId: string;
+      /** One piece; absent, every piece of the model. */
+      componentId?: string;
+      /** Absent, the piece goes back to the model's own material. */
+      choice: PieceMaterialChoice | undefined;
+      source?: ModelInteractionSource;
+    }
   | { type: 'focusComponent'; unitId: string; componentId: string; source?: ModelInteractionSource }
   | { type: 'clearFocus'; unitId: string; source?: ModelInteractionSource };
 
@@ -97,6 +110,7 @@ const createEmptyUnitState = (): ModelInteractionUnitState => ({
   hiddenComponentIds: [],
   isolatedComponentIds: [],
   opacityByComponentId: {},
+  materialByComponentId: {},
 });
 
 // Shared frozen singleton for absent units so `getModelInteractionUnitState`
@@ -109,6 +123,7 @@ const emptyUnitState: ModelInteractionUnitState = Object.freeze({
   hiddenComponentIds: Object.freeze([]),
   isolatedComponentIds: Object.freeze([]),
   opacityByComponentId: Object.freeze({}),
+  materialByComponentId: Object.freeze({}),
 });
 
 const createUnitStateFromPersisted = (
@@ -118,6 +133,7 @@ const createUnitStateFromPersisted = (
   hiddenComponentIds: [...(unit?.hiddenComponentIds ?? [])],
   isolatedComponentIds: [...(unit?.isolatedComponentIds ?? [])],
   opacityByComponentId: { ...unit?.opacityByComponentId },
+  materialByComponentId: normalizeMaterials(unit?.materialByComponentId),
 });
 
 function hydrateUnitsFromComponentDisplay(
@@ -231,6 +247,26 @@ const pruneOpacityForManifest = (
     Object.entries(opacityByComponentId).filter(([componentId]) => Boolean(manifest.nodesById[componentId])),
   );
 
+/** Keep only valid choices, so a hand-edited or older record cannot put an unknown material on a piece. */
+function normalizeMaterials(
+  materials: Readonly<Record<string, unknown>> | undefined,
+): Record<string, PieceMaterialChoice> {
+  return Object.fromEntries(
+    Object.entries(materials ?? {}).flatMap(([componentId, value]) => {
+      const choice = normalizePieceMaterialChoice(value);
+      return choice ? [[componentId, choice]] : [];
+    }),
+  );
+}
+
+const pruneMaterialsForManifest = (
+  manifest: GeometryComponentManifest,
+  materialByComponentId: Readonly<Record<string, PieceMaterialChoice>>,
+): Record<string, PieceMaterialChoice> =>
+  Object.fromEntries(
+    Object.entries(materialByComponentId).filter(([componentId]) => Boolean(manifest.nodesById[componentId])),
+  );
+
 const reconcileUnitForManifest = (
   unit: ModelInteractionUnitState,
   manifest: GeometryComponentManifest,
@@ -243,6 +279,7 @@ const reconcileUnitForManifest = (
   hiddenComponentIds: pruneIdsForManifest(manifest, unit.hiddenComponentIds),
   isolatedComponentIds: pruneIdsForManifest(manifest, unit.isolatedComponentIds),
   opacityByComponentId: pruneOpacityForManifest(manifest, unit.opacityByComponentId),
+  materialByComponentId: pruneMaterialsForManifest(manifest, materialsOf(unit)),
 });
 
 function arraysEqual(a: readonly string[], b: readonly string[]): boolean {
@@ -255,6 +292,27 @@ function recordsEqual(a: Readonly<Record<string, number>>, b: Readonly<Record<st
   return entriesA.length === entriesB.length && entriesA.every(([key, value]) => b[key] === value);
 }
 
+/** A unit's material choices; a unit state built before materials existed has none. */
+function materialsOf(unit: {
+  readonly materialByComponentId?: Readonly<Record<string, PieceMaterialChoice>>;
+}): Readonly<Record<string, PieceMaterialChoice>> {
+  return unit.materialByComponentId ?? {};
+}
+
+function materialChoicesEqual(
+  a: Readonly<Record<string, PieceMaterialChoice>>,
+  b: Readonly<Record<string, PieceMaterialChoice>>,
+): boolean {
+  const entriesA = Object.entries(a);
+  return (
+    entriesA.length === Object.keys(b).length &&
+    entriesA.every(([key, value]) => {
+      const other: PieceMaterialChoice | undefined = b[key];
+      return other?.material === value.material && other.finish === value.finish;
+    })
+  );
+}
+
 function omitRecordKey<Value>(record: Readonly<Record<string, Value>>, key: string): Record<string, Value> {
   return Object.fromEntries(Object.entries(record).filter(([candidate]) => candidate !== key));
 }
@@ -263,7 +321,8 @@ function displayStateEqual(previous: ModelInteractionUnitState, next: ModelInter
   return (
     arraysEqual(previous.hiddenComponentIds, next.hiddenComponentIds) &&
     arraysEqual(previous.isolatedComponentIds, next.isolatedComponentIds) &&
-    recordsEqual(previous.opacityByComponentId, next.opacityByComponentId)
+    recordsEqual(previous.opacityByComponentId, next.opacityByComponentId) &&
+    materialChoicesEqual(materialsOf(previous), materialsOf(next))
   );
 }
 
@@ -275,11 +334,15 @@ function serializeUnitDisplayState(
   const opacityEntries = Object.entries(unit.opacityByComponentId)
     .filter(([, opacity]) => opacity !== 1)
     .sort(([left], [right]) => left.localeCompare(right));
+  const materialEntries = Object.entries(materialsOf(unit)).sort(([left], [right]) => left.localeCompare(right));
 
   const serialized: PersistedModelComponentDisplayUnitState = {
     ...(hiddenComponentIds.length > 0 ? { hiddenComponentIds } : {}),
     ...(isolatedComponentIds.length > 0 ? { isolatedComponentIds } : {}),
     ...(opacityEntries.length > 0 ? { opacityByComponentId: Object.fromEntries(opacityEntries) } : {}),
+    ...(materialEntries.length > 0
+      ? { materialByComponentId: Object.fromEntries(materialEntries.map(([id, choice]) => [id, { ...choice }])) }
+      : {}),
   };
 
   return Object.keys(serialized).length > 0 ? serialized : undefined;
@@ -315,7 +378,8 @@ function hasDisplayState(unit: ModelInteractionUnitState): boolean {
   return (
     unit.hiddenComponentIds.length > 0 ||
     unit.isolatedComponentIds.length > 0 ||
-    Object.keys(unit.opacityByComponentId).length > 0
+    Object.keys(unit.opacityByComponentId).length > 0 ||
+    Object.keys(materialsOf(unit)).length > 0
   );
 }
 
@@ -326,14 +390,16 @@ function restoreUnitDisplayState(
   const hiddenComponentIds = [...(persisted?.hiddenComponentIds ?? [])];
   const isolatedComponentIds = [...(persisted?.isolatedComponentIds ?? [])];
   const opacityByComponentId = { ...persisted?.opacityByComponentId };
+  const materialByComponentId = normalizeMaterials(persisted?.materialByComponentId);
   if (!unit.manifest) {
-    return { ...unit, hiddenComponentIds, isolatedComponentIds, opacityByComponentId };
+    return { ...unit, hiddenComponentIds, isolatedComponentIds, opacityByComponentId, materialByComponentId };
   }
   return {
     ...unit,
     hiddenComponentIds: pruneIdsForManifest(unit.manifest, hiddenComponentIds),
     isolatedComponentIds: pruneIdsForManifest(unit.manifest, isolatedComponentIds),
     opacityByComponentId: pruneOpacityForManifest(unit.manifest, opacityByComponentId),
+    materialByComponentId: pruneMaterialsForManifest(unit.manifest, materialByComponentId),
   };
 }
 
@@ -352,6 +418,7 @@ function mergeUnitStates(
     hiddenComponentIds: [...new Set([...existing.hiddenComponentIds, ...moved.hiddenComponentIds])],
     isolatedComponentIds: [...new Set([...existing.isolatedComponentIds, ...moved.isolatedComponentIds])],
     opacityByComponentId: { ...existing.opacityByComponentId, ...moved.opacityByComponentId },
+    materialByComponentId: { ...existing.materialByComponentId, ...moved.materialByComponentId },
   };
 }
 
@@ -732,6 +799,38 @@ export const modelInteractionMachine = setup({
           context,
           unitId: event.unitId,
           unit: { ...unit, opacityByComponentId: {} },
+          source: event.source,
+        }),
+      };
+    },
+    setComponentMaterial: ({ context, event }) => {
+      const unit = getModelInteractionUnitState(context, event.unitId);
+      const choice = normalizePieceMaterialChoice(event.choice);
+      if (event.choice !== undefined && choice === undefined) {
+        return {};
+      }
+      const targets =
+        event.componentId === undefined
+          ? (unit.manifest?.nodeOrder.filter((id) => unit.manifest?.nodesById[id]?.kind === 'part') ?? [])
+          : hasComponent(unit, event.componentId)
+            ? [event.componentId]
+            : [];
+      if (targets.length === 0) {
+        return {};
+      }
+      const targeted = new Set(targets);
+      const materialByComponentId: Record<string, PieceMaterialChoice> = {
+        ...Object.fromEntries(Object.entries(materialsOf(unit)).filter(([id]) => !targeted.has(id))),
+        ...(choice ? Object.fromEntries(targets.map((id) => [id, choice])) : {}),
+      };
+      if (materialChoicesEqual(materialsOf(unit), materialByComponentId)) {
+        return {};
+      }
+      return {
+        context: assignUnit({
+          context,
+          unitId: event.unitId,
+          unit: { ...unit, materialByComponentId },
           source: event.source,
         }),
       };

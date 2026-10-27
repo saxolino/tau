@@ -1,5 +1,6 @@
 import { agentMessages } from '#i18n/messages/agent.js';
 import { measuresMessages } from '#i18n/messages/measures.js';
+import { materialsMessages } from '#i18n/messages/materials.js';
 import { piecesMessages } from '#i18n/messages/pieces.js';
 import { accountMessages } from '#i18n/messages/account.js';
 import { authMessages } from '#i18n/messages/auth.js';
@@ -27,6 +28,7 @@ import { inspectorMessages } from '#i18n/messages/inspector.js';
 export const areas = {
   agent: agentMessages,
   measures: measuresMessages,
+  materials: materialsMessages,
   pieces: piecesMessages,
   account: accountMessages,
   auth: authMessages,

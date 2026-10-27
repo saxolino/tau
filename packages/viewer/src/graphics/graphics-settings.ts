@@ -30,6 +30,8 @@ export type PersistedModelComponentDisplayUnitState = {
   hiddenComponentIds?: string[];
   isolatedComponentIds?: string[];
   opacityByComponentId?: Record<string, number>;
+  /** Material id and finish per piece (`piece-materials.ts`); unknown ids are dropped on restore. */
+  materialByComponentId?: Record<string, { material: string; finish?: string }>;
 };
 
 /**
@@ -164,6 +166,9 @@ export function isComponentDisplayStateEmpty(
     if (Object.keys(unit.opacityByComponentId ?? {}).length > 0) {
       return false;
     }
+    if (Object.keys(unit.materialByComponentId ?? {}).length > 0) {
+      return false;
+    }
   }
 
   return true;
@@ -188,10 +193,11 @@ export function omitEmptyComponentDisplayState(
  */
 export const defaultGraphicsSettings: GraphicsViewSettings = {
   enableSurfaces: true,
-  enableLines: true,
+  // Edges only on the selected piece and no scene axes: the model reads from its light, the cube orients.
+  enableLines: false,
   enableGizmo: true,
   enableGrid: true,
-  enableAxes: true,
+  enableAxes: false,
   enableMatcap: false,
   enablePostProcessing: false,
   upDirection: 'z',

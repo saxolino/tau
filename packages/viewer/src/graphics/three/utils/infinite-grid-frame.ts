@@ -22,13 +22,14 @@ export const infiniteGridProxyDistanceVisibleSpans = 20;
  *
  * @public
  */
-export const infiniteGridFadeStartRatio = 0.05;
+// SinopiaCAD: the floor fades within about two views of the model, so the piece, not the grid, fills the frame.
+export const infiniteGridFadeStartRatio = 0.025;
 /**
  * Normalised proxy radius at which the grid has fully faded out, shared by GLSL and TSL.
  *
  * @public
  */
-export const infiniteGridFadeEndRatio = 0.2;
+export const infiniteGridFadeEndRatio = 0.1;
 
 /**
  * Physical zero-plane policy for each supported grid orientation.

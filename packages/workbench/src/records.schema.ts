@@ -260,10 +260,12 @@ export const viewCameraSchema = z.discriminatedUnion('kind', [
 /** @public */
 export const viewDisplaySchema = z.strictObject({
   surfaces: z.boolean().default(true),
-  lines: z.boolean().default(true),
+  /** All edges. Off, only the selected piece shows its edges (SinopiaCAD: the light reads the form). */
+  lines: z.boolean().default(false),
   gizmo: z.boolean().default(true),
   grid: z.boolean().default(true),
-  axes: z.boolean().default(true),
+  /** The scene's axis lines. Off, the orientation cube alone shows the axes. */
+  axes: z.boolean().default(false),
   matcap: z.boolean().default(false),
   postProcessing: z.boolean().default(false),
 });
@@ -308,10 +310,10 @@ export const viewFieldsSchema = z.strictObject({
   upDirection: z.enum(['x', 'y', 'z']).default('z'),
   display: viewDisplaySchema.default({
     surfaces: true,
-    lines: true,
+    lines: false,
     gizmo: true,
     grid: true,
-    axes: true,
+    axes: false,
     matcap: false,
     postProcessing: false,
   }),
@@ -370,6 +372,20 @@ export const componentDisplaySchema = z.strictObject({
     .array(z.strictObject({ id: componentIdSchema, opacity: z.number().min(0).max(1) }))
     .max(1024)
     .default([]),
+  /**
+   * The material each piece is shown and weighed in (`@taucad/viewer/cad/piece-materials`), with a metal's finish.
+   * Absent: the model's own material. Unknown material ids are ignored when read.
+   */
+  materials: z
+    .array(
+      z.strictObject({
+        id: componentIdSchema,
+        material: z.string().min(1).max(64),
+        finish: z.enum(['polished', 'satin', 'sandblasted']).optional(),
+      }),
+    )
+    .max(1024)
+    .optional(),
 });
 
 /** @public */

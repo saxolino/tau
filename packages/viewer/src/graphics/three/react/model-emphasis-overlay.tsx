@@ -45,7 +45,8 @@ export const modelEmphasisMaskPriority = 1.4;
 export const modelEmphasisOverlayPriority = 1.5;
 
 /** Translucent wash strength per state; the surface's own material is never touched. */
-export const modelEmphasisWashOpacity = { hover: 0.15, selected: 0.3 } as const;
+// A light veil, so the selected piece keeps its material; hover is the outline alone (UI-UX-SinopiaCAD §1.2).
+export const modelEmphasisWashOpacity = { hover: 0, selected: 0.12 } as const;
 
 type ModelEmphasisState = 'hover' | 'selected';
 

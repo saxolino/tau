@@ -258,7 +258,7 @@ describe('useGeometryBounds', () => {
     });
     act(() => mocks.frame?.());
     act(() => mocks.frame?.());
-    expect(mocks.camera.actorRef.send).toHaveBeenCalledWith({ type: 'frame', margin: 0.1 });
+    expect(mocks.camera.actorRef.send).toHaveBeenCalledWith({ type: 'frame', margin: 0.06 });
     mocks.camera.actorRef.send.mockClear();
 
     act(() => {
@@ -282,13 +282,13 @@ describe('useGeometryBounds', () => {
     });
 
     act(() => mocks.fitListener?.());
-    expect(mocks.camera.actorRef.send).toHaveBeenLastCalledWith({ type: 'frame', margin: 0.1 });
+    expect(mocks.camera.actorRef.send).toHaveBeenLastCalledWith({ type: 'frame', margin: 0.06 });
     mocks.camera.actorRef.send.mockClear();
 
     mocks.geometryKey = 'replacement-geometry';
     innerRef.current!.children[0]!.position.x = 30;
     hook.rerender();
     act(() => mocks.frame?.());
-    expect(mocks.camera.actorRef.send).toHaveBeenLastCalledWith({ type: 'frame', margin: 0.1 });
+    expect(mocks.camera.actorRef.send).toHaveBeenLastCalledWith({ type: 'frame', margin: 0.06 });
   });
 });

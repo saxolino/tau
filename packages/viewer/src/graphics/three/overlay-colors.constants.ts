@@ -48,7 +48,8 @@ export const infiniteGridColorDarkMode = 0x55_55_55;
 /** High-contrast grid tints and opacity. The stronger alpha keeps both WebGL's gamma blend and WebGPU's linear blend above 3:1. */
 export const infiniteGridColorHighContrastLightMode = 0x00_00_00;
 export const infiniteGridColorHighContrastDarkMode = 0xff_ff_ff;
-export const infiniteGridOpacity = 0.3;
+/** A light floor: the model is the subject, the grid only gives scale. */
+export const infiniteGridOpacity = 0.2;
 export const infiniteGridOpacityHighContrast = 0.7;
 
 /**
@@ -69,15 +70,15 @@ export const gltfEdgeColorLightMode = 0x00_00_00;
 export const gltfEdgeColorDarkMode = 0x86_86_86;
 
 /**
- * Edge tint of a **hovered** model component, drawn through occluding surfaces. Light yellow;
- * one value for both themes — reads against white and `#171717`. See
+ * Edge tint of a **hovered** model component, drawn through occluding surfaces. SinopiaCAD's titanium: a cool
+ * blue-grey that no metal of the material table shares, so a selected gold or brass piece never reads as «more gold»
+ * (UI-UX-SinopiaCAD §1.2). One value for both themes: 2.8:1 on the cream floor, 5.6:1 on charcoal. See
  * `docs/research/viewer-edge-emphasis-highlighting-blueprint.md`.
  */
-export const gltfEdgeHoverColor = 0xff_d5_4a;
+export const gltfEdgeHoverColor = 0x7d_91_a5;
 
 /**
- * Edge tint of a **selected** or focused model component. Same light yellow as hover: the
- * darker `0xb88600` read as illegible over orange/wood surfaces (operator ruling 2026-09-22).
+ * Edge tint of a **selected** or focused model component. Same titanium as hover; the wash's strength tells them apart.
  */
 export const gltfEdgeSelectedColor = gltfEdgeHoverColor;
 

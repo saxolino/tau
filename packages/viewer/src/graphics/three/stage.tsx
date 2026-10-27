@@ -5,6 +5,7 @@ import { flushSync } from '@react-three/fiber';
 import { resolveMetersPerRenderUnit } from '@taucad/spatial';
 import { createThreeRenderMatrix } from '@taucad/three/spatial';
 import { Lights } from '#graphics/three/react/lights.jsx';
+import { ContactShadow } from '#graphics/three/react/contact-shadow.jsx';
 import type { SectionCut } from '#graphics/section-cuts.js';
 import { SectionClippingGroup } from '#graphics/three/react/section-clipping-group.jsx';
 import { useLiveSectionCutSet, useSectionPieces, useSectionStripes } from '#graphics/three/use-section-view.js';
@@ -171,6 +172,7 @@ export function Stage({
         <SectionViewScene innerRef={innerRef} snapshotRef={sectionSnapshotRef}>
           <group ref={innerRef}>{children}</group>
         </SectionViewScene>
+        <ContactShadow modelRef={innerRef} frameRef={outer} boundsKey={geometryBounds} />
       </group>
       <Lights
         settings={stageOptions.lighting}

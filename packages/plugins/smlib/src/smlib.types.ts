@@ -17,7 +17,8 @@ export type GeometrySmlib = {
   /** Exact solid bounds in native Z-up millimetres. */
   manualBounds?: ManualBounds;
   /** Exact solid volume (mm³) and authored density (g/cm³), never mesh-derived estimates. */
-  physical?: { volumeMm3: number; density: number; massGrams: number };
+  /** Exact volume of the solid; density and mass only when the model gives a density. */
+  physical?: { volumeMm3: number; density?: number; massGrams?: number };
   faces: {
     triangles: number[];
     vertices: number[];
