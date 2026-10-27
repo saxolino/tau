@@ -13,6 +13,8 @@ import type { MascheraBinaria } from '#verifica/silhouette.js';
  *   Felzenszwalb–Huttenlocher, lineare nei pixel).
  * - Obiettivo `f = (1 − IoU_V) + 0,05·chamfer_mm + 0,02·Σ wᵢ·((pᵢ − p̂ᵢ)/σᵢ)² + 0,2·vincoli violati`, con
  *   `σᵢ = max(½·(maxᵢ − minᵢ), 1 unità)` e `wᵢ` la confidenza del classificatore (0 per un parametro non visibile).
+ *   `[minᵢ, maxᵢ]` è l'intervallo plausibile del classificatore quando lo dà (schema D2), altrimenti quello della
+ *   famiglia: con quest'ultimo il prior è debolissimo (σ = metà della gamma: 23,5 mm per la larghezza della seduta).
  */
 
 /** Pesi dell'obiettivo (§3.3). */
@@ -32,6 +34,8 @@ export type ConfrontoMaschera = {
   distanzaContorno: Float32Array;
   /** Pixel di M dentro V. */
   areaValida: number;
+  /** Copertura frazionaria di M (0–1), se la maschera la porta. */
+  copertura?: Float32Array;
 };
 
 /** Esito di un confronto silhouette ↔ maschera. */
@@ -145,7 +149,9 @@ const indiciValidi = (bordo: Uint8Array, valida: Uint8Array): Int32Array => {
  * @param maschera - Maschera di riferimento con la sua regione valida.
  * @returns Il confronto pronto.
  */
-export function preparaConfronto(maschera: MascheraBinaria & { valida: Uint8Array }): ConfrontoMaschera {
+export function preparaConfronto(
+  maschera: MascheraBinaria & { valida: Uint8Array; copertura?: Float32Array },
+): ConfrontoMaschera {
   const { larghezza, altezza, dati, valida } = maschera;
   const bordo = contorno(maschera);
   let areaValida = 0;
@@ -160,7 +166,30 @@ export function preparaConfronto(maschera: MascheraBinaria & { valida: Uint8Arra
     contorno: indiciValidi(bordo, valida),
     distanzaContorno: trasformataDistanza(bordo, larghezza, altezza),
     areaValida,
+    ...(maschera.copertura ? { copertura: maschera.copertura } : {}),
   };
+}
+
+/**
+ * IoU morbido sulla regione valida: `Σ min(s, m) / Σ max(s, m)` con le coperture frazionarie (la binaria di M se la
+ * maschera non porta la copertura). Coincide con l'IoU quando entrambe sono binarie; è continuo sotto il pixel.
+ * @param copertura - Copertura della silhouette (0–1).
+ * @param riferimento - Maschera preparata.
+ * @returns L'IoU morbido.
+ */
+export function iouMorbido(copertura: Float32Array, riferimento: ConfrontoMaschera): number {
+  let [intersezione, unione] = [0, 0];
+  const { valida, dati } = riferimento;
+  const m = riferimento.copertura;
+  for (let p = 0; p < copertura.length; p++) {
+    if (valida[p]) {
+      const s = copertura[p]!;
+      const r = m ? m[p]! : dati[p]!;
+      intersezione += s < r ? s : r;
+      unione += s < r ? r : s;
+    }
+  }
+  return unione === 0 ? 1 : intersezione / unione;
 }
 
 /**
@@ -220,6 +249,11 @@ export type StimaParametri = {
   confidenze?: Readonly<Record<string, number>>;
   /** Chiavi non visibili nella foto: peso 0. */
   nonVisibili?: readonly string[];
+  /**
+   * Intervallo plausibile visto nella foto per chiave (`min`/`max` dello schema D2, §2.4): se c'è, σ è la sua metà;
+   * altrimenti la metà dell'intervallo della famiglia.
+   */
+  intervalli?: Readonly<Record<string, readonly [number, number]>>;
 };
 
 /**
@@ -227,8 +261,11 @@ export type StimaParametri = {
  * @param definizione - Definizione del parametro.
  * @returns σ.
  */
-export function sigmaParametro(definizione: DefinizioneParametro): number {
+export function sigmaParametro(definizione: DefinizioneParametro, intervallo?: readonly [number, number]): number {
   const minimo = definizione.unita === 'frazione' ? 0.05 : 1;
+  if (intervallo) {
+    return Math.max(0.5 * Math.abs(intervallo[1] - intervallo[0]), minimo);
+  }
   if (definizione.min === undefined || definizione.max === undefined) {
     return minimo;
   }
@@ -252,7 +289,7 @@ export function prior(p: unknown, stima: StimaParametri, definizioni: readonly D
       continue;
     }
     const peso = stima.confidenze?.[definizione.chiave] ?? 0.5;
-    somma += peso * ((valore - stimato) / sigmaParametro(definizione)) ** 2;
+    somma += peso * ((valore - stimato) / sigmaParametro(definizione, stima.intervalli?.[definizione.chiave])) ** 2;
   }
   return somma;
 }

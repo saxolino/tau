@@ -4,6 +4,7 @@ import type { DefinizioneParametro } from '#famiglie/famiglia.js';
 import {
   confronta,
   immagineDifferenza,
+  iouMorbido,
   iouValida,
   obiettivo,
   preparaConfronto,
@@ -37,6 +38,24 @@ describe('IoU sulla regione valida', () => {
     const sinistra = Uint8Array.from({ length: lato * lato }, (_, p) => (p % lato < 80 ? 1 : 0));
     expect(iouValida(a, { dati: b.dati, valida: sinistra })).toBeCloseTo(30 / 80, 12);
     expect(iouValida(a, { dati: a.dati, valida: tutta })).toBe(1);
+  });
+});
+
+describe('IoU morbido', () => {
+  it('should equal the IoU on binary masks and move below a pixel with fractional coverage', () => {
+    const a = rettangolo(0, 0, 99, 49);
+    const b = rettangolo(50, 0, 149, 49);
+    const riferimento = preparaConfronto({ ...b, valida: tutta });
+    expect(iouMorbido(Float32Array.from(a.dati), riferimento)).toBeCloseTo(1 / 3, 12);
+    // The reference covers column 150 by a quarter: a silhouette covering it fully loses 0.75 × 50 of overlap.
+    const copertura = Float32Array.from(b.dati);
+    const riferimentoMorbido = preparaConfronto({
+      ...b,
+      valida: tutta,
+      copertura: copertura.map((v, p) => (p % lato === 150 && p < 50 * lato ? 0.25 : v)),
+    });
+    const silhouette = Float32Array.from(rettangolo(50, 0, 150, 49).dati);
+    expect(iouMorbido(silhouette, riferimentoMorbido)).toBeCloseTo((5000 + 12.5) / (5000 + 50), 9);
   });
 });
 
@@ -101,6 +120,14 @@ describe('obiettivo', () => {
       0.8,
       12,
     );
+    // The classifier's plausible interval narrows σ: 80–90 mm gives σ = 5, so 57.5 mm off counts 11.5².
+    expect(sigmaParametro(definizioni[0]!, [80, 90])).toBe(5);
+    const conIntervallo = {
+      ...stima,
+      intervalli: { 'tacco.altezza': [80, 90] as const },
+      nonVisibili: ['vita.scala', 'tappo.lunghezza'],
+    };
+    expect(prior(spostati, conIntervallo, definizioni)).toBeCloseTo(0.8 * 11.5 ** 2, 9);
   });
 
   it('should add IoU, chamfer, prior and constraint terms with the weights of the specification', () => {

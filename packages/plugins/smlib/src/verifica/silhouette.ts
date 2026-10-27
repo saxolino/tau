@@ -122,6 +122,54 @@ export function silhouetteMesh(
   return { larghezza, altezza, dati };
 }
 
+/** Silhouette con copertura frazionaria: `copertura[p]` in [0, 1], e la binaria (copertura ≥ ½). */
+export type SilhouetteMorbida = MascheraBinaria & { copertura: Float32Array };
+
+/**
+ * Silhouette di una mesh con copertura frazionaria: riempimento a `fattore`× la risoluzione e media dei blocchi
+ * (`fattore`² campioni per pixel). Rende l'obiettivo continuo sotto il pixel: con la sola binaria un parametro che
+ * sposta il bordo di 0,3 px non cambia nulla e il simplesso si ferma sui gradini.
+ * @param mesh - Mesh piatta.
+ * @param camera - Camera della verifica.
+ * @param opzioni - Dimensioni (predefinito 256²) e fattore di sovracampionamento (predefinito 4).
+ * @returns Copertura e binaria.
+ */
+export function silhouetteMeshMorbida(
+  mesh: MeshPiatta,
+  camera: CameraVerifica,
+  opzioni: { larghezza?: number; altezza?: number; fattore?: number } = {},
+): SilhouetteMorbida {
+  const larghezza = opzioni.larghezza ?? LATO_VERIFICA;
+  const altezza = opzioni.altezza ?? LATO_VERIFICA;
+  const fattore = opzioni.fattore ?? 4;
+  const fine = silhouetteMesh(
+    mesh,
+    { ...camera, pxPerMm: camera.pxPerMm * fattore },
+    { larghezza: larghezza * fattore, altezza: altezza * fattore },
+  );
+  const copertura = new Float32Array(larghezza * altezza);
+  const dati = new Uint8Array(larghezza * altezza);
+  const larghezzaFine = larghezza * fattore;
+  const peso = 1 / (fattore * fattore);
+  for (let y = 0; y < altezza; y++) {
+    for (let dy = 0; dy < fattore; dy++) {
+      const riga = (y * fattore + dy) * larghezzaFine;
+      for (let x = 0; x < larghezza; x++) {
+        let somma = 0;
+        const inizio = riga + x * fattore;
+        for (let dx = 0; dx < fattore; dx++) {
+          somma += fine.dati[inizio + dx]!;
+        }
+        copertura[y * larghezza + x]! += somma * peso;
+      }
+    }
+  }
+  for (let p = 0; p < copertura.length; p++) {
+    dati[p] = copertura[p]! >= 0.5 ? 1 : 0;
+  }
+  return { larghezza, altezza, dati, copertura };
+}
+
 const EPS = 1e-9;
 
 /* oxlint-disable-next-line max-params -- hot loop: plain numbers, no allocation per triangle. */

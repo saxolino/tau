@@ -48,6 +48,8 @@ export type MomentiMaschera = {
 export type MascheraPreparata = MascheraBinaria & {
   /** Regione valida (1 = il pixel conta nel confronto). */
   valida: Uint8Array;
+  /** Copertura frazionaria di ogni pixel (0–1) prima della soglia: il bordo con precisione sotto il pixel. */
+  copertura: Float32Array;
   /** Fattore foto → maschera: un pixel della foto vale `k` pixel della maschera. */
   k: number;
   /** Angolo in alto a sinistra della maschera nella foto (pixel della foto, frazionari). */
@@ -258,6 +260,7 @@ export function preparaMaschera(immagine: ImmagineRaster, opzioni: OpzioniMasche
 
   const dati = new Uint8Array(lato * lato);
   const valida = new Uint8Array(lato * lato);
+  const coperture = new Float32Array(lato * lato);
   const passo = 1 / k;
   const area = passo * passo;
   const fascia = Math.round((opzioni.fasciaOcclusa ?? 0.08) * lato);
@@ -271,6 +274,7 @@ export function preparaMaschera(immagine: ImmagineRaster, opzioni: OpzioniMasche
       const xb = xa + passo;
       const p = j * lato + i;
       const copertura = (F(xb, yb) - F(xa, yb) - F(xb, ya) + F(xa, ya)) / area;
+      coperture[p] = copertura;
       dati[p] = copertura >= 0.5 ? 1 : 0;
       const dentro = (Math.max(0, Math.min(W, xb) - Math.max(0, xa)) * dentroY) / area;
       const inFascia =
@@ -285,6 +289,7 @@ export function preparaMaschera(immagine: ImmagineRaster, opzioni: OpzioniMasche
   return {
     ...maschera,
     valida,
+    copertura: coperture,
     k,
     origine,
     riquadroFoto: componente.riquadro,

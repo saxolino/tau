@@ -4,7 +4,14 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type * as Smlib from '@classcad/smlibwasm';
 import { assiCamera, vistaRender } from '#verifica/camera.js';
 import type { CameraVerifica } from '#verifica/camera.js';
-import { meshDaForme, riquadro, silhouetteMesh, silhouetteRender, tolleranzaPerPixel } from '#verifica/silhouette.js';
+import {
+  meshDaForme,
+  riquadro,
+  silhouetteMesh,
+  silhouetteMeshMorbida,
+  silhouetteRender,
+  tolleranzaPerPixel,
+} from '#verifica/silhouette.js';
 import type { MascheraBinaria } from '#verifica/silhouette.js';
 import { famiglie } from '#famiglie/registro.js';
 
@@ -146,6 +153,16 @@ describe('silhouette del solido', () => {
     // Path B samples pixel centres (40 columns, 108–147); render lights every touched pixel (41, 108–148).
     expect(riquadro(viaB)).toEqual([108, 108, 147, 147]);
     expect(riquadro(viaA)).toEqual([108, 108, 148, 148]);
+  });
+
+  it('should give fractional coverage that adds up to the projected area (supersampled path B)', () => {
+    // A 10 mm cube at 4 px/mm shifted by a third of a pixel: 1600 px² of area, split over the border pixels.
+    const cubo = lib.Box(10, 10, 10);
+    const morbida = silhouetteMeshMorbida(meshDaForme(lib, [cubo], 0.01), camera({ cx: 1 / 12, cy: -1 / 12 }));
+    const area = morbida.copertura.reduce((somma, valore) => somma + valore, 0);
+    expect(area).toBeCloseTo(1600, 0);
+    expect(morbida.copertura.some((valore) => valore > 0 && valore < 1)).toBe(true);
+    expect(morbida.dati.reduce((somma, valore) => somma + valore, 0)).toBe(1600);
   });
 
   it('should agree between render and the mesh fill on a heel and a buckle seen three-quarters with roll', () => {
