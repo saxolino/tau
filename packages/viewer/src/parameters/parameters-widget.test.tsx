@@ -94,6 +94,14 @@ describe('ParametersWidget number hardening', () => {
     expect(onChange).toHaveBeenLastCalledWith(0.9);
   });
 
+  it('should read a number RJSF formatted with the locale separator, instead of showing the field unset', () => {
+    // RJSF 6.11 NumberField hands «3,6» to a text widget when the browser's decimal separator is a comma.
+    renderWidget(widgetProps({ value: '3,6' }));
+
+    const input = screen.getByRole('spinbutton', { name: 'Input for Width' });
+    expect(input).toHaveAttribute('aria-valuenow', '3.6');
+  });
+
   it('should render an empty field with the schema default as its placeholder for undefined values', () => {
     renderWidget(widgetProps({ value: undefined }));
 
