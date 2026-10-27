@@ -15,6 +15,7 @@ import type { ActorRefFrom } from 'xstate';
 import { ChatInterface } from '#routes/w.$workspace.$project/chat-interface.js';
 import { ProjectProvider, useProject } from '#hooks/use-project.js';
 import { ProjectWorkspaceProvider } from '#routes/w.$workspace.$project/project-workspace-context.js';
+import { ProducibilitaProvider } from '#routes/w.$workspace.$project/producibilita-context.js';
 import { WorkbenchRecordHost } from '#routes/w.$workspace.$project/workbench-record-host.js';
 import { ProjectPrintRouteIntent } from '#routes/w.$workspace.$project/project-print-route-intent.js';
 import { ProjectShareRouteIntent } from '#routes/w.$workspace.$project/project-share-action.js';
@@ -610,20 +611,23 @@ function ProjectSession({
               <RevisionSaveShortcut isFocused={focused} />
               <MonacoModelServiceProvider>
                 <ChatWorkspaceAuthorityProvider>
-                  <ProjectWorkspaceProvider>
-                    <WorkbenchRecordHost />
-                    <ProjectShareRouteIntent />
-                    <ProjectPrintRouteIntent />
-                    <RevisionRestore />
-                    {/* AC14: *Ask chat to resolve* seeds one chat, bound to the
+                  {/* E1: the producibility checks, read by the inspector, Esporta, the viewer and the assistant. */}
+                  <ProducibilitaProvider>
+                    <ProjectWorkspaceProvider>
+                      <WorkbenchRecordHost />
+                      <ProjectShareRouteIntent />
+                      <ProjectPrintRouteIntent />
+                      <RevisionRestore />
+                      {/* AC14: *Ask chat to resolve* seeds one chat, bound to the
                         conflict its turn is being started for. */}
-                    <RevisionConflictChat />
-                    {/* S27: the workbench follows the selected checkout's route. */}
-                    <WorkbenchCheckoutRoot />
-                    {/* A4: the two outcomes that record no revision are not silent. */}
-                    <RevisionOutcomes />
-                    {children}
-                  </ProjectWorkspaceProvider>
+                      <RevisionConflictChat />
+                      {/* S27: the workbench follows the selected checkout's route. */}
+                      <WorkbenchCheckoutRoot />
+                      {/* A4: the two outcomes that record no revision are not silent. */}
+                      <RevisionOutcomes />
+                      {children}
+                    </ProjectWorkspaceProvider>
+                  </ProducibilitaProvider>
                 </ChatWorkspaceAuthorityProvider>
               </MonacoModelServiceProvider>
             </>

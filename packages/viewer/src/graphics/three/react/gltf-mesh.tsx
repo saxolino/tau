@@ -4,6 +4,8 @@ import type { DirectEditTool } from '#graphics/three/react/direct-edit-tool.js';
 import type { ModelPickResult } from '#graphics/three/utils/model-gpu-pick.js';
 import { fromRenderPoint } from '@taucad/spatial';
 import { PlanarFaceControls } from '#graphics/three/react/planar-face-controls.jsx';
+import { ProducibilityOverlayMesh } from '#graphics/three/react/producibility-overlay.jsx';
+import type { ProducibilityOverlay } from '#graphics/three/react/producibility-overlay.types.js';
 import type { PlanarFaceTool } from '#graphics/three/react/planar-face-tool.js';
 import { installSectionClip, transferSectionClip } from '#graphics/three/materials/section-clip.js';
 import {
@@ -341,6 +343,8 @@ export function restoreOriginalMaterials(scene: Group, saved: Map<number, Materi
 type GltfMeshDisplayProperties = {
   readonly planarFaceTool?: PlanarFaceTool;
   readonly directEditTool?: DirectEditTool;
+  /** The producibility veil the host asks for (E1): faces of a check, a draft map, a whole piece. */
+  readonly producibilityOverlay?: ProducibilityOverlay;
   /**
    * The GLTF file to load.
    */
@@ -2064,6 +2068,7 @@ export function GltfMesh({
   gltfFile,
   planarFaceTool,
   directEditTool,
+  producibilityOverlay,
   sourceFile,
   geometryHash,
   presentationRevision = 0,
@@ -2115,7 +2120,10 @@ export function GltfMesh({
   const isSubElementSelected =
     activePlanarFaceTool?.selection !== undefined || (activeDirectEditTool?.selection?.edgeIds?.length ?? 0) > 0;
   const needsMeasurementFeatures =
-    hasMeasurementDemand || activePlanarFaceTool !== undefined || activeDirectEditTool !== undefined;
+    hasMeasurementDemand ||
+    activePlanarFaceTool !== undefined ||
+    activeDirectEditTool !== undefined ||
+    (producibilityOverlay?.pieces.length ?? 0) > 0;
   const measurementDemandRef = useRef(needsMeasurementFeatures);
   useLayoutEffect(() => {
     measurementDemandRef.current = needsMeasurementFeatures;
@@ -2899,6 +2907,7 @@ export function GltfMesh({
 
   return (
     <>
+      <ProducibilityOverlayMesh overlay={producibilityOverlay} artifactKey={presentation.key} scene={scene} />
       {activePlanarFaceTool ? (
         <PlanarFaceControls tool={activePlanarFaceTool} artifactKey={presentation.key} scene={scene} />
       ) : null}

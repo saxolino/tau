@@ -18,6 +18,7 @@ import { createPortal } from 'react-dom';
 import { manualDocumentSchema } from '@taucad/smlib/manual-operations';
 import { randomUuid } from '@taucad/utils/id';
 import { useSelectedPiece } from '#hooks/use-selected-piece.js';
+import { useProducibilityOverlay } from '#routes/w.$workspace.$project/producibilita-context.js';
 import { faceDirection } from '#lib/inspector-selection.js';
 import { GestureQuota } from '#routes/w.$workspace.$project/gesture-quota.js';
 import type { FileEntry } from '@taucad/types';
@@ -723,6 +724,8 @@ const ViewerContent = memo(function ({
   const previews = useSyncExternalStore(subscribePreviews, getPreviewSnapshot, getPreviewSnapshot);
   const presentedArtifact = useGraphicsSelector((state) => state.context.artifact);
   const presentedArtifactKey = useGraphicsSelector((state) => state.context.artifactKey);
+  // E1: the check in focus in the inspector, tinted on the model it was measured on.
+  const producibilityOverlay = useProducibilityOverlay();
   const presentedSourceFile = useGraphicsSelector((state) => state.context.artifactSourceFile);
   const presentedKey = useGraphicsSelector((state) => state.context.gltfPresentation.presentedKey);
   // Only the settled key (a primitive): selecting the whole presentation object re-rendered the viewer on every
@@ -1138,6 +1141,7 @@ const ViewerContent = memo(function ({
               <CadViewer
                 planarFaceTool={faceTool.tool}
                 directEditTool={directTool.tool}
+                producibilityOverlay={producibilityOverlay}
                 enableZoom
                 enablePan
                 secondaryMouseButtonMode='camera-pan'
