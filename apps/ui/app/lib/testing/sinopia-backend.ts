@@ -117,6 +117,24 @@ const readBody = async (request: Request): Promise<unknown> => {
   return text === '' ? undefined : (JSON.parse(text) as unknown);
 };
 
+/** The `sinopiacad` function's catalog as the pilot list answers it. */
+const pilotAnswer = (pilot: NonNullable<SinopiaTestAccount['pilot']>): Response => {
+  switch (pilot) {
+    case 'allowed': {
+      return Response.json([]);
+    }
+    case 'reserved': {
+      return Response.json({ error: { type: 'CAD_PILOT_NOT_ALLOWED', message: 'pilota' } }, { status: 403 });
+    }
+    case 'restricted': {
+      return Response.json({ error: { type: 'BILLING_ACCOUNT_RESTRICTED', message: 'pilota' } }, { status: 403 });
+    }
+    case 'failing': {
+      return Response.json({ message: 'boom', code: 'XX000' }, { status: 500 });
+    }
+  }
+};
+
 /** The scripted project: every call it received, in order, and the `fetch` stub. */
 export type SinopiaTestBackend = { readonly calls: SinopiaTestCall[]; readonly fetchMock: Mock<typeof fetch> };
 
@@ -173,20 +191,7 @@ export const scriptSinopiaBackend = (
         return failing.includes('terms') ? failure() : Response.json(termsRows);
       }
       case '/v1/models': {
-        switch (account.pilot ?? 'allowed') {
-          case 'allowed': {
-            return Response.json([]);
-          }
-          case 'reserved': {
-            return Response.json({ error: { type: 'CAD_PILOT_NOT_ALLOWED', message: 'pilota' } }, { status: 403 });
-          }
-          case 'restricted': {
-            return Response.json({ error: { type: 'BILLING_ACCOUNT_RESTRICTED', message: 'pilota' } }, { status: 403 });
-          }
-          case 'failing': {
-            return failure();
-          }
-        }
+        return pilotAnswer(account.pilot ?? 'allowed');
       }
       default: {
         return Response.json({ message: 'unexpected' }, { status: 500 });

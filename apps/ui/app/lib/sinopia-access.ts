@@ -205,7 +205,7 @@ export const checkSinopiaPilot = async (
   token: string,
   options: Readonly<{ base?: string; fetch?: typeof fetch }> = {},
 ): Promise<SinopiaPilotVerdict | undefined> => {
-  let base = options.base;
+  let { base } = options;
   if (base === undefined) {
     try {
       base = requireClientEnvironment('TAU_API_URL');

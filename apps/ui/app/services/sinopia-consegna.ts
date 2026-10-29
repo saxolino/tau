@@ -219,6 +219,26 @@ const fileValido = (file: ExportFile | undefined, mime: string): file is ExportF
   file !== undefined && file.bytes.length > 0 && file.mimeType === mime;
 
 /**
+ * The vertical of the model's Sinopia project, as the project says it: never assumed.
+ *
+ * @param client - The admitted client.
+ * @param projectId - The model's Sinopia project.
+ * @returns The vertical, or `undefined` when the project names none.
+ */
+async function verticaleDelProgetto(client: Sessione['client'], projectId: string): Promise<string | undefined> {
+  const progetto = await client.from('projects').select('vertical').eq('id', projectId).maybeSingle();
+  if (progetto.error !== null) {
+    console.error('[sinopia-consegna] the project’s vertical cannot be read', progetto.error);
+    throw new SinopiaConsegnaError('failed');
+  }
+  if (progetto.data === null) {
+    throw new SinopiaConsegnaError('project');
+  }
+  const { vertical } = progetto.data as { vertical?: unknown };
+  return typeof vertical === 'string' ? vertical : undefined;
+}
+
+/**
  * Save the part in the account's Library: the vertical of the model's Sinopia project first (read, never assumed), then
  * photo, STEP and GLB in the account's private folder, then the row. The row names the photo by the «public» address of
  * its private path, as Sinopia names private media: Sinopia's media service worker serves it with the session, and the
@@ -267,16 +287,8 @@ export async function salvaInLibreria(
   }
   signal?.throwIfAborted();
   const { client, userId } = sessione;
-  // The project's vertical, read before anything is uploaded: a failed read or a missing project stops the save.
-  const progetto = await client.from('projects').select('vertical').eq('id', link.projectId).maybeSingle();
-  if (progetto.error !== null) {
-    console.error('[sinopia-consegna] the project’s vertical cannot be read', progetto.error);
-    throw new SinopiaConsegnaError('failed');
-  }
-  if (progetto.data === null) {
-    throw new SinopiaConsegnaError('project');
-  }
-  const vertical = (progetto.data as { vertical?: unknown }).vertical;
+  // Read before anything is uploaded: a failed read or a missing project stops the save.
+  const vertical = await verticaleDelProgetto(client, link.projectId);
   signal?.throwIfAborted();
   const id = randomUuid();
   const percorsi = percorsiLibreria(userId, id);
@@ -307,7 +319,7 @@ export async function salvaInLibreria(
       userId,
       nome: input.nome,
       tipo: input.tipo,
-      vertical: typeof vertical === 'string' ? vertical : undefined,
+      vertical,
       immagine: indirizzoFoto,
       ...(input.materiale ? { materiale: input.materiale } : {}),
       larghezza: input.larghezza,
