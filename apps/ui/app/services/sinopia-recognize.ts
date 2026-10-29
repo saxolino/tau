@@ -18,6 +18,7 @@ import type { ImmaginiRiconoscimento } from '#services/riconoscimento-immagini.j
 export type CodiceErroreRiconoscimento =
   | 'UNAUTHENTICATED'
   | 'BILLING_ACCOUNT_RESTRICTED'
+  | 'CAD_PILOT_NOT_ALLOWED'
   | 'RATE_LIMITED'
   | 'INVALID_REQUEST'
   | 'RECOGNITION_INVALID'
@@ -77,6 +78,7 @@ export type EsitoRiconoscimento = z.infer<typeof rispostaSchema>;
 const codici = new Set<CodiceErroreRiconoscimento>([
   'UNAUTHENTICATED',
   'BILLING_ACCOUNT_RESTRICTED',
+  'CAD_PILOT_NOT_ALLOWED',
   'RATE_LIMITED',
   'INVALID_REQUEST',
   'RECOGNITION_INVALID',
@@ -89,12 +91,67 @@ const codici = new Set<CodiceErroreRiconoscimento>([
   'AI_REQUEST_CONFLICT',
 ]);
 
+/** The request a visit of «/cad/nuovo» booked: its id and the language its reasons were asked in. */
+export type RichiestaRiconoscimento = Readonly<{ requestId: string; lingua: 'it' | 'en' }>;
+
+const richiestaSchema = z.object({ requestId: z.uuid(), lingua: z.enum(['it', 'en']) });
+const chiaveRichiesta = (visita: string): string => `sinopiacad:riconoscimento:${visita}`;
+
+/**
+ * The tab's memory of the recognition each visit booked (`sessionStorage`). A reload, or the page mounted again, sends
+ * the same request with the same id and language: Sinopia's idempotency answers it again without a second charge.
+ * Without storage every mount books its own request, as before.
+ */
+export const richiestaRiconoscimento = {
+  leggi(visita: string): RichiestaRiconoscimento | undefined {
+    try {
+      const letta = richiestaSchema.safeParse(JSON.parse(sessionStorage.getItem(chiaveRichiesta(visita)) ?? 'null'));
+      return letta.success ? letta.data : undefined;
+    } catch {
+      return undefined;
+    }
+  },
+  nuova(visita: string, lingua: 'it' | 'en'): RichiestaRiconoscimento {
+    const richiesta = { requestId: randomUuid(), lingua };
+    try {
+      sessionStorage.setItem(chiaveRichiesta(visita), JSON.stringify(richiesta));
+    } catch {
+      /* Without storage the request still goes out; only a reload would book another. */
+    }
+    return richiesta;
+  },
+};
+
+/**
+ * Make one recognition of a visit under its stable request. An id Sinopia no longer accepts (a request already refunded,
+ * or the same id with another body: `AI_REQUEST_CONFLICT`) is replaced once by a new one.
+ *
+ * @param visita - The visit and round the request belongs to.
+ * @param lingua - The language a new request asks its reasons in.
+ * @param fai - The call, with the request id and language to send.
+ * @returns The recognition.
+ */
+export async function riconosciUnaVolta<T>(
+  visita: string,
+  lingua: 'it' | 'en',
+  fai: (richiesta: RichiestaRiconoscimento) => Promise<T>,
+): Promise<T> {
+  try {
+    return await fai(richiestaRiconoscimento.leggi(visita) ?? richiestaRiconoscimento.nuova(visita, lingua));
+  } catch (error) {
+    if (error instanceof ErroreRiconoscimento && error.codice === 'AI_REQUEST_CONFLICT') {
+      return fai(richiestaRiconoscimento.nuova(visita, lingua));
+    }
+    throw error;
+  }
+}
+
 /** The price of a recognition, `cad_recognize` in `credit_costs`; `undefined` while the row does not exist. */
 const prezzoRiconoscimento = async (): Promise<number | undefined> => (await leggiPrezziCad()).cad_recognize;
 
 /**
  * Ask Sinopia's function to recognise a part. A recognition costs credits (`cad_recognize`): the price is read first and
- * travels as the approved ceiling (`maxCreditCost`) with a fresh `requestId`; while the price row does not exist the
+ * travels as the approved ceiling (`maxCreditCost`) with the caller's `requestId` (a fresh one without it); while the price row does not exist the
  * call is not made at all.
  *
  * @param richiesta - The part sheet, the two pictures and the language of the reasons.
