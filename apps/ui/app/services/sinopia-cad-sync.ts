@@ -167,10 +167,15 @@ export function createSinopiaCadSync(initialLink: SinopiaCadLink, port: SinopiaC
     deferred = true;
     publish({ kind: 'conflict', remote });
   };
-  const fail = (error: unknown, remote?: SinopiaCadModel): void => {
+  /**
+   * @param error - What failed.
+   * @param remote - The Sinopia copy a conflict resolution was about, kept for «Riprova».
+   * @param refused - The revision the refusal was about (the one the save sent): a revision minted meanwhile is not it.
+   */
+  const fail = (error: unknown, remote?: SinopiaCadModel, refused: string | undefined = observation.revisionId): void => {
     const permanent = permanentSinopiaCadFailure(error);
     if (permanent === 'tooLarge') {
-      refusedRevision = observation.revisionId;
+      refusedRevision = refused;
     }
     publish(
       permanent === undefined ? { kind: 'failed', ...(remote === undefined ? {} : { remote }) } : { kind: permanent },
@@ -344,6 +349,9 @@ export function createSinopiaCadSync(initialLink: SinopiaCadLink, port: SinopiaC
     running = true;
     urgent = false;
     previewRetryOwed = false;
+    /* The revision this save is about: a lost acknowledgement's, else the checkout's now. A failed record write keeps
+       the old baseline; the next retry recognizes its own immutable remote head. */
+    const savedRevision = acknowledged?.revisionId ?? current.revisionId;
     publish({ kind: 'saving' });
     try {
       const result: Awaited<ReturnType<SinopiaCadSyncPort['save']>> =
@@ -362,8 +370,6 @@ export function createSinopiaCadSync(initialLink: SinopiaCadLink, port: SinopiaC
         conflict(result.remote);
         return;
       }
-      // A failed record write keeps the old baseline; next retry recognizes its own immutable remote head.
-      const savedRevision = acknowledged?.revisionId ?? current.revisionId;
       const next = { ...result.link, localRevisionId: savedRevision, previewPending: result.previewPending ?? false };
       acknowledged = { link: next, revisionId: savedRevision, at: result.at };
       await port.persist(next);
@@ -379,7 +385,8 @@ export function createSinopiaCadSync(initialLink: SinopiaCadLink, port: SinopiaC
       const adopted = adoptedLinkOf(error);
       if (adopted === undefined) {
         console.error('[sinopia] save failed', error);
-        fail(error);
+        // The refusal is about the revision this save sent, whatever was minted while it was in flight.
+        fail(error, undefined, savedRevision);
       } else {
         // Find or create: this piece already is that model on Sinopia. Work on it from now on; its newer copy there
         // makes the next check ask which version to keep, instead of a second model of the same part.

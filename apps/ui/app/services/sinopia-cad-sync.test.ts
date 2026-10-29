@@ -332,6 +332,32 @@ describe('Sinopia revision queue', () => {
         sync.dispose();
       },
     );
+    it('a «too large» refusal is about the revision that was sent, not the one minted while it was in flight', async () => {
+      const port = ports();
+      let refuse: (error: Error) => void = () => undefined;
+      port.save.mockImplementationOnce(
+        async () =>
+          new Promise((_resolve, reject) => {
+            refuse = reject;
+          }),
+      );
+      const sync = createSinopiaCadSync(link, port);
+      sync.observe(observation(second));
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(port.save).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ revisionId: second }));
+      // The person keeps working: a smaller revision is minted while the upload of the big one is still in flight.
+      sync.observe(observation(third));
+      refuse(new Error('ARCHIVE_TOO_LARGE'));
+      await settle();
+      expect(sync.getState().kind).toBe('tooLarge');
+      // The refusal was about `second`: `third` is a new revision and is tried, not kept «too large» for nothing.
+      sync.observe(observation(third));
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(port.save).toHaveBeenCalledTimes(2);
+      expect(port.save).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ revisionId: third }));
+      expect(sync.getState().kind).toBe('saved');
+      sync.dispose();
+    });
     it('does not claim a failed save when Sinopia is unreachable and nothing waits to be saved (difetto 28)', async () => {
       const port = ports();
       port.read.mockRejectedValue(new TypeError('Failed to fetch'));
