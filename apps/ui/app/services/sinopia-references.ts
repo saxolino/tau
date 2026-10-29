@@ -382,6 +382,25 @@ export async function listSinopiaReferenceImages(
   return images;
 }
 
+/**
+ * The name of one of the admitted account's Sinopia projects, for a caption («Da Sinopia · <name>»). Undefined when it
+ * cannot be read: offline, deleted, another account's, or the account changed while reading.
+ */
+export async function readSinopiaProjectName(projectId: string, signal?: AbortSignal): Promise<string | undefined> {
+  const { client, userId } = await getSinopiaDataClient();
+  let query = client.from('projects').select('name').eq('id', projectId).eq('user_id', userId).is('deleted_at', null);
+  if (signal) {
+    query = query.abortSignal(signal);
+  }
+  const { data, error } = await query.maybeSingle();
+  const parsed = z.object({ name: z.string() }).safeParse(data);
+  if (error !== null || !parsed.success) {
+    return undefined;
+  }
+  const current = await getSinopiaDataClient();
+  return current.userId === userId ? parsed.data.name.trim() || undefined : undefined;
+}
+
 /** Download with the current admitted user's JWT through Storage; no public or signed URLs enter the composer. */
 export async function downloadSinopiaReferenceImage(
   image: Readonly<{ userId: string; projectId: string; location: SinopiaImageLocation }>,

@@ -197,6 +197,36 @@ describe('NewProjectChatComposer', () => {
     );
   });
 
+  // SinopiaCAD: an uploaded or pasted picture becomes the model's reference (`riferimenti/`), versioned with the model,
+  // so the viewer shows it after a reload and on another device; the chat keeps its own attachment.
+  it('copies the uploaded picture beside the model as its reference, and no document', async () => {
+    const hash = 'a'.repeat(64);
+    attachmentSource = '/.tau/composers/marketing/attachments';
+    draftAttachments = [
+      { hash, mediaType: 'image/jpeg', filename: 'Tacco a spillo.jpg' },
+      { hash: 'b'.repeat(64), mediaType: 'application/pdf', filename: 'spec.pdf' },
+    ];
+    const bytes = new Uint8Array([1, 2, 3]);
+    const { useFileManager } = await import('#hooks/use-file-manager.js');
+    const { recordFiles } = useFileManager();
+    vi.mocked(recordFiles.readFile).mockImplementation((async (path: string) => {
+      if (path === `/.tau/composers/marketing/attachments/${hash}.jpg`) {
+        return bytes;
+      }
+      throw new Error(`ENOENT: ${path}`);
+    }) as RecordFilesClient['readFile']);
+    render(<NewProjectChatComposer />);
+
+    await act(async () => {
+      await capturedTextarea?.onSubmit({ content: 'Un tacco', attachments: [] });
+    });
+
+    expect(mockCreateProject).toHaveBeenCalledWith(
+      expect.objectContaining({ files: { 'riferimenti/tacco-a-spillo.jpg': { content: bytes } } }),
+    );
+    vi.mocked(recordFiles.readFile).mockReset();
+  });
+
   it('focuses the composer when a navigation asks for it, including a return to an already-mounted Home', () => {
     const { rerender } = render(<NewProjectChatComposer />);
     expect(mockFocus).not.toHaveBeenCalled();
