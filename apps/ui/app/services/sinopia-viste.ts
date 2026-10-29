@@ -265,7 +265,17 @@ export async function generaVista(
 // ─── Memoria della visita ────────────────────────────────────────────────────────────────────────────────────────
 
 const richiestaSchema = z.object({ requestId: z.uuid() });
-const statoVisitaSchema = z.object({ giro: z.number().int().nonnegative(), confermata: z.boolean() });
+const statoVisitaSchema = z.object({
+  giro: z.number().int().nonnegative(),
+  confermata: z.boolean(),
+  /**
+   * I prezzi che la persona ha visto e confermato (crediti): viaggiano come tetto (`maxCreditCost`) di ogni chiamata
+   * della visita, così un prezzo salito dopo il clic risponde `CREDIT_COST_CHANGED` e si chiede di nuovo la conferma.
+   */
+  prezzi: z
+    .object({ riconoscimento: z.number().int().nonnegative(), vista: z.number().int().nonnegative() })
+    .optional(),
+});
 
 /** La chiave di `sessionStorage` della richiesta di una vista: visita, giro, ruolo (§2.2). */
 export const chiaveVista = (visita: string, giro: number, ruolo: RuoloVista): string =>

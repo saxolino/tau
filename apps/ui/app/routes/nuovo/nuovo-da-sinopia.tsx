@@ -325,7 +325,9 @@ export function NuovoDaSinopia(): React.JSX.Element {
                 ) : null}
                 {fase.fase === 'errore' && fase.senzaViste ? (
                   <Button size='sm' variant='outline' onClick={continuaSenzaViste}>
-                    {t('riconoscimento.generatedViews.continueWithout')}
+                    {fase.conPrincipale
+                      ? t('riconoscimento.generatedViews.continueWithMain')
+                      : t('riconoscimento.generatedViews.continueWithout')}
                   </Button>
                 ) : null}
                 <Button size='sm' variant='outline' asChild>

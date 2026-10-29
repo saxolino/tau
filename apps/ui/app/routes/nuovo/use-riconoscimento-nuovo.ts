@@ -149,6 +149,8 @@ export type FaseNuovo =
       riprova: boolean;
       /** The views failed in a way that can be skipped: «Continua senza viste». */
       senzaViste?: boolean;
+      /** The main view is already paid and ready: the way on keeps it («Continua con la vista principale»). */
+      conPrincipale?: boolean;
     }>;
 
 const messaggioParte: Record<ErroreParte['codice'], PlainMessageKey> = {
@@ -250,10 +252,17 @@ class FermoViste extends Error {
   public readonly senzaViste: boolean;
   /** The price changed: the cost is shown again before going on. */
   public readonly riconferma: boolean;
+  /** The views of this round already paid and ready when the flow stopped: going on keeps them. */
+  public readonly pronte: readonly VistaPronta[];
 
   public constructor(
     messaggio: PlainMessageKey,
-    modo: Readonly<{ riprova: boolean; senzaViste?: boolean; riconferma?: boolean }>,
+    modo: Readonly<{
+      riprova: boolean;
+      senzaViste?: boolean;
+      riconferma?: boolean;
+      pronte?: readonly VistaPronta[];
+    }>,
   ) {
     super(messaggio);
     this.name = 'FermoViste';
@@ -261,6 +270,7 @@ class FermoViste extends Error {
     this.riprova = modo.riprova;
     this.senzaViste = modo.senzaViste ?? false;
     this.riconferma = modo.riconferma ?? false;
+    this.pronte = modo.pronte ?? [];
   }
 }
 
@@ -308,6 +318,15 @@ export function useRiconoscimentoNuovo(
   const visita = useRef('');
   /** «Continua senza viste»: this visit goes on with the photo alone. */
   const senzaViste = useRef(false);
+  /**
+   * «Continua con la vista principale»: the views of a round already paid when the control failed, kept for the next
+   * run of the flow (visit and round), so the recognition gets them and nothing is generated again.
+   */
+  const visteTenute = useRef<{ chiave: string; viste: readonly VistaPronta[] } | undefined>(undefined);
+  /** The views of the round that stopped the flow, until the designer chooses how to go on. */
+  const visteFerme = useRef<{ chiave: string; viste: readonly VistaPronta[] } | undefined>(undefined);
+  /** The prices read in the last run, for «Rigenera le viste» (its button shows them). */
+  const prezziLetti = useRef<{ riconoscimento: number; vista: number } | undefined>(undefined);
   const [fase, setFase] = useState<FaseNuovo>(
     lettura.stato === 'incompleto'
       ? { fase: 'errore', messaggio: 'riconoscimento.errors.incomplete', riprova: false }
@@ -492,7 +511,7 @@ export function useRiconoscimentoNuovo(
           }
           const immagini = immaginiRientro.current;
           // The second round belongs to the round of views: after «Rigenera» it is a new request.
-          const giroViste = statoVisita.leggi(visita.current).giro;
+          const { giro: giroViste, prezzi: confermati } = statoVisita.leggi(visita.current);
           const seconda = await riconosciUnaVolta(
             `${visita.current}:${String(giroViste)}:rientro`,
             lingua,
@@ -504,7 +523,11 @@ export function useRiconoscimentoNuovo(
                   lingua: richiesta.lingua,
                   rientro: { differenzaPng, testo, iou },
                 },
-                { segnale, requestId: richiesta.requestId },
+                {
+                  segnale,
+                  requestId: richiesta.requestId,
+                  ...(confermati ? { prezzo: async () => confermati.riconoscimento } : {}),
+                },
               ),
           );
           return seconda.scheda;
@@ -707,6 +730,7 @@ export function useRiconoscimentoNuovo(
       const prezzoVista = prezzi.vista ?? 0;
       const quante = prezzi.vista === undefined ? 0 : piano.quante;
       costoRigenera.current = prezzi.riconoscimento + 2 * prezzoVista;
+      prezziLetti.current = { riconoscimento: prezzi.riconoscimento, vista: prezzoVista };
       const stato = statoVisita.leggi(visitaFlusso);
       if (!stato.confermata) {
         setFase({
@@ -723,11 +747,19 @@ export function useRiconoscimentoNuovo(
         return;
       }
       const giroViste = stato.giro;
+      // The ceilings of every paid call of the visit: the prices the designer confirmed (a visit confirmed before they
+      // were kept falls back on the prices just read). A price raised since then answers `CREDIT_COST_CHANGED`.
+      const tetti = stato.prezzi ?? { riconoscimento: prezzi.riconoscimento, vista: prezzoVista };
+      const chiaveGiro = `${visitaFlusso}:${String(giroViste)}`;
       // The views: the main one (reused from the «Parte isolata» card, or generated), then the control.
       let viste: VistaPronta[] = [];
-      if (quante > 0 && piano.famiglia !== undefined) {
+      const tenute = visteTenute.current?.chiave === chiaveGiro ? visteTenute.current.viste : undefined;
+      if (tenute) {
+        viste = [...tenute];
+      } else if (quante > 0 && piano.famiglia !== undefined) {
         try {
           viste = await ottieniViste({
+            prezzoVista: tetti.vista,
             parte,
             famiglia: piano.famiglia,
             // A new round never reuses the Studio's view: it may be the one that did not match.
@@ -747,21 +779,33 @@ export function useRiconoscimentoNuovo(
           }
           if (error instanceof FermoViste) {
             if (error.riconferma) {
-              statoVisita.scrivi(visitaFlusso, { ...stato, confermata: false });
+              const { prezzi: _confermati, ...senzaPrezzi } = stato;
+              statoVisita.scrivi(visitaFlusso, { ...senzaPrezzi, confermata: false });
               setGiro((numero) => numero + 1);
               return;
             }
+            const conPrincipale = error.pronte.some((vista) => vista.ruolo === 'principale');
+            visteFerme.current = { chiave: chiaveGiro, viste: error.pronte };
             setFase({
               fase: 'errore',
               parte,
               messaggio: error.messaggio,
               riprova: error.riprova,
               ...(error.senzaViste ? { senzaViste: true } : {}),
+              ...(error.senzaViste && conPrincipale ? { conPrincipale: true } : {}),
             });
             return;
           }
+          // Anything else after the views were paid (a download, a mask): say so, «Riprova» replays them for free.
           console.error('The views failed:', error);
-          viste = [];
+          setFase({
+            fase: 'errore',
+            parte,
+            messaggio: 'riconoscimento.generatedViews.unavailable',
+            riprova: true,
+            senzaViste: true,
+          });
+          return;
         }
       }
       if (annullato()) {
@@ -809,12 +853,35 @@ export function useRiconoscimentoNuovo(
                   ...(vistePerRiconoscimento.length > 0 ? { viste: vistePerRiconoscimento } : {}),
                   ...(misure ? { misure } : {}),
                 },
-                { segnale: signal, requestId: richiesta.requestId },
+                {
+                  segnale: signal,
+                  requestId: richiesta.requestId,
+                  prezzo: async () => tetti.riconoscimento,
+                },
               ),
           );
         }
       } catch (error) {
         if (annullato()) {
+          return;
+        }
+        if (error instanceof ErroreRiconoscimento && error.codice === 'CREDIT_COST_CHANGED') {
+          // The price rose after «Costruisci»: nothing was charged, the new cost is shown again.
+          const { prezzi: _confermati, ...senzaPrezzi } = stato;
+          statoVisita.scrivi(visitaFlusso, { ...senzaPrezzi, confermata: false });
+          setGiro((numero) => numero + 1);
+          return;
+        }
+        if (error instanceof ErroreRiconoscimento && error.codice === 'REQUEST_TOO_LARGE' && viste.length > 0) {
+          // The photo and the views together are too large: the recognition is made again with the photo alone.
+          visteFerme.current = undefined;
+          setFase({
+            fase: 'errore',
+            parte,
+            messaggio: 'riconoscimento.errors.tooLargeWithViews',
+            riprova: false,
+            senzaViste: true,
+          });
           return;
         }
         // The address and the «Riprova» count are what restart this flow, so a failure names them.
@@ -873,7 +940,12 @@ export function useRiconoscimentoNuovo(
     if (fase.fase !== 'conferma') {
       return;
     }
-    statoVisita.scrivi(visita.current, { ...statoVisita.leggi(visita.current), confermata: true });
+    // The prices shown on the button become the ceilings of every paid call of this visit.
+    statoVisita.scrivi(visita.current, {
+      ...statoVisita.leggi(visita.current),
+      confermata: true,
+      prezzi: { riconoscimento: fase.costo.riconoscimento, vista: fase.costo.prezzoVista },
+    });
     setGiro((numero) => numero + 1);
   }, [fase]);
   const scegliFamiglia = useCallback(
@@ -893,7 +965,14 @@ export function useRiconoscimentoNuovo(
     setGiro((numero) => numero + 1);
   }, []);
   const continuaSenzaViste = useCallback((): void => {
-    senzaViste.current = true;
+    // A main view already paid is kept: the recognition gets it, nothing is generated again.
+    const ferme = visteFerme.current;
+    if (ferme?.viste.some((vista) => vista.ruolo === 'principale')) {
+      visteTenute.current = ferme;
+    } else {
+      senzaViste.current = true;
+    }
+    visteFerme.current = undefined;
     setGiro((numero) => numero + 1);
   }, []);
   const rigeneraViste = useCallback((): void => {
@@ -902,7 +981,12 @@ export function useRiconoscimentoNuovo(
     }
     // A new round: new request ids for the two views and the recognition. The button said what it costs.
     const stato = statoVisita.leggi(visita.current);
-    statoVisita.scrivi(visita.current, { giro: stato.giro + 1, confermata: true });
+    statoVisita.scrivi(visita.current, {
+      giro: stato.giro + 1,
+      confermata: true,
+      // The ceilings are the prices the button showed.
+      ...(prezziLetti.current ? { prezzi: prezziLetti.current } : stato.prezzi ? { prezzi: stato.prezzi } : {}),
+    });
     inSospeso.current = undefined;
     setGiro((numero) => numero + 1);
   }, [fase]);
@@ -959,6 +1043,8 @@ async function ottieniViste(
   ingresso: Readonly<{
     parte: ParteVista;
     famiglia: string;
+    /** The price per view the designer confirmed: the ceiling of each view. */
+    prezzoVista: number;
     riusata?: VistaRiusata;
     prova: Readonly<{ diversa: boolean }> | undefined;
     visita: string;
@@ -1002,10 +1088,16 @@ async function ottieniViste(
   }
   const proprietario = { userId: ingresso.userId };
   const pronte: VistaPronta[] = [];
-  /** Turn a view error into the page's decision: go on with what there is, or stop. */
+  const tetto = async (): Promise<number> => ingresso.prezzoVista;
+  /** Turn a view error into the page's decision: go on with what there is, or stop (keeping what is already paid). */
   const gestisci = (errore: unknown): VistaPronta[] => {
-    if (segnale.aborted || !(errore instanceof ErroreVista)) {
+    if (segnale.aborted) {
       throw errore;
+    }
+    if (!(errore instanceof ErroreVista)) {
+      // A download or a mask failed after the view was paid: «Riprova» replays it with the same id, for free.
+      console.error('A generated view could not be read:', errore);
+      throw new FermoViste('riconoscimento.generatedViews.unavailable', { riprova: true, senzaViste: true, pronte });
     }
     const decisione = decisioneVista(errore);
     switch (decisione) {
@@ -1022,7 +1114,7 @@ async function ottieniViste(
         throw new FermoViste('riconoscimento.generatedViews.inProgress', { riprova: true });
       }
       case 'riprova_o_senza': {
-        throw new FermoViste('riconoscimento.generatedViews.unavailable', { riprova: true, senzaViste: true });
+        throw new FermoViste('riconoscimento.generatedViews.unavailable', { riprova: true, senzaViste: true, pronte });
       }
       case 'accesso': {
         throw new FermoViste('riconoscimento.errors.restricted', { riprova: false });
@@ -1046,7 +1138,10 @@ async function ottieniViste(
       );
     } else {
       const generata = await vistaUnaVolta(chiaveVista(visita, giro, 'principale'), async (requestId) =>
-        generaVista({ ruolo: 'principale', famiglia, schedaParte: parte.schedaParte }, { requestId, segnale }),
+        generaVista(
+          { ruolo: 'principale', famiglia, schedaParte: parte.schedaParte },
+          { requestId, segnale, prezzo: tetto },
+        ),
       );
       principale = generata;
       pronte.push(
@@ -1071,7 +1166,7 @@ async function ottieniViste(
           schedaParte: parte.schedaParte,
           principale: { assetId: principale.assetId },
         },
-        { requestId, segnale },
+        { requestId, segnale, prezzo: tetto },
       ),
     );
     ingresso.passo('preparo', pronte);

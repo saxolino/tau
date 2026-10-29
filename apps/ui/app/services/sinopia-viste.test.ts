@@ -157,6 +157,9 @@ describe('the views of a visit are booked once per round', () => {
     expect(statoVisita.leggi('visita')).toStrictEqual({ giro: 0, confermata: false });
     statoVisita.scrivi('visita', { giro: 2, confermata: true });
     expect(statoVisita.leggi('visita')).toStrictEqual({ giro: 2, confermata: true });
+    // The prices the designer confirmed travel with the visit: they are the ceilings of its paid calls.
+    statoVisita.scrivi('visita', { giro: 2, confermata: true, prezzi: { riconoscimento: 2, vista: 3 } });
+    expect(statoVisita.leggi('visita').prezzi).toStrictEqual({ riconoscimento: 2, vista: 3 });
     sessionStorage.setItem('sinopiacad:viste:visita:giro', '{"giro":-1}');
     expect(statoVisita.leggi('visita')).toStrictEqual({ giro: 0, confermata: false });
   });

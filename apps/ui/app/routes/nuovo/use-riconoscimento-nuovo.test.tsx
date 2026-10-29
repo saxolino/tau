@@ -22,6 +22,7 @@ const hooks = vi.hoisted(() => ({
   family: vi.fn(),
   views: vi.fn(),
   pipeline: vi.fn(),
+  download: vi.fn(),
 }));
 vi.mock('react-router', async (importOriginal) => ({
   ...(await importOriginal<typeof ReactRouter>()),
@@ -67,7 +68,7 @@ vi.mock('#services/sinopia-foto.js', () => ({ leggiPrezziCad: hooks.prices }));
 vi.mock('#services/sinopia-viste.js', async (importOriginal) => ({
   ...(await importOriginal<typeof SinopiaViste>()),
   generaVista: hooks.views,
-  scaricaVista: async () => ({ type: 'image/png', arrayBuffer: async () => new ArrayBuffer(2) }),
+  scaricaVista: hooks.download,
 }));
 vi.mock('#services/sinopia-recognize.js', async (importOriginal) => ({
   ...(await importOriginal<typeof SinopiaRecognize>()),
@@ -104,6 +105,7 @@ beforeEach(() => {
   hooks.prices.mockResolvedValue({ cad_recognize: 2, cad_part_view: 2 });
   hooks.family.mockReturnValue({ vincolo: 'libera' });
   hooks.pipeline.mockResolvedValue({ tipo: 'fermata' });
+  hooks.download.mockResolvedValue({ type: 'image/png', arrayBuffer: async () => new ArrayBuffer(2) });
 });
 
 type Hook = Readonly<{ result: Readonly<{ current: ReturnType<typeof useRiconoscimentoNuovo> }> }>;
@@ -442,7 +444,11 @@ describe('«/cad/nuovo» with the generated views', () => {
     expect(vistaChiamata(3).requestId).not.toBe(vistaChiamata(1).requestId);
     expect(requestIdOf(1)).not.toBe(requestIdOf(0));
     const visita = Object.keys(sessionStorage).find((chiave) => chiave.endsWith(':giro'))!;
-    expect(JSON.parse(sessionStorage.getItem(visita)!)).toStrictEqual({ giro: 1, confermata: true });
+    expect(JSON.parse(sessionStorage.getItem(visita)!)).toStrictEqual({
+      giro: 1,
+      confermata: true,
+      prezzi: { riconoscimento: 2, vista: 2 },
+    });
   });
 
   it('offers «Riprova» and «Continua senza viste» when the view generator is down, and goes on without them', async () => {
@@ -461,5 +467,143 @@ describe('«/cad/nuovo» with the generated views', () => {
       expect(hooks.create).toHaveBeenCalledOnce();
     });
     expect(hooks.recognize.mock.calls[0]?.[0]).not.toHaveProperty('viste');
+  });
+});
+
+/** Le righe di `credit_costs` di Sinopia, come le restituisce `leggiPrezziCad`. */
+const prezziSinopia = (riconoscimento: number, vista: number): Record<string, number> => ({
+  // eslint-disable-next-line @typescript-eslint/naming-convention -- le chiavi di `credit_costs` di Sinopia.
+  cad_recognize: riconoscimento,
+  // eslint-disable-next-line @typescript-eslint/naming-convention -- le chiavi di `credit_costs` di Sinopia.
+  cad_part_view: vista,
+});
+
+/** Il tetto (`maxCreditCost`) che la n-esima chiamata di una funzione del client avrebbe mandato. */
+const tettoDi = async (chiamate: unknown[][], indice: number): Promise<unknown> => {
+  const opzioni = chiamate[indice]?.[1] as { prezzo?: () => Promise<number> } | undefined;
+  return opzioni?.prezzo ? opzioni.prezzo() : undefined;
+};
+
+describe('«/cad/nuovo» pays only what was confirmed, and keeps what is already paid', () => {
+  beforeEach(() => {
+    hooks.family.mockReturnValue({ vincolo: 'vincolata', famiglia: 'fibbia', variante: 'rettangolare' });
+    hooks.views.mockImplementation(
+      async (richiesta: { ruolo: 'principale' | 'controllo' }, opzioni: { requestId: string }) =>
+        vista(richiesta.ruolo, opzioni.requestId),
+    );
+  });
+
+  it('sends the confirmed prices as ceilings, and shows the cost again when the price rose meanwhile', async () => {
+    const { ErroreVista } = await import('#services/sinopia-viste.js');
+    const hook = renderHook(() => useRiconoscimentoNuovo(lettura, 'it'));
+    await costruisci(hook);
+    await waitFor(() => {
+      expect(hooks.recognize).toHaveBeenCalledOnce();
+    });
+    // The ceiling is the price on the button, not a price read again at the call.
+    hooks.prices.mockResolvedValue(prezziSinopia(9, 9));
+    expect(await tettoDi(hooks.views.mock.calls, 0)).toBe(2);
+    expect(await tettoDi(hooks.views.mock.calls, 1)).toBe(2);
+    expect(await tettoDi(hooks.recognize.mock.calls, 0)).toBe(2);
+    hook.unmount();
+
+    // A new visit: Sinopia raised the price of a view after the click and refuses the old ceiling.
+    sessionStorage.clear();
+    vi.clearAllMocks();
+    hooks.prices.mockResolvedValue(prezziSinopia(2, 2));
+    hooks.views.mockRejectedValueOnce(new ErroreVista('CREDIT_COST_CHANGED', 409, 'prezzo cambiato'));
+    hooks.recognize.mockResolvedValue({ scheda: { famiglia: { id: 'fibbia', confidenza: 1, alternative: [] } } });
+    hooks.create.mockResolvedValue({ slugs: { workspaceSlug: 'home', projectSlug: 'cornice-fibbia' } });
+    const second = renderHook(() => useRiconoscimentoNuovo(lettura, 'it'));
+    await costruisci(second);
+    hooks.prices.mockResolvedValue(prezziSinopia(2, 3));
+    await waitFor(() => {
+      expect(second.result.current.fase).toMatchObject({ fase: 'conferma', costo: { totale: 8, prezzoVista: 3 } });
+    });
+    expect(hooks.recognize).not.toHaveBeenCalled();
+    act(() => {
+      second.result.current.costruisci();
+    });
+    await waitFor(() => {
+      expect(hooks.recognize).toHaveBeenCalledOnce();
+    });
+    expect(await tettoDi(hooks.views.mock.calls, 1)).toBe(3);
+  });
+
+  it('keeps the paid main view when the control fails and the designer goes on without generating again', async () => {
+    const { ErroreVista } = await import('#services/sinopia-viste.js');
+    hooks.views.mockImplementation(
+      async (richiesta: { ruolo: 'principale' | 'controllo' }, opzioni: { requestId: string }) => {
+        if (richiesta.ruolo === 'controllo') {
+          throw new ErroreVista('PROVIDER_UNAVAILABLE', 503, 'giù');
+        }
+        return vista(richiesta.ruolo, opzioni.requestId);
+      },
+    );
+    const hook = renderHook(() => useRiconoscimentoNuovo(lettura, 'it'));
+    await costruisci(hook);
+    await waitFor(() => {
+      expect(hook.result.current.fase).toMatchObject({ fase: 'errore', senzaViste: true, conPrincipale: true });
+    });
+    expect(hooks.views).toHaveBeenCalledTimes(2);
+    act(() => {
+      hook.result.current.continuaSenzaViste();
+    });
+    await waitFor(() => {
+      expect(hooks.recognize).toHaveBeenCalledOnce();
+    });
+    // The recognition gets the main view; nothing is generated again.
+    expect(hooks.views).toHaveBeenCalledTimes(2);
+    expect(hooks.recognize.mock.calls[0]?.[0]).toMatchObject({ viste: [{ ruolo: 'principale', faccia: 'sopra' }] });
+    const corpo = hooks.recognize.mock.calls[0]?.[0] as { viste?: unknown[] } | undefined;
+    expect(corpo?.viste).toHaveLength(1);
+  });
+
+  it('stops with «Riprova» when a paid view cannot be downloaded, and the retry replays the same requests', async () => {
+    hooks.download.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    const hook = renderHook(() => useRiconoscimentoNuovo(lettura, 'it'));
+    await costruisci(hook);
+    await waitFor(() => {
+      expect(hook.result.current.fase).toMatchObject({
+        fase: 'errore',
+        messaggio: 'riconoscimento.generatedViews.unavailable',
+        riprova: true,
+        senzaViste: true,
+      });
+    });
+    expect(hooks.recognize).not.toHaveBeenCalled();
+    act(() => {
+      hook.result.current.riprova();
+    });
+    await waitFor(() => {
+      expect(hooks.recognize).toHaveBeenCalledOnce();
+    });
+    // The main view was paid before the download failed: the retry repeats its id, Sinopia replays it for free.
+    expect(vistaChiamata(1).ruolo).toBe('principale');
+    expect(vistaChiamata(1).requestId).toBe(vistaChiamata(0).requestId);
+    expect(hooks.recognize.mock.calls[0]?.[0]).toMatchObject({
+      viste: [{ ruolo: 'principale' }, { ruolo: 'controllo' }],
+    });
+  });
+
+  it('offers to go on with the photo alone when the photo and the views are too large together', async () => {
+    const { ErroreRiconoscimento } = await import('#services/sinopia-recognize.js');
+    hooks.recognize.mockRejectedValueOnce(new ErroreRiconoscimento('REQUEST_TOO_LARGE', 413, 'troppo grande'));
+    const hook = renderHook(() => useRiconoscimentoNuovo(lettura, 'it'));
+    await costruisci(hook);
+    await waitFor(() => {
+      expect(hook.result.current.fase).toMatchObject({
+        fase: 'errore',
+        messaggio: 'riconoscimento.errors.tooLargeWithViews',
+        senzaViste: true,
+      });
+    });
+    act(() => {
+      hook.result.current.continuaSenzaViste();
+    });
+    await waitFor(() => {
+      expect(hooks.recognize).toHaveBeenCalledTimes(2);
+    });
+    expect(hooks.recognize.mock.calls[1]?.[0]).not.toHaveProperty('viste');
   });
 });

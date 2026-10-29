@@ -98,6 +98,14 @@ describe('client of /v1/recognize', () => {
         ),
       }),
     ).rejects.toMatchObject({ codice: 'BILLING_ACCOUNT_RESTRICTED' });
+    // The body with the views can be too large: the page offers the photo alone instead of a dead end.
+    await expect(
+      riconosciParte(richiesta, {
+        fetch: risponde(
+          Response.json({ error: { type: 'REQUEST_TOO_LARGE', message: 'troppo grande' } }, { status: 413 }),
+        ),
+      }),
+    ).rejects.toMatchObject({ codice: 'REQUEST_TOO_LARGE', stato: 413 });
     const rotta = {
       ...riconoscimentoRegistrato(),
       scheda: { ...schedaRiconoscimentoDiProva, famiglia: { id: 'scarpa' } },

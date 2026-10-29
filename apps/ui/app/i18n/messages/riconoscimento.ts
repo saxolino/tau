@@ -36,6 +36,7 @@ export const riconoscimentoMessages = defineMessages({
       inProgress: 'Le viste si stanno ancora generando: riprova fra qualche secondo, senza nuovi addebiti.',
       unavailable: 'Il generatore delle viste non risponde ora. Riprova, oppure continua con la sola foto.',
       continueWithout: 'Continua senza viste',
+      continueWithMain: 'Continua con la vista principale',
     },
     mismatch: {
       title: 'La vista ricostruita non corrisponde alla tua immagine',
@@ -169,6 +170,8 @@ export const riconoscimentoMessages = defineMessages({
       creditsNotConfigured: 'Il prezzo del riconoscimento non è ancora attivo su Sinopia: nessun credito addebitato.',
       insufficientCredits: 'Crediti insufficienti per il riconoscimento: ricarica su Sinopia e riprova.',
       insufficientCreditsViews: 'Crediti insufficienti per le viste: ricarica su Sinopia e riprova.',
+      tooLargeWithViews:
+        'La foto e le viste insieme sono troppo grandi per il riconoscimento: continua con la sola foto, nessun credito addebitato.',
       createFailed: 'Non riesco a creare il progetto del pezzo.',
       saveFailed: 'Non riesco a salvare la risposta. Riprova.',
     },
@@ -206,6 +209,7 @@ export const riconoscimentoMessages = defineMessages({
       inProgress: 'The views are still being generated: try again in a few seconds, at no extra charge.',
       unavailable: 'The view generator is not answering now. Try again, or go on with the photo alone.',
       continueWithout: 'Go on without views',
+      continueWithMain: 'Go on with the main view',
     },
     mismatch: {
       title: 'The reconstructed view does not match your image',
@@ -338,6 +342,8 @@ export const riconoscimentoMessages = defineMessages({
       creditsNotConfigured: 'The recognition’s price is not active on Sinopia yet: no credit was charged.',
       insufficientCredits: 'Not enough credits for the recognition: top up on Sinopia and try again.',
       insufficientCreditsViews: 'Not enough credits for the views: top up on Sinopia and try again.',
+      tooLargeWithViews:
+        'The photo and the views together are too large for the recognition: go on with the photo alone, nothing charged.',
       createFailed: 'I cannot create the piece’s project.',
       saveFailed: 'I cannot save the answer. Try again.',
     },

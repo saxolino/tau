@@ -29,6 +29,7 @@ export type CodiceErroreRiconoscimento =
   | 'INSUFFICIENT_CREDITS'
   | 'REQUEST_IN_PROGRESS'
   | 'AI_REQUEST_CONFLICT'
+  | 'REQUEST_TOO_LARGE'
   | 'NETWORK';
 
 /** A failed recognition, with a code the page turns into words. */
@@ -126,6 +127,8 @@ const codici = new Set<CodiceErroreRiconoscimento>([
   'INSUFFICIENT_CREDITS',
   'REQUEST_IN_PROGRESS',
   'AI_REQUEST_CONFLICT',
+  // 413: con le viste il corpo arriva a 4–5 immagini; la pagina offre di rifarlo con la sola foto.
+  'REQUEST_TOO_LARGE',
 ]);
 
 /** The request a visit of «/cad/nuovo» booked: its id and the language its reasons were asked in. */
