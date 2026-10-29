@@ -80,7 +80,7 @@ const verticali = ['footwear', 'leather_goods', 'atelier', 'accessories'] as con
 type Verticale = (typeof verticali)[number];
 
 /** Problems the delivery to Sinopia reports, never a raw service message. */
-export type ProblemaSinopia = 'session' | 'columns' | 'files' | 'failed' | 'destination';
+export type ProblemaSinopia = 'session' | 'columns' | 'files' | 'failed' | 'destination' | 'project';
 
 export class SinopiaConsegnaError extends Error {
   public readonly problema: ProblemaSinopia;
@@ -205,18 +205,24 @@ export function rigaLibreria(dati: DatiLibreria): RigaLibreria {
   };
 }
 
-/** Where a SinopiaCAD part's files go in `creator-private`: the account's own `components/` namespace. */
-export const percorsiLibreria = (userId: string, id: string): { step: string; glb: string } => ({
+/**
+ * Where a SinopiaCAD part's files go in `creator-private`: the account's own `components/` namespace, photo included
+ * (the part of a private model is never in a public bucket).
+ */
+export const percorsiLibreria = (userId: string, id: string): { step: string; glb: string; foto: string } => ({
   step: `components/${userId}/cad/${id}/model.step`,
   glb: `components/${userId}/cad/${id}/model.glb`,
+  foto: `components/${userId}/cad/${id}/foto.png`,
 });
 
 const fileValido = (file: ExportFile | undefined, mime: string): file is ExportFile =>
   file !== undefined && file.bytes.length > 0 && file.mimeType === mime;
 
 /**
- * Save the part in the account's Library: the photo in the public `library-components` bucket (as Sinopia's own
- * uploads), STEP and GLB in the private one, then the row. A failed row removes the files it uploaded.
+ * Save the part in the account's Library: the vertical of the model's Sinopia project first (read, never assumed), then
+ * photo, STEP and GLB in the account's private folder, then the row. The row names the photo by the «public» address of
+ * its private path, as Sinopia names private media: Sinopia's media service worker serves it with the session, and the
+ * CAD reads it from the bucket (`sinopiaImageLocation`). A failed row removes the files it uploaded.
  *
  * @param input - Link, files and the row's data.
  * @param apri - The admitted session.
@@ -261,9 +267,19 @@ export async function salvaInLibreria(
   }
   signal?.throwIfAborted();
   const { client, userId } = sessione;
+  // The project's vertical, read before anything is uploaded: a failed read or a missing project stops the save.
+  const progetto = await client.from('projects').select('vertical').eq('id', link.projectId).maybeSingle();
+  if (progetto.error !== null) {
+    console.error('[sinopia-consegna] the project’s vertical cannot be read', progetto.error);
+    throw new SinopiaConsegnaError('failed');
+  }
+  if (progetto.data === null) {
+    throw new SinopiaConsegnaError('project');
+  }
+  const vertical = (progetto.data as { vertical?: unknown }).vertical;
+  signal?.throwIfAborted();
   const id = randomUuid();
   const percorsi = percorsiLibreria(userId, id);
-  const immagine = `${userId}/${id}.png`;
   const caricati: Array<{ bucket: string; path: string }> = [];
   const carica = async (bucket: string, path: string, file: ExportFile): Promise<void> => {
     await requireSinopiaUser(userId);
@@ -279,21 +295,20 @@ export async function salvaInLibreria(
   };
   let fatto = false;
   try {
-    await carica('library-components', immagine, foto);
+    await carica('creator-private', percorsi.foto, foto);
     await carica('creator-private', percorsi.step, step);
     if (glb) {
       await carica('creator-private', percorsi.glb, glb);
     }
-    const vertical = await client.from('projects').select('vertical').eq('id', link.projectId).maybeSingle();
-    const pubblica = client.storage.from('library-components').getPublicUrl(immagine).data.publicUrl;
+    const indirizzoFoto = client.storage.from('creator-private').getPublicUrl(percorsi.foto).data.publicUrl;
     await requireSinopiaUser(userId);
     const riga = rigaLibreria({
       id,
       userId,
       nome: input.nome,
       tipo: input.tipo,
-      vertical: (vertical.data as { vertical?: string } | null)?.vertical,
-      immagine: pubblica,
+      vertical: typeof vertical === 'string' ? vertical : undefined,
+      immagine: indirizzoFoto,
       ...(input.materiale ? { materiale: input.materiale } : {}),
       larghezza: input.larghezza,
       altezza: input.altezza,
