@@ -1111,3 +1111,33 @@ più al modello, nessun cambio alle istruzioni, nessuna attesa.
 - **Test.** `packages/viewer/src/graphics/three/react/model-assembly.test.ts`, `gltf-mesh.assembly.test.tsx`,
   `apps/ui/app/lib/cantiere.test.ts`, `apps/ui/app/lib/montaggio.test.ts`,
   `apps/ui/app/routes/w.$workspace.$project/viewer-cantiere.test.tsx` (nuovi).
+
+## 29 ottobre 2026 — il riferimento a un clic nel riquadro 3D
+
+Se il modello nasce da un'immagine, nella barra del riquadro 3D, accanto a «Foto», c'è un pulsante piccolo con la
+miniatura di quell'immagine. Un clic apre l'immagine in un pannello accanto al modello, in alto a destra sotto il cubo
+di vista, senza lasciare il riquadro: il modello resta girabile sotto, la barra e l'ispettore restano liberi. Si chiude
+con lo stesso pulsante, con la X o con Esc. Senza immagini il pulsante non c'è.
+
+- **Dove sta l'immagine.** Nella cartella `riferimenti/` del progetto, accanto al modello: file autore, quindi nelle
+  versioni e nella copia del modello su Sinopia (`cad_models`), così resta dopo un ricaricamento e si ritrova aprendo il
+  modello da un altro computer. La foto di `/cad/nuovo` e le immagini scelte da Sinopia nella home ci erano già; da qui
+  in poi ci vanno anche le immagini caricate o incollate nella home, copiate dal primo messaggio (prima restavano solo
+  fra gli allegati della chat, che non viaggiano con il modello).
+  `apps/ui/app/services/riferimenti-progetto.ts` (nuovo): quali file sono riferimenti (non le maschere né
+  `misure.json`), da dove vengono («Da foto», «Da Sinopia», «Immagine caricata»), l'etichetta della parte riconosciuta
+  dal record del riconoscimento, il nome del pezzo della Libreria da `misure.json`, il progetto Sinopia dal
+  collegamento `.tau/sinopia.json`; la copia delle immagini caricate con nomi sicuri.
+  `apps/ui/app/components/chat/use-new-project-submit.ts`: la copia alla creazione del progetto.
+- **Pulsante e pannello.** `apps/ui/app/routes/w.$workspace.$project/viewer-reference.tsx` (nuovo): la miniatura in
+  grigio a riposo e a colori al passaggio o a pannello aperto; il pannello con l'immagine intera, la parte riconosciuta in
+  evidenza con la sua maschera (il resto velato, come in «Dalla parte al CAD»), «Ingrandisci», più immagini con le
+  frecce e i tasti ← →, e sotto da dove viene. Per un'immagine di Sinopia il nome del progetto si legge solo a pannello
+  aperto e solo per l'account che lo possiede (`readSinopiaProjectName` in `apps/ui/app/services/sinopia-references.ts`);
+  le immagini private non escono mai dal disco del progetto. `chat-viewer-controls.tsx` (posto accanto a «Foto»),
+  `chat-viewer.tsx` (il pannello accanto al palco, non nel canvas: i suoi clic non girano il modello).
+  Testi in `apps/ui/app/i18n/messages/riferimento.ts` (nuovo) e `i18n/catalog.ts`.
+- **Test.** `apps/ui/app/services/riferimenti-progetto.test.ts`,
+  `apps/ui/app/routes/w.$workspace.$project/viewer-reference.test.tsx` (nuovi);
+  `apps/ui/app/routes/w.$workspace.$project/chat-viewer-controls.test.tsx`,
+  `apps/ui/app/components/chat/new-project-chat-composer.test.tsx`, `apps/ui/app/services/sinopia-references.test.ts`.
