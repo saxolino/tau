@@ -4908,6 +4908,8 @@ export type ProjectRevisionActorOptions = RevisionActorsOptions &
      */
     liveCheckoutId?: string;
     selectedCheckoutId?: string;
+    /** Quiet window before an `idle` revision, in milliseconds; the checkout's own default when omitted. */
+    idleWindow?: number;
   }>;
 
 /**
@@ -4963,6 +4965,7 @@ export const createProjectRevisionsActor = (options: ProjectRevisionActorOptions
         projectId: options.projectId,
         ...(options.liveCheckoutId === undefined ? {} : { liveCheckoutId: options.liveCheckoutId }),
         ...(options.selectedCheckoutId === undefined ? {} : { selectedCheckoutId: options.selectedCheckoutId }),
+        ...(options.idleWindow === undefined ? {} : { idleWindow: options.idleWindow }),
       },
       ...(options.clock === undefined ? {} : { clock: options.clock }),
       ...(options.inspect === undefined ? {} : { inspect: options.inspect }),

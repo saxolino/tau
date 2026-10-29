@@ -22,6 +22,7 @@ import {
   patchSinopiaCadThumbnail,
   moveSinopiaCadModel,
   reconcileSinopiaCadLink,
+  sinopiaCadSnapshotContentKey,
   sourceFromRecognition,
 } from '#services/sinopia-cad.js';
 import { leggiRecordRiconoscimento, percorsoRiconoscimento } from '#services/riconoscimento-record.js';
@@ -43,6 +44,7 @@ const linkKey = (userId: string | undefined, projectId: string): readonly unknow
 ];
 const idleState: SinopiaCadSyncState = { kind: 'idle' };
 const failedState: SinopiaCadSyncState = { kind: 'failed' };
+const foreignState: SinopiaCadSyncState = { kind: 'foreign' };
 const linkingState: SinopiaCadStatus = { kind: 'linking' };
 const linkFailedState: SinopiaCadStatus = { kind: 'linkFailed' };
 const noSubscribe = (): (() => void) => () => undefined;
@@ -263,6 +265,8 @@ export function useSinopiaCadSync(): {
         throw new Error('SINOPIA_SCOPE_CHANGED');
       }
       await writeSinopiaCadLink(fileManager.recordFiles, `/projects/${projectId}`, next);
+      // A model adopted by «find or create» opens here from now on.
+      sinopiaCadLocalId.set(next.userId, next.modelId, projectId);
       if (active()) {
         queryClient.setQueryData(linkKey(next.userId, projectId), next);
       }
@@ -273,6 +277,9 @@ export function useSinopiaCadSync(): {
       persist,
       preserve: async (remote) => preserveSinopiaConflict(fileManager.recordFiles, projectId, remote),
       apply: async (model) => applySinopiaRemoteSnapshot({ model, fileManager, revision, active }),
+      matchesBase: async (baseline, revisionId) =>
+        baseline.baseContentKey !== undefined &&
+        (await sinopiaCadSnapshotContentKey(await revision.snapshot(revisionId))) === baseline.baseContentKey,
       save: async (baseline, observation) => {
         const current = revision.status();
         let thumbnail: Uint8Array<ArrayBuffer> | undefined;
@@ -295,10 +302,15 @@ export function useSinopiaCadSync(): {
             sinopiaCadThumbnailRequested.emit(stamp);
           }
         }
-        if (baseline.baseRevisionId === observation.revisionId) {
+        /* Nothing new to save, only the preview Sinopia still lacks: patched onto the remote head this local revision
+           stands for (the same commit, or another commit of the same files opened from Sinopia). */
+        if (
+          baseline.baseRevisionId !== null &&
+          (baseline.localRevisionId ?? baseline.baseRevisionId) === observation.revisionId
+        ) {
           return patchSinopiaCadThumbnail({
             link: baseline,
-            revisionId: observation.revisionId,
+            revisionId: baseline.baseRevisionId,
             thumbnail,
             signal: abort.signal,
             isCurrent: () =>
@@ -314,15 +326,27 @@ export function useSinopiaCadSync(): {
         if (!active()) {
           throw new Error('SINOPIA_SCOPE_CHANGED');
         }
-        return saveSinopiaCadRevision({
-          link: baseline,
-          revisionId: observation.revisionId,
-          engine: actual ?? observation.engine,
-          name: observation.name,
-          snapshot: await archiveSinopiaRevision(immutable),
-          thumbnail,
-          signal: abort.signal,
-        });
+        try {
+          return await saveSinopiaCadRevision({
+            link: baseline,
+            revisionId: observation.revisionId,
+            engine: actual ?? observation.engine,
+            name: observation.name,
+            snapshot: await archiveSinopiaRevision(immutable),
+            contentKey: await sinopiaCadSnapshotContentKey(immutable),
+            thumbnail,
+            signal: abort.signal,
+          });
+        } catch (error) {
+          if (error instanceof Error && error.message === 'SINOPIA_MODEL_MOVED' && active()) {
+            // Moved to another project by another device: the link follows the row, and the queue remounts on it.
+            const repaired = await reconcileSinopiaCadLink(fileManager.recordFiles, `/projects/${projectId}`, baseline);
+            if (active() && repaired.projectId !== baseline.projectId) {
+              queryClient.setQueryData(linkKey(repaired.userId, projectId), repaired);
+            }
+          }
+          throw error;
+        }
       },
     });
     return { sync, abort, link };
@@ -349,21 +373,40 @@ export function useSinopiaCadSync(): {
           stamp.userId === userId &&
           stamp.revisionId === revision?.status()?.headRevisionId
         ) {
-          controller?.sync.retry();
+          // Every open renders a thumbnail; Sinopia gets it only while its copy has none (`previewPending`).
+          controller?.sync.refreshPreview();
         }
       }),
     [controller, projectId, revision, userId],
   );
+  // A hidden tab may be closing: what is waiting goes to Sinopia now, not after the debounce.
+  useEffect(() => {
+    if (controller === undefined) {
+      return;
+    }
+    const flushWhenHidden = (): void => {
+      if (document.visibilityState === 'hidden') {
+        controller.sync.flush();
+      }
+    };
+    document.addEventListener('visibilitychange', flushWhenHidden);
+    globalThis.addEventListener('pagehide', flushWhenHidden);
+    return () => {
+      document.removeEventListener('visibilitychange', flushWhenHidden);
+      globalThis.removeEventListener('pagehide', flushWhenHidden);
+    };
+  }, [controller]);
+  // Edits not in a revision yet: the top bar says them even before the revision exists.
+  const unsaved = revisionStatus !== undefined && (revisionStatus.dirty || revisionStatus.minting);
   const busy =
     revisionStatus === undefined ||
-    revisionStatus.dirty ||
-    revisionStatus.minting ||
+    unsaved ||
     revisionStatus.restore.busy ||
     revisionStatus.restore.asking ||
     revisionStatus.attention > 0;
   useEffect(() => {
-    controller?.sync.observe({ revisionId: revisionStatus?.headRevisionId, engine, name, busy });
-  }, [busy, controller, engine, name, revisionStatus?.headRevisionId]);
+    controller?.sync.observe({ revisionId: revisionStatus?.headRevisionId, engine, name, busy, unsaved });
+  }, [busy, controller, engine, name, revisionStatus?.headRevisionId, unsaved]);
   const state = useSyncExternalStore(
     controller?.sync.subscribe ?? noSubscribe,
     controller?.sync.getState ?? idle,
@@ -371,9 +414,11 @@ export function useSinopiaCadSync(): {
   );
   // Only once the project's root answers is a missing link record authoritative.
   const linking = useLinkOnOpen(link, revisionStatus !== undefined);
+  // Another account's link: «Riprova» could never help, so it is said once, in its own words.
+  const linkFailure = linkQuery.error?.message === 'SINOPIA_OWNER_MISMATCH' ? foreignState : failedState;
   return {
     link,
-    state: linkQuery.isError ? failedState : (linking.status ?? state),
+    state: linkQuery.isError ? linkFailure : (linking.status ?? state),
     retry: () => {
       if (linkQuery.isError) {
         void linkQuery.refetch();

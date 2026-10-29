@@ -89,6 +89,15 @@ import { fetchGeoSpecCandidates, publishGeoSpecCandidate } from '#lib/geospec-ca
 import { bytesToBase64 } from '#utils/base64.utils.js';
 
 /**
+ * How long a checkout stays quiet before it mints an `idle` revision in SinopiaCAD: 30 s instead of the package's five
+ * minutes. Each revision is what the Sinopia save uploads, so «Salvato su Sinopia» follows the work within a minute,
+ * and a closed tab loses at most this window (a hidden tab also cuts at once).
+ *
+ * @public
+ */
+export const sinopiaCadIdleWindowMilliseconds = 30_000;
+
+/**
  * The versioned paths one content-change event touches inside this project.
  *
  * The rule itself is `@taucad/revisions`' (W10.5) and takes the classifier it
@@ -701,6 +710,8 @@ export const createWorkerProjectRevisions = (options: WorkerProjectRevisionsOpti
   const { actor, settled, turns, recordEditorConflict, readConflict } = createProjectRevisionsActor({
     port: options.port,
     projectId,
+    /* SinopiaCAD: half a minute of quiet makes a revision, so edits reach Sinopia within a minute, not after five. */
+    idleWindow: sinopiaCadIdleWindowMilliseconds,
     ...(options.clock === undefined ? {} : { clock: options.clock }),
     ...(options.inspect === undefined ? {} : { inspect: options.inspect }),
     actorId: projectId,
@@ -1515,6 +1526,7 @@ export const createWorkerProjectRevisions = (options: WorkerProjectRevisionsOpti
         throw new Error('The selected revision is unavailable.');
       }
       if (tree.byteLength > 64 * 1024 * 1024) {
+        // «too large» is what the Sinopia save reads as a refusal retrying cannot fix (`permanentSinopiaCadFailure`).
         throw new Error('The revision is too large to preview.');
       }
       // Not `uint8ArrayToBase64`: its 65 535-argument calls overflow this worker's stack on a file of a few tens of

@@ -60,6 +60,7 @@ beforeEach(() => {
   transport.download.mockReset();
   transport.download.mockResolvedValue({
     files: { 'main.ts': { content: new Uint8Array([1]) }, '.tau/sinopia.json': { content: new Uint8Array([2]) } },
+    link: { baseContentKey: 'f'.repeat(64) },
   });
 });
 
@@ -67,7 +68,8 @@ describe('remote snapshot restore authority', () => {
   it('records the losing local state before mutations, excludes records, and confirms the replacement through revisions', async () => {
     const owner = create();
     const result = await applySinopiaRemoteSnapshot({ ...owner, model, active: () => true });
-    expect(result).toBe('c'.repeat(40));
+    // The new local head and the content it holds, so the queue knows the next identical revision is not a change.
+    expect(result).toEqual({ revisionId: 'c'.repeat(40), contentKey: 'f'.repeat(64) });
     expect(owner.revision.saveRevision).toHaveBeenCalledTimes(2);
     expect(owner.fileManager.deleteFile).toHaveBeenCalledWith('old.ts', { source: 'user' });
     expect(owner.fileManager.writeFiles).toHaveBeenCalledWith({ 'main.ts': { content: new Uint8Array([1]) } });

@@ -170,13 +170,14 @@ function SinopiaProjectSaveStatus(): React.JSX.Element {
     state.kind === 'saved' && state.at !== undefined
       ? t('sinopiaSync.savedAt', { time: formatTime(state.at, language) })
       : t(`sinopiaSync.${state.kind}`);
+  // Only a failure «Riprova» can fix offers it; a permanent one (too large, deleted, another account) says why instead.
   const isFailed = state.kind === 'failed' || state.kind === 'linkFailed';
   const tone =
     state.kind === 'saved'
       ? 'bg-success'
-      : isFailed || state.kind === 'conflict'
-        ? 'bg-warning'
-        : 'bg-muted-foreground';
+      : state.kind === 'loading' || state.kind === 'saving' || state.kind === 'linking' || state.kind === 'idle'
+        ? 'bg-muted-foreground'
+        : 'bg-warning';
   return (
     <>
       <span

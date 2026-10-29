@@ -13,13 +13,17 @@ export type SinopiaCadRestoreRevision = {
   snapshot: (revisionId: string) => Promise<Readonly<Record<string, string>>>;
 };
 
-/** Apply a validated remote snapshot through the existing filesystem and revision owners. Old local bytes stay in Versions. */
+/**
+ * Apply a validated remote snapshot through the existing filesystem and revision owners. Old local bytes stay in Versions.
+ *
+ * @returns The local revision now holding the remote copy, and that copy's content key (`sinopiaCadContentKey`).
+ */
 export async function applySinopiaRemoteSnapshot(input: {
   model: SinopiaCadModel;
   fileManager: SinopiaCadRestoreFiles;
   revision: SinopiaCadRestoreRevision;
   active: () => boolean;
-}): Promise<string> {
+}): Promise<Readonly<{ revisionId: string; contentKey?: string }>> {
   const { model, fileManager, revision, active } = input;
   const imported = await importSinopiaCadModel(model);
   if (!active()) {
@@ -73,5 +77,8 @@ export async function applySinopiaRemoteSnapshot(input: {
   if (settled?.headRevisionId === undefined || settled.dirty || settled.minting || settled.attention > 0) {
     throw new Error('SINOPIA_RESTORE_NOT_CONFIRMED');
   }
-  return settled.headRevisionId;
+  return {
+    revisionId: settled.headRevisionId,
+    ...(imported.link.baseContentKey === undefined ? {} : { contentKey: imported.link.baseContentKey }),
+  };
 }

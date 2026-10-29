@@ -4,13 +4,14 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { classify } from '@taucad/filesystem/path-registry';
 import { archive, archiveByteCeiling } from '@taucad/filesystem/content-ops';
 import { MemoryProvider } from '@taucad/filesystem/backend';
-import { readProjectManifestBytes } from '@taucad/types';
+import { projectToManifest, readProjectManifestBytes, serializeProjectManifest } from '@taucad/types';
 import type { ProjectManifest } from '@taucad/types';
 import { base64ToUint8Array, uint8ArrayToHex } from 'uint8array-extras';
 import { KeyedMutex } from '#db/keyed-mutex.js';
 import { getSinopiaDataClient, requireSinopiaUser } from '#lib/sinopia-data-client.js';
 import type { RootedContentClient } from '@taucad/fs-client/rooted-content-client';
 import { randomUuid } from '@taucad/utils/id';
+import { sha256Bytes, sha256String } from '@taucad/utils/hash';
 import { defaultProjectName, isPlaceholderProjectName, projectNameOrDefault } from '#constants/project-names.js';
 export type SinopiaCadRecordFiles = Pick<RootedContentClient, 'writeFile' | 'exists' | 'readdir'> & {
   readFile: (path: string) => Promise<Uint8Array<ArrayBuffer>>;
@@ -26,6 +27,15 @@ export const sinopiaCadLinkSchema = z.object({
   userId: z.uuid(),
   baseRevisionId: revisionSchema.nullable(),
   localRevisionId: revisionSchema.optional(),
+  /**
+   * The content (`sinopiaCadContentKey`) of the copy on Sinopia this device knows as `baseRevisionId`. Every device
+   * mints its own commit for the same files, so the ids differ where the content does not: a model opened from Sinopia
+   * on another computer is the same model, not a change to save again.
+   */
+  baseContentKey: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/u)
+    .optional(),
   previewPending: z.boolean().optional(),
   /** The project's image (`assets.id`) the model was built from: Sinopia shows it as the model's origin. */
   sourceAssetId: z.uuid().optional(),
@@ -144,8 +154,9 @@ export type SinopiaCadSource = Readonly<{ assetId: string; partId?: string }>;
  * Mint a recoverable local identity first; the chosen engine registers its model on the first authored save.
  *
  * With `originProjectId` the model belongs to that (owned) Sinopia project: no second project is ever created for a
- * piece that starts from a Sinopia part, image or generation. Without it a new project is created, named after the
- * piece and never with an English placeholder.
+ * piece that starts from a Sinopia part, image or generation. Without it the model gets a project of its own, but only
+ * its identity is fixed here: the project is created by the model's first real save (`ensureSinopiaCadModel`), named
+ * after the piece, so a model that never saves anything leaves no empty project in the dashboard.
  */
 export async function createSinopiaCadLink(
   name: string,
@@ -154,46 +165,67 @@ export async function createSinopiaCadLink(
 ): Promise<SinopiaCadLink> {
   const { client, userId } = await getSinopiaDataClient();
   const modelId = named?.modelId ?? randomUuid();
-  let projectId = originProjectId;
-  let isExisting = projectId !== undefined;
-  if (projectId === undefined) {
-    projectId = named?.projectId ?? randomUuid();
-    const vertical = await currentSinopiaVertical(client, userId);
-    const { error } = await client
-      .from('projects')
-      // eslint-disable-next-line @typescript-eslint/naming-convention -- Supabase project wire columns.
-      .insert({ id: projectId, user_id: userId, name: projectNameOrDefault(name), vertical });
-    if (error !== null) {
-      // A named identity that already exists is an earlier attempt's project: verify it as an owned origin.
-      if (error.code !== uniqueViolation) {
-        throw error;
-      }
-      isExisting = true;
-    }
+  if (originProjectId === undefined) {
+    await requireSinopiaUser(userId);
+    // The CAD's own project, still to be created: `projectCreatedByCad` is what tells the first save to create it.
+    return {
+      modelId,
+      projectId: named?.projectId ?? randomUuid(),
+      userId,
+      baseRevisionId: null,
+      projectCreatedByCad: true,
+    };
   }
-  if (isExisting) {
-    z.uuid().parse(projectId);
-    const { data, error } = await client
-      .from('projects')
-      .select('id')
-      .eq('id', projectId)
-      .eq('user_id', userId)
-      .is('deleted_at', null)
-      .single();
-    if (error !== null) {
-      throw error;
-    }
-    z.object({ id: z.uuid() }).parse(data);
+  const projectId = z.uuid().parse(originProjectId);
+  const { data, error } = await client
+    .from('projects')
+    .select('id')
+    .eq('id', projectId)
+    .eq('user_id', userId)
+    .is('deleted_at', null)
+    .single();
+  if (error !== null) {
+    throw error;
   }
+  z.object({ id: z.uuid() }).parse(data);
   await requireSinopiaUser(userId);
-  return {
-    modelId,
-    projectId,
-    userId,
-    baseRevisionId: null,
-    // Created here (or by an earlier attempt under the same named identity): the project is the CAD's own.
-    ...(originProjectId === undefined ? { projectCreatedByCad: true } : {}),
-  };
+  return { modelId, projectId, userId, baseRevisionId: null };
+}
+
+/**
+ * The project the CAD made for a model (`projectCreatedByCad`), created now: by the first save that has something to
+ * keep, never when the link is minted. Its id was fixed with the link, so a retry, another tab or a lost acknowledgement
+ * land on the same project; one that already exists must be this account's and alive.
+ */
+async function ensureCadOwnProject(client: SupabaseClient, link: SinopiaCadLink, name: string): Promise<void> {
+  if (link.projectCreatedByCad !== true) {
+    return;
+  }
+  const vertical = await currentSinopiaVertical(client, link.userId);
+  await requireSinopiaUser(link.userId);
+  const { error } = await client
+    .from('projects')
+    // eslint-disable-next-line @typescript-eslint/naming-convention -- Supabase project wire columns.
+    .insert({ id: link.projectId, user_id: link.userId, name: projectNameOrDefault(name), vertical });
+  if (error === null) {
+    return;
+  }
+  if (error.code !== uniqueViolation) {
+    throw error;
+  }
+  const owned = await client
+    .from('projects')
+    .select('id')
+    .eq('id', link.projectId)
+    .eq('user_id', link.userId)
+    .is('deleted_at', null)
+    .maybeSingle();
+  if (owned.error !== null) {
+    throw owned.error;
+  }
+  if (owned.data === null) {
+    throw new Error('SINOPIA_PROJECT_UNAVAILABLE');
+  }
 }
 
 /**
@@ -289,6 +321,48 @@ export async function listSinopiaCadModels(): Promise<readonly SinopiaCadModel[]
   return rows.filter((row) => row.user_id === userId);
 }
 
+/**
+ * The part this link starts from is already another model of the account (the unique index on the origin answered
+ * 23505: two «Apri nel CAD» of the same part, on two devices or two tabs, before either saved). The model to keep
+ * working on is that one: `adopted` is the link that points at it, with no baseline, so the next save asks which
+ * version to keep instead of making a second model of the same part.
+ */
+export class SinopiaCadOriginTakenError extends Error {
+  public readonly adopted: SinopiaCadLink;
+  public constructor(adopted: SinopiaCadLink) {
+    super('SINOPIA_ORIGIN_TAKEN');
+    this.name = 'SinopiaCadOriginTakenError';
+    this.adopted = adopted;
+  }
+}
+
+/**
+ * Before a row is registered: a row of this id that is gone (deleted on Sinopia) or lives in another project (moved by
+ * another device) must not come back as a new row, nor recreate the project it left.
+ */
+async function assertModelNotGone(client: SupabaseClient, link: SinopiaCadLink): Promise<void> {
+  const { data, error } = await client
+    .from('cad_models')
+    .select('id,project_id,deleted_at')
+    .eq('id', link.modelId)
+    .eq('user_id', link.userId)
+    .maybeSingle();
+  if (error !== null) {
+    throw error;
+  }
+  const row = z
+    // eslint-disable-next-line @typescript-eslint/naming-convention -- Supabase model wire columns.
+    .object({ id: z.uuid(), project_id: z.uuid(), deleted_at: z.string().nullable() })
+    .nullable()
+    .parse(data);
+  if (row?.deleted_at !== null && row?.deleted_at !== undefined) {
+    throw new Error('SINOPIA_MODEL_DELETED');
+  }
+  if (row !== null && row.project_id !== link.projectId) {
+    throw new Error('SINOPIA_MODEL_MOVED');
+  }
+}
+
 /** Read or register exactly the linked model, never a second identity on retry. */
 export async function ensureSinopiaCadModel(
   link: SinopiaCadLink,
@@ -300,6 +374,9 @@ export async function ensureSinopiaCadModel(
     return existing;
   }
   const { client } = await getSinopiaDataClient();
+  await requireSinopiaUser(link.userId);
+  await assertModelNotGone(client, link);
+  await ensureCadOwnProject(client, link, name);
   await requireSinopiaUser(link.userId);
   /* eslint-disable @typescript-eslint/naming-convention -- Supabase model wire columns. */
   const row = {
@@ -319,12 +396,28 @@ export async function ensureSinopiaCadModel(
   if (error !== null && Object.keys(origin).length > 0 && isMissingOriginColumn(error)) {
     ({ error } = await client.from('cad_models').upsert(row, options));
   }
+  if (error !== null && error.code === uniqueViolation && link.sourceAssetId !== undefined) {
+    // Find or create: the part already became a model (`cad_models_source_unico_idx`), that model is the one to use.
+    const taken =
+      link.sourcePartId === undefined
+        ? undefined
+        : await findSinopiaCadModelForPart({
+            projectId: link.projectId,
+            assetId: link.sourceAssetId,
+            partId: link.sourcePartId,
+          });
+    if (taken !== undefined && taken.id !== link.modelId) {
+      const { localRevisionId: _local, baseContentKey: _content, previewPending: _preview, ...rest } = link;
+      throw new SinopiaCadOriginTakenError({ ...rest, modelId: taken.id, baseRevisionId: null });
+    }
+  }
   if (error !== null) {
     throw error;
   }
   const registered = await getSinopiaCadModel(link);
   if (registered === undefined) {
-    throw new Error('SINOPIA_MODEL_UNAVAILABLE');
+    // The insert was ignored: the id exists but is not an active row of this project any more.
+    throw new Error('SINOPIA_MODEL_DELETED');
   }
   return registered;
 }
@@ -372,6 +465,32 @@ export async function archiveSinopiaRevision(snapshot: Readonly<Record<string, s
     await memory.writeFile(path, content);
   }
   return archive(memory, '', { admits: (path, kind) => kind === 'dir' || classify(path).versioned });
+}
+
+/**
+ * The content of a model as Sinopia keeps it: one SHA-256 over its authored, versioned files (sources, parameters,
+ * manifest) by path, whatever revision, device or archive carried them. Records (`.tau/sinopia.json`, chats) do not
+ * count. Two commits of the same files have the same key: this is the «same model?» question, never the revision id.
+ *
+ * @param files - Path → bytes.
+ * @returns 64 lowercase hex digits.
+ */
+export async function sinopiaCadContentKey(files: Readonly<Record<string, Uint8Array<ArrayBuffer>>>): Promise<string> {
+  const lines: string[] = [];
+  for (const path of Object.keys(files)
+    .filter((candidate) => safeAuthoredPath(candidate))
+    .sort()) {
+    // oxlint-disable-next-line no-await-in-loop -- One file digest at a time keeps memory to one file.
+    lines.push(`${path}\u0000${await sha256Bytes(files[path]!)}`);
+  }
+  return sha256String(lines.join('\n'));
+}
+
+/** {@link sinopiaCadContentKey} of an immutable revision snapshot (path → base64), as the revision owner returns it. */
+export async function sinopiaCadSnapshotContentKey(snapshot: Readonly<Record<string, string>>): Promise<string> {
+  return sinopiaCadContentKey(
+    Object.fromEntries(Object.entries(snapshot).map(([path, encoded]) => [path, base64ToUint8Array(encoded)])),
+  );
 }
 
 function safeAuthoredPath(path: string): boolean {
@@ -490,9 +609,45 @@ export async function importSinopiaCadModel(
     projectId: model.project_id,
     userId: model.user_id,
     baseRevisionId: model.head_revision_id,
+    /* What the head holds: the first revision this device mints of these files is the same model, not a change. The
+       manifest counts as project creation writes it (`projectToManifest`, canonical bytes). */
+    baseContentKey: await sinopiaCadContentKey({
+      ...Object.fromEntries(Object.entries(files).map(([path, file]) => [path, file.content])),
+      'tau.json': serializeProjectManifest(projectToManifest(read.data)),
+    }),
   };
   files[sinopiaCadLinkPath] = { content: new TextEncoder().encode(JSON.stringify(link)) };
   return { project: read.data, files, link };
+}
+
+/**
+ * A save Sinopia needs no upload for: its head already is this revision (a lost acknowledgement), or it diverged (a
+ * conflict), or the revision is another commit of the very files it holds (the model opened on this computer from
+ * Sinopia, a revision of nothing new) — then its head stays, with no new archive, row update or conflict elsewhere.
+ */
+function alreadyOnSinopia(
+  remote: SinopiaCadModel,
+  input: Readonly<{ link: SinopiaCadLink; revisionId: string; contentKey?: string }>,
+  savedLink: SinopiaCadLink,
+):
+  | { kind: 'saved'; link: SinopiaCadLink; at: number; previewPending: boolean }
+  | { kind: 'conflict'; remote: SinopiaCadModel }
+  | undefined {
+  const held = { at: Date.parse(remote.updated_at), previewPending: remote.thumbnail_path === null };
+  if (remote.head_revision_id === input.revisionId && remote.snapshot_path !== null) {
+    return { kind: 'saved', link: savedLink, ...held };
+  }
+  if (remote.head_revision_id !== input.link.baseRevisionId) {
+    return { kind: 'conflict', remote };
+  }
+  if (
+    input.contentKey !== undefined &&
+    input.contentKey === input.link.baseContentKey &&
+    remote.snapshot_path !== null
+  ) {
+    return { kind: 'saved', link: input.link, ...held };
+  }
+  return undefined;
 }
 
 /** Immutable upload + null-aware compare-and-swap; a racing winner's objects can never be overwritten. */
@@ -504,22 +659,24 @@ export async function saveSinopiaCadRevision(input: {
   snapshot: Blob;
   thumbnail?: Uint8Array<ArrayBuffer>;
   signal?: AbortSignal;
+  /** `sinopiaCadContentKey` of the snapshot: the same files as the acknowledged copy are not uploaded again. */
+  contentKey?: string;
 }): Promise<
   | { kind: 'saved'; link: SinopiaCadLink; at: number; previewPending?: boolean }
   | { kind: 'conflict'; remote: SinopiaCadModel }
 > {
   input.signal?.throwIfAborted();
   const remote = await ensureSinopiaCadModel(input.link, input.name, input.engine);
-  if (remote.head_revision_id === input.revisionId && remote.snapshot_path !== null) {
-    return {
-      kind: 'saved',
-      link: { ...input.link, baseRevisionId: input.revisionId },
-      at: Date.parse(remote.updated_at),
-      previewPending: remote.thumbnail_path === null,
-    };
-  }
-  if (remote.head_revision_id !== input.link.baseRevisionId) {
-    return { kind: 'conflict', remote };
+  // The acknowledged keys travel with the head they describe; a save without one forgets the old one.
+  const { baseContentKey: _previous, ...withoutContent } = input.link;
+  const savedLink: SinopiaCadLink = {
+    ...withoutContent,
+    baseRevisionId: input.revisionId,
+    ...(input.contentKey === undefined ? {} : { baseContentKey: input.contentKey }),
+  };
+  const held = alreadyOnSinopia(remote, input, savedLink);
+  if (held !== undefined) {
+    return held;
   }
   const { client } = await getSinopiaDataClient();
   await requireSinopiaUser(input.link.userId);
@@ -576,7 +733,7 @@ export async function saveSinopiaCadRevision(input: {
     if (latest.head_revision_id === input.revisionId && latest.snapshot_path !== null) {
       return {
         kind: 'saved',
-        link: { ...input.link, baseRevisionId: input.revisionId },
+        link: savedLink,
         at: Date.parse(latest.updated_at),
         previewPending: latest.thumbnail_path === null,
       };
@@ -589,7 +746,7 @@ export async function saveSinopiaCadRevision(input: {
   await adoptModelNameForProject(client, input.link, input.name);
   return {
     kind: 'saved',
-    link: { ...input.link, baseRevisionId: input.revisionId },
+    link: savedLink,
     at: Date.now(),
     previewPending: thumbnailPath === null,
   };
