@@ -7,6 +7,16 @@ export const sinopiaImagesMessages = defineMessages({
     opening: 'Scarico «{name}» da Sinopia…',
     openError: 'Non riesco ad aprire il modello. Controlla la connessione e riprova.',
     modelNotFound: 'Non trovo questo modello tra i tuoi su Sinopia: potrebbe essere stato eliminato.',
+    modelNotSaved: 'Questo modello non è ancora salvato su Sinopia: aprilo sul computer dove l’hai creato.',
+    modelMismatch:
+      'Su questo computer c’è un progetto con lo stesso indirizzo che non è questo modello: non lo apro per non mescolarli.',
+    modelDamaged: 'Il file di questo modello su Sinopia è danneggiato o troppo grande: non riesco ad aprirlo.',
+    sessionChanged: 'L’accesso a Sinopia è cambiato mentre aprivo il modello. Accedi di nuovo e riprova.',
+    notSaved: 'Non ancora salvato',
+    originMissing:
+      'Il progetto del collegamento non è tra i tuoi progetti su Sinopia: i modelli che crei qui andranno in un progetto nuovo.',
+    originUnverified:
+      'Non riesco a leggere i tuoi progetti su Sinopia: i modelli che crei qui andranno in un progetto nuovo.',
     imageCount: '{count} immagini',
     imageCountOne: '{count} immagine',
     untitled: 'Progetto senza nome',
@@ -44,6 +54,15 @@ export const sinopiaImagesMessages = defineMessages({
     opening: 'Downloading "{name}" from Sinopia…',
     openError: 'I can’t open the model. Check your connection and try again.',
     modelNotFound: 'I can’t find this model among yours on Sinopia: it may have been deleted.',
+    modelNotSaved: 'This model isn’t saved on Sinopia yet: open it on the computer where you made it.',
+    modelMismatch:
+      'This computer has a project at the same address that isn’t this model: I won’t open it, so the two don’t mix.',
+    modelDamaged: 'This model’s file on Sinopia is damaged or too large: I can’t open it.',
+    sessionChanged: 'Your Sinopia sign-in changed while I was opening the model. Sign in again and retry.',
+    notSaved: 'Not saved yet',
+    originMissing:
+      'The linked project isn’t among your Sinopia projects: the models you make here will go into a new project.',
+    originUnverified: 'I can’t read your Sinopia projects: the models you make here will go into a new project.',
     imageCount: '{count} images',
     imageCountOne: '{count} image',
     untitled: 'Untitled project',

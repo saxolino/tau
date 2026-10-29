@@ -80,7 +80,8 @@ describe('modulo built-in @sinopia/famiglie', () => {
   });
 
   it('should run the emitted main.ts of a heel and rebuild it when a measure changes', async () => {
-    const p = tacco.normalizza({ costruzione: { lato: 'dx' } });
+    // Pieno (resina): un tacco più basso pesa meno. A iniezione la cavità si toglie sotto i 10 mm e il volume può salire.
+    const p = tacco.normalizza({ costruzione: { lato: 'dx', processo: 'stampa_3d_resina' } });
     const client = makeClient({ 'main.ts': tacco.emettiMain(p, {}, { variante: 'stiletto' }) });
     clients.add(client);
     const prima = await componenti(client);

@@ -25,7 +25,7 @@ import { useProjectThumbnail } from '#hooks/use-project-thumbnail.js';
 import type { ProjectListItem } from '#types/project-library.types.js';
 import { useCloudProjects } from '#hooks/use-cloud-projects.js';
 import type { CloudProject } from '#hooks/use-cloud-projects.js';
-import { useOpenCloudProject } from '#hooks/use-open-cloud-project.js';
+import { sinopiaOpenErrorMessage, useOpenCloudProject } from '#hooks/use-open-cloud-project.js';
 import { isCloudOnly, toLibraryRows } from '#routes/projects_/cloud-projects.js';
 import { SinopiaReferenceThumbnail } from '#routes/_index/sinopia-project-strip.js';
 import { toast } from '#components/ui/sonner.js';
@@ -148,13 +148,23 @@ const HomeRemoteProjectCard = memo(function HomeRemoteProjectCard({
     setIsOpening(true);
     try {
       await onOpen(project);
-    } catch {
-      toast.error(t('sinopiaImages.openError'));
+    } catch (error) {
+      console.error('[sinopia] model did not open', error);
+      toast.error(t(sinopiaOpenErrorMessage(error)));
     } finally {
       setIsOpening(false);
     }
   }, [onOpen, project, t]);
   const name = isPlaceholderProjectName(project.name) ? t('home.recent.untitled') : project.name;
+  /* A row registered before its first save (a piece from a Sinopia part) has no file to download: it opens only on the
+     computer that made it, and the card says so before the click does. */
+  const isNotSaved = project.sinopia?.snapshot_path === null;
+  const facts = [
+    project.updatedAt === undefined
+      ? undefined
+      : t('home.recent.edited', { when: formatLastActivity(project.updatedAt, language) }),
+    isNotSaved ? t('sinopiaImages.notSaved') : undefined,
+  ].filter((fact) => fact !== undefined);
   return (
     <ProjectCard
       onOpen={open}
@@ -177,11 +187,7 @@ const HomeRemoteProjectCard = memo(function HomeRemoteProjectCard({
       )}
       <CardHeader className={homeProjectCardHeaderClassName}>
         <h3 className='line-clamp-1 text-sm font-medium'>{name}</h3>
-        {project.updatedAt === undefined ? null : (
-          <p className='text-xs text-muted-foreground'>
-            {t('home.recent.edited', { when: formatLastActivity(project.updatedAt, language) })}
-          </p>
-        )}
+        {facts.length === 0 ? null : <p className='text-xs text-muted-foreground'>{facts.join(' · ')}</p>}
       </CardHeader>
     </ProjectCard>
   );

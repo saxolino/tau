@@ -2,11 +2,13 @@ import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createActor, createMachine } from 'xstate';
 import { createExportFile } from '@taucad/types/constants';
 import { setLanguage } from '#i18n/language.js';
 import { bindTranslate } from '#i18n/translate.js';
 import type { Language } from '#i18n/language.js';
 import type { SinopiaCadLink } from '#services/sinopia-cad.js';
+import { sinopiaCadContentKey } from '#services/sinopia-cad.js';
 import type { SinopiaSendFiles, SinopiaSendReceipt } from '#services/sinopia-send.js';
 import { sinopiaSender, SinopiaSendError } from '#services/sinopia-send.js';
 import { toast } from '#components/ui/sonner.js';
@@ -22,16 +24,31 @@ const hooks = vi.hoisted(() => ({
   pieces: [] as unknown[],
   move: vi.fn(),
   source: undefined as ((...args: unknown[]) => unknown) | undefined,
+  deliveryAvailable: false,
+}));
+/** The project (its name) and its main geometry unit (its engine), as the send registers the model with them. */
+const project = vi.hoisted(() => ({ value: undefined as unknown }));
+/** The revision owner: the content the version is sent from, once every edit is in a revision. */
+const revisions = vi.hoisted(() => ({ status: { headRevisionId: 'a'.repeat(40), dirty: false, minting: false } }));
+vi.mock('#hooks/use-revision-status.js', () => ({
+  useRevisionClient: () => ({
+    status: () => revisions.status,
+    snapshot: async () => ({ 'main.ts': 'c2hhcGU=', 'tau.json': 'e30=' }),
+  }),
 }));
 vi.mock('#hooks/use-sinopia-cad-sync.js', () => ({ useMoveSinopiaCadModel: () => hooks.move }));
-vi.mock('#hooks/use-project.js', () => ({ useProject: () => ({ projectId: 'local' }) }));
+vi.mock('#hooks/use-project.js', () => ({ useProject: () => project.value }));
 vi.mock('#hooks/use-file-manager.js', () => ({
   useFileManager: () => ({
     recordFiles: { readFile: hooks.read, writeFile: hooks.write, readdir: hooks.readdir, unlink: hooks.unlink },
   }),
 }));
 vi.mock('#hooks/use-project-export.js', () => ({
-  useProjectExport: () => ({ prepareSinopia: hooks.source ?? hooks.prepare, deliveryPieces: hooks.pieces, deliveryAvailable: false }),
+  useProjectExport: () => ({
+    prepareSinopia: hooks.source ?? hooks.prepare,
+    deliveryPieces: hooks.pieces,
+    deliveryAvailable: hooks.deliveryAvailable,
+  }),
 }));
 vi.mock('#lib/sinopia-data-client.js', () => ({ getSinopiaDataClient: async () => ({ userId: hooks.currentUser }) }));
 vi.mock('#components/ui/sonner.js', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
@@ -65,9 +82,19 @@ function mount(onOpenChange = vi.fn()) {
     onOpenChange,
   };
 }
+const projectActor = createActor(createMachine({ context: { project: { name: 'Collana col ramo' } } })).start();
+const unitActor = createActor(createMachine({ context: { activeKernelId: 'smlib' } })).start();
 beforeEach(() => {
+  revisions.status = { headRevisionId: 'a'.repeat(40), dirty: false, minting: false };
+  project.value = {
+    projectId: 'local',
+    projectRef: projectActor,
+    geometryUnits: new Map([['main.ts', unitActor]]),
+    mainEntryPath: 'main.ts',
+  };
   hooks.currentUser = owner;
   hooks.source = undefined;
+  hooks.deliveryAvailable = false;
   stored.clear();
   saved = undefined;
   hooks.prepare.mockResolvedValue(prepared);
@@ -375,6 +402,103 @@ describe('Sinopia delivery recovery', () => {
     expect([...stored.keys()].filter((path) => path.includes('/sinopia-send-pending/'))).toHaveLength(1);
   });
 
+  it('should label the PDF sheet with the number the version takes, read again at «Invia»', async () => {
+    setLanguage('en');
+    hooks.deliveryAvailable = true;
+    const sheet = { name: 'Collana.pdf', bytes: new Uint8Array([37, 80, 68, 70]), mimeType: 'application/pdf' };
+    hooks.prepare.mockResolvedValue({ ...prepared, pdf: { status: 'ready', files: [sheet] } });
+    // 3 when the dialog opened; another device sent meanwhile (4), and took 4 again during the first attempt (5).
+    vi.mocked(sinopiaSender.nextVersion).mockResolvedValueOnce(3).mockResolvedValueOnce(4).mockResolvedValueOnce(5);
+    vi.mocked(sinopiaSender.send).mockRejectedValueOnce(new SinopiaSendError('version'));
+    const user = userEvent.setup();
+    const view = mount();
+    await user.click(await screen.findByRole('button', { name: 'Send version 3' }));
+    await waitFor(() => {
+      expect(view.onOpenChange).toHaveBeenCalledWith(false);
+    });
+    expect(hooks.prepare.mock.calls.map((call: unknown[]) => call[1])).toEqual(['v4', 'v5']);
+    expect(vi.mocked(sinopiaSender.send).mock.calls.map(([input]) => input.versionNumber)).toEqual([4, 5]);
+    // The model is registered with its name and engine before its version (it may have no row yet).
+    expect(sinopiaSender.send).toHaveBeenCalledWith(
+      expect.objectContaining({ model: { name: 'Collana col ramo', engine: 'smlib' } }),
+    );
+  });
+
+  it('should resume a pending delivery in the model’s project after another device moved the model', async () => {
+    setLanguage('en');
+    const deliveryId = '40000000-0000-4000-8000-000000000009';
+    stored.set(
+      `/projects/local/.tau/sinopia-send-pending/${deliveryId}.json`,
+      new TextEncoder().encode(
+        JSON.stringify({
+          deliveryId,
+          projectId: alternative,
+          modelId: link.modelId,
+          userId: owner,
+          selected: ['step', 'glb', 'photo'],
+          note: '',
+        }),
+      ),
+    );
+    const user = userEvent.setup();
+    const view = mount();
+    await user.click(await screen.findByRole('button', { name: 'Check and complete delivery' }));
+    await waitFor(() => {
+      expect(view.onOpenChange).toHaveBeenCalledWith(false);
+    });
+    // Looked for in both projects (it may have landed in the old one), then sent where the model is now.
+    expect(vi.mocked(sinopiaSender.receipt).mock.calls.map(([query]) => query.projectId)).toEqual([
+      projectId,
+      alternative,
+    ]);
+    expect(sinopiaSender.send).toHaveBeenCalledWith(expect.objectContaining({ projectId, deliveryId }));
+  });
+
+  it('should offer the CAD’s own project, still to be born on Sinopia, as the destination', async () => {
+    setLanguage('en');
+    vi.mocked(sinopiaSender.projects).mockResolvedValue([{ id: alternative, name: 'Primavera' }]);
+    const user = userEvent.setup();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    clients.push(client);
+    const onOpenChange = vi.fn();
+    render(
+      <QueryClientProvider client={client}>
+        <SendToSinopiaDialog isOpen link={{ ...link, projectCreatedByCad: true }} onOpenChange={onOpenChange} />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText('Sinopia project: "Collana col ramo"')).toBeInTheDocument();
+    expect(screen.queryByText(/no longer among your Sinopia projects/u)).not.toBeInTheDocument();
+    await user.click(await screen.findByRole('button', { name: 'Send version 3' }));
+    await waitFor(() => {
+      expect(onOpenChange).toHaveBeenCalledWith(false);
+    });
+    expect(sinopiaSender.send).toHaveBeenCalledWith(expect.objectContaining({ projectId }));
+  });
+
+  it('should name the content of the version it sends, so the sample photo knows it later (difetto 31)', async () => {
+    const user = userEvent.setup();
+    mount();
+    await user.click(await screen.findByRole('button', { name: /3/u }));
+    await waitFor(() => {
+      expect(sinopiaSender.send).toHaveBeenCalledOnce();
+    });
+    expect(vi.mocked(sinopiaSender.send).mock.calls[0]?.[0].contentKey).toBe(
+      await sinopiaCadContentKey({
+        'main.ts': new TextEncoder().encode('shape'),
+        'tau.json': new TextEncoder().encode('{}'),
+      }),
+    );
+  });
+  it('should send without a content name while edits are not in a revision yet', async () => {
+    revisions.status = { headRevisionId: 'a'.repeat(40), dirty: true, minting: false };
+    const user = userEvent.setup();
+    mount();
+    await user.click(await screen.findByRole('button', { name: /3/u }));
+    await waitFor(() => {
+      expect(sinopiaSender.send).toHaveBeenCalledOnce();
+    });
+    expect(vi.mocked(sinopiaSender.send).mock.calls[0]?.[0]).not.toHaveProperty('contentKey');
+  });
   it('should prevent dismissal while remote delivery is in flight', async () => {
     setLanguage('en');
     const user = userEvent.setup();

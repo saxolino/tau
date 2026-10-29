@@ -242,7 +242,7 @@ describe('createSinopiaSession entry criteria', () => {
       code: 'profession',
     },
   ])(
-    'should sign out an account sinopialab.com keeps out ($account) and say where to complete it',
+    'should keep out an account sinopialab.com keeps out ($account) without signing it out of Sinopia, and say where to complete it',
     async ({ account, code }) => {
       const signedIn = tokenResponse('signed-in');
       const { calls } = scriptSinopiaBackend({ password: signedIn }, account);
@@ -259,28 +259,45 @@ describe('createSinopiaSession entry criteria', () => {
 
       await vi.waitFor(() => {
         expect(session.getState()).toEqual({
-          status: 'signed-out',
+          ...signedInState,
+          status: 'refused',
           notice: { code, link: { href: 'https://sinopialab.com/auth' } },
         });
       });
       expect(tokens).toEqual([]);
-      expect(localStorage.getItem(sinopiaKey)).toBeNull();
-      expect(authCalls(calls)).toEqual([
-        { path: '/auth/v1/token', grant: 'password' },
-        { path: '/auth/v1/logout', grant: undefined },
-      ]);
+      /* The key is the one sinopialab.com reads too: dropping it would sign the person out of Sinopia's other tabs. */
+      expect(localStorage.getItem(sinopiaKey)).not.toBeNull();
+      expect(authCalls(calls)).toEqual([{ path: '/auth/v1/token', grant: 'password' }]);
       await expect(session.accessToken()).resolves.toBeUndefined();
     },
   );
 
+  it('should check a refused account again on request, once it has put things right on sinopialab.com', async () => {
+    localStorage.setItem(sinopiaKey, JSON.stringify(tokenResponse('stored')));
+    scriptSinopiaBackend({}, { withoutTerms: true });
+    const session = open();
+    session.subscribe(() => undefined);
+    await vi.waitFor(() => {
+      expect(session.getState()).toHaveProperty('status', 'refused');
+    });
+
+    scriptSinopiaBackend();
+    session.retryAccess();
+
+    await vi.waitFor(() => {
+      expect(session.getState()).toEqual(signedInState);
+    });
+  });
+
   it.each<{ name: string; account: SinopiaTestAccount }>([
-    { name: 'a designer', account: { role: 'designer' } },
-    { name: 'an account without a profile row', account: { withoutProfile: true } },
+    { name: 'a designer the pilot list leaves out', account: { role: 'designer', pilot: 'reserved' } },
+    { name: 'an administrator the pilot list leaves out', account: { role: 'superadmin', pilot: 'reserved' } },
+    { name: 'an account refused with the old code', account: { pilot: 'restricted' } },
   ])(
     'should keep $name in the reserved preview: signed in on the browser, never admitted, no token out',
     async ({ account }) => {
       localStorage.setItem(sinopiaKey, JSON.stringify(tokenResponse('stored')));
-      scriptSinopiaBackend({}, account);
+      const { calls } = scriptSinopiaBackend({}, account);
       const session = open();
       const tokens: Array<string | undefined> = [];
       session.onAccessToken((token) => {
@@ -292,10 +309,37 @@ describe('createSinopiaSession entry criteria', () => {
       });
       expect(tokens.filter((token) => token !== undefined)).toEqual([]);
       await expect(session.accessToken()).resolves.toBeUndefined();
+      expect(localStorage.getItem(sinopiaKey)).not.toBeNull();
+      expect(authCalls(calls)).toEqual([]);
     },
   );
 
-  it('should clear the notice at the next sign-in attempt', async () => {
+  it('should admit a designer the pilot list names: the list decides who is in the pilot', async () => {
+    localStorage.setItem(sinopiaKey, JSON.stringify(tokenResponse('stored')));
+    const { calls } = scriptSinopiaBackend({}, { role: 'designer', pilot: 'allowed' });
+    const session = open();
+    session.subscribe(() => undefined);
+
+    await vi.waitFor(() => {
+      expect(session.getState()).toEqual(signedInState);
+    });
+    const probe = calls.find((call) => call.path === '/v1/models');
+    expect(probe).toMatchObject({ method: 'GET' });
+  });
+
+  it('should hold the account at «Riprova» when the pilot list cannot be read', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    localStorage.setItem(sinopiaKey, JSON.stringify(tokenResponse('stored')));
+    scriptSinopiaBackend({}, { pilot: 'failing' });
+    const session = open();
+    session.subscribe(() => undefined);
+
+    await vi.waitFor(() => {
+      expect(session.getState()).toEqual({ ...signedInState, status: 'unverified' });
+    });
+  });
+
+  it('should leave Sinopia only when asked, and then show the sign-in screen without the notice', async () => {
     scriptSinopiaBackend({ password: tokenResponse('signed-in') }, { withoutTerms: true });
     const session = open();
     session.subscribe(() => undefined);
@@ -304,10 +348,12 @@ describe('createSinopiaSession entry criteria', () => {
       expect(session.getState()).toHaveProperty('notice.link.href', 'https://sinopialab.com/auth');
     });
 
-    const again = session.signIn('pilota@sinopialab.com', 'segreta');
+    await session.signOut();
 
-    expect(session.getState()).toEqual({ status: 'signed-out' });
-    await again;
+    await vi.waitFor(() => {
+      expect(session.getState()).toEqual({ status: 'signed-out' });
+    });
+    expect(localStorage.getItem(sinopiaKey)).toBeNull();
   });
 
   it('should hold a valid account at «Riprova» when a read fails, without signing it out, and admit it on retry', async () => {
@@ -360,6 +406,63 @@ describe('createSinopiaSession entry criteria', () => {
     });
     expect(calls).toEqual([]);
     await expect(session.accessToken()).resolves.toBeUndefined();
+  });
+});
+
+describe('createSinopiaSession when the session ends with the CAD open', () => {
+  /** A session over a client the test can end behind the session's back, as an expiry or another tab does. */
+  const openAdmitted = async () => {
+    let client: SupabaseClient | undefined;
+    localStorage.setItem(sinopiaKey, JSON.stringify(tokenResponse('stored')));
+    scriptSinopiaBackend({ password: tokenResponse('again') });
+    const session = open(async (...parameters) => {
+      client = await createSinopiaSupabaseClient(...parameters);
+      return client;
+    });
+    session.subscribe(() => undefined);
+    await vi.waitFor(() => {
+      expect(session.getState()).toEqual(signedInState);
+    });
+    return { session, client: client! };
+  };
+
+  it('should say the session ended, not just show the sign-in screen', async () => {
+    globalThis.history.replaceState(null, '', '/w/home/cornice-fibbia?pannello=foto');
+    const { session, client } = await openAdmitted();
+
+    await client.auth.signOut({ scope: 'local' });
+
+    await vi.waitFor(() => {
+      expect(session.getState()).toEqual({ status: 'signed-out', notice: { code: 'sessionEnded' } });
+    });
+  });
+
+  it('should go back to the model after the same account signs in again, wherever the page went meanwhile', async () => {
+    globalThis.history.replaceState(null, '', '/w/home/cornice-fibbia?pannello=foto');
+    const { session, client } = await openAdmitted();
+    await client.auth.signOut({ scope: 'local' });
+    await vi.waitFor(() => {
+      expect(session.getState()).toHaveProperty('status', 'signed-out');
+    });
+    globalThis.history.replaceState(null, '', '/');
+
+    await session.signIn('pilota@sinopialab.com', 'segreta');
+
+    await vi.waitFor(() => {
+      expect(session.getState()).toEqual(signedInState);
+    });
+    expect(session.getPendingReturn()).toBe('/w/home/cornice-fibbia?pannello=foto');
+  });
+
+  it('should say nothing when the person signs out', async () => {
+    const { session } = await openAdmitted();
+
+    await session.signOut();
+
+    await vi.waitFor(() => {
+      expect(session.getState()).toEqual({ status: 'signed-out' });
+    });
+    expect(session.getPendingReturn()).toBeUndefined();
   });
 });
 
@@ -436,7 +539,7 @@ describe('createSinopiaSession with Google', () => {
     expect(session.getPendingReturn()).toBeUndefined();
   });
 
-  it('should sign out a brand-new Google account Sinopia has not admitted yet', async () => {
+  it('should keep out, without signing it out, a brand-new Google account Sinopia has not admitted yet', async () => {
     scriptSinopiaBackend(
       { pkce: tokenResponse('google') },
       { needsProfession: true, beta: 'needs_profile', withoutTerms: true },
@@ -449,11 +552,11 @@ describe('createSinopiaSession with Google', () => {
 
     await vi.waitFor(() => {
       expect(session.getState()).toMatchObject({
-        status: 'signed-out',
+        status: 'refused',
         notice: { link: { href: 'https://sinopialab.com/auth' } },
       });
     });
-    expect(localStorage.getItem(sinopiaKey)).toBeNull();
+    expect(localStorage.getItem(sinopiaKey)).not.toBeNull();
     await expect(session.accessToken()).resolves.toBeUndefined();
   });
 

@@ -6,7 +6,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { checkSinopiaAccess, sinopiaRefusalNotice } from '#lib/sinopia-access.js';
+import { checkSinopiaAccess, checkSinopiaPilot, sinopiaRefusalNotice } from '#lib/sinopia-access.js';
 import type { SinopiaAccess } from '#lib/sinopia-access.js';
 import { createSinopiaSupabaseClient } from '#lib/sinopia-session.js';
 import {
@@ -118,6 +118,89 @@ describe('checkSinopiaAccess', () => {
         checkSinopiaAccess(await signedInClient({ factors: [sinopiaTestFactor], aal: 'aal2' }), sinopiaTestUser.id),
       ).resolves.toEqual({ verdict: 'allowed' });
     });
+  });
+});
+
+describe('checkSinopiaAccess with the pilot list of the sinopiacad function', () => {
+  /** The verdict with the list of `SINOPIACAD_ALLOWED_USERS` as the scripted function answers it. */
+  const checkWithList = async (account: SinopiaTestAccount): Promise<SinopiaAccess> => {
+    scriptSinopiaBackend({}, account);
+    return checkSinopiaAccess(await signedInClient(), sinopiaTestUser.id, async () =>
+      checkSinopiaPilot('token-sinopia', { base: 'http://localhost:4000' }),
+    );
+  };
+
+  it.each<{ name: string; account: SinopiaTestAccount }>([
+    { name: 'a designer the list names', account: { role: 'designer', pilot: 'allowed' } },
+    { name: 'a superadmin the list names', account: { role: 'superadmin', pilot: 'allowed' } },
+  ])('should let in $name: the list decides, not the role', async ({ account }) => {
+    await expect(checkWithList(account)).resolves.toEqual({ verdict: 'allowed' });
+  });
+
+  it.each<{ name: string; account: SinopiaTestAccount }>([
+    { name: 'a superadmin the list leaves out', account: { role: 'superadmin', pilot: 'reserved' } },
+    { name: 'a designer the list leaves out', account: { role: 'designer', pilot: 'reserved' } },
+    { name: 'a refusal with the old code', account: { role: 'superadmin', pilot: 'restricted' } },
+  ])('should answer reserved for $name, as the function would refuse every call', async ({ account }) => {
+    await expect(checkWithList(account)).resolves.toEqual({ verdict: 'reserved' });
+  });
+
+  it('should answer unverified, never allowed, when the list cannot be read', async () => {
+    await expect(checkWithList({ role: 'superadmin', pilot: 'failing' })).resolves.toEqual({ verdict: 'unverified' });
+  });
+
+  it('should still keep out an account in the list that sinopialab.com keeps out', async () => {
+    await expect(checkWithList({ role: 'designer', withoutTerms: true })).resolves.toEqual({
+      verdict: 'refused',
+      reason: 'terms',
+    });
+    await expect(checkWithList({ withoutProfile: true })).resolves.toEqual({
+      verdict: 'refused',
+      reason: 'no-profile',
+    });
+  });
+});
+
+describe('checkSinopiaPilot', () => {
+  const answer = (response: Response | Error) =>
+    vi.fn<typeof fetch>(async () => {
+      if (response instanceof Error) {
+        throw response;
+      }
+      return response;
+    });
+
+  it('should ask the function’s catalog with the account’s token', async () => {
+    const fetchMock = answer(Response.json([]));
+
+    await expect(checkSinopiaPilot('token-sinopia', { base: 'https://api.test/', fetch: fetchMock })).resolves.toBe(
+      'allowed',
+    );
+    expect(fetchMock).toHaveBeenCalledWith('https://api.test/v1/models', {
+      headers: { authorization: 'Bearer token-sinopia' },
+    });
+  });
+
+  it.each(['CAD_PILOT_NOT_ALLOWED', 'BILLING_ACCOUNT_RESTRICTED'])(
+    'should read a 403 %s as the reserved pilot',
+    async (type) => {
+      const fetchMock = answer(Response.json({ error: { type, message: 'pilota' } }, { status: 403 }));
+
+      await expect(checkSinopiaPilot('token', { base: 'https://api.test', fetch: fetchMock })).resolves.toBe(
+        'reserved',
+      );
+    },
+  );
+
+  it.each<{ name: string; response: Response | Error }>([
+    { name: 'another 403', response: Response.json({ error: { type: 'INVALID_REQUEST' } }, { status: 403 }) },
+    { name: 'a 401', response: Response.json({ error: { type: 'UNAUTHENTICATED' } }, { status: 401 }) },
+    { name: 'a 500', response: new Response('boom', { status: 500 }) },
+    { name: 'no answer', response: new TypeError('Failed to fetch') },
+  ])('should answer unknown for $name, never a verdict', async ({ response }) => {
+    await expect(checkSinopiaPilot('token', { base: 'https://api.test', fetch: answer(response) })).resolves.toBe(
+      'unknown',
+    );
   });
 });
 

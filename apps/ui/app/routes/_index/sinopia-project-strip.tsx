@@ -324,12 +324,23 @@ const ReferenceImageCard = memo(function ReferenceImageCard({
   );
 });
 
+/**
+ * What became of a Sinopia link's project once the account's list was read: one of its projects, not one of them
+ * (someone else's, deleted, never there), or not known because the list could not be read.
+ */
+export type SinopiaPreselectOutcome = 'found' | 'missing' | 'unverified';
+
 type StripProperties = Readonly<{
   onChoose: (selection: SinopiaReferenceSelection) => Promise<void>;
-  /** `?project=<id>` of a Sinopia link: the project whose images open as soon as the list is read. */
+  /** `?project=<id>` of a Sinopia link: the project checked against the account's list as soon as it is read. */
   preselectProjectId?: string;
-  /** Called once the preselection was applied, or found nothing, so the parameter can leave the address. */
-  onPreselectHandled?: () => void;
+  /**
+   * Whether that project's images open once found. Not when the link also names a model: the model opens, and an
+   * image sheet over it would be the wrong page.
+   */
+  openPreselected?: boolean;
+  /** Called once per preselection with what the list said, so the home can confirm or drop the project. */
+  onPreselectHandled?: (outcome: SinopiaPreselectOutcome) => void;
   isPickerOpen: boolean;
   onPickerOpenChange: (isOpen: boolean) => void;
 }>;
@@ -345,6 +356,7 @@ export function SinopiaProjectStrip(properties: StripProperties): React.JSX.Elem
 function OwnedProjectStrip({
   onChoose,
   preselectProjectId,
+  openPreselected = true,
   onPreselectHandled,
   userId,
   isPickerOpen,
@@ -367,18 +379,25 @@ function OwnedProjectStrip({
     onPickerOpenChange(false);
     setProject(chosen);
   };
-  // A Sinopia «Apri nel CAD» link for a project: open its images once the list is in; a project that is not the
-  // account's (or not there any more) is simply left, and the link is spent either way.
+  // A Sinopia «Apri nel CAD» link for a project: once the list is in, say whether it is one of the account's, and open
+  // its images unless the link brought a model too. A project that is not the account's (or not there any more) opens
+  // nothing; the home is told, so it never keeps it as the origin of new models.
   useEffect(() => {
     if (preselectProjectId === undefined || projects.isPending) {
       return;
     }
-    const linked = projects.data?.find((item) => item.id === preselectProjectId);
-    if (linked !== undefined) {
+    const wanted = preselectProjectId.toLowerCase();
+    const linked = projects.data?.find((item) => item.id.toLowerCase() === wanted);
+    if (linked === undefined) {
+      onPreselectHandled?.(projects.isError ? 'unverified' : 'missing');
+      return;
+    }
+    if (openPreselected) {
+      // oxlint-disable-next-line react/set-state-in-effect -- The account's list arrives from a query: the link's project opens once it is read.
       setProject(linked);
     }
-    onPreselectHandled?.();
-  }, [onPreselectHandled, preselectProjectId, projects.data, projects.isPending]);
+    onPreselectHandled?.('found');
+  }, [onPreselectHandled, openPreselected, preselectProjectId, projects.data, projects.isError, projects.isPending]);
   // Only projects with images to start from: the project a CAD model lives in starts empty and is already a model.
   const startable = projects.data?.filter((item) => item.imageCount !== 0) ?? [];
   const collection = projects.isPending ? (

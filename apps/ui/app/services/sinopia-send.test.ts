@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createClient } from '@supabase/supabase-js';
 import { z } from 'zod';
 import { createExportFile } from '@taucad/types/constants';
-import type { SinopiaCadLink } from '#services/sinopia-cad.js';
+import type { SinopiaCadLink, SinopiaCadModel } from '#services/sinopia-cad.js';
 import {
   createSinopiaSender,
   readSinopiaDeliveries,
@@ -33,6 +33,7 @@ const prepared: SinopiaSendFiles = {
 type Asset = {
   id: string;
   version_number: number;
+  is_current?: boolean;
   created_at: string;
   storage_path: string;
   user_id: string;
@@ -97,6 +98,18 @@ function fixture() {
       }
       return new Response(null, { status: 201 });
     }
+    if (url.pathname === '/rest/v1/assets' && method === 'PATCH') {
+      // Only the «is_current» lowering: `id=neq.<id>` and `version_number=lt.<n>`, as PostgREST would filter.
+      const changes = z.object({ is_current: z.boolean() }).parse(JSON.parse(body));
+      const except = url.searchParams.get('id')?.replace(/^neq\./u, '');
+      const below = Number(url.searchParams.get('version_number')?.replace(/^lt\./u, ''));
+      for (const asset of assets) {
+        if (asset.id !== except && asset.version_number < below) {
+          asset.is_current = changes.is_current;
+        }
+      }
+      return new Response(null, { status: 204 });
+    }
     if (url.pathname.startsWith('/storage/v1/object/creator-private/') && method === 'POST') {
       uploadCount++;
       if (uploadCount === uploadFailure) {
@@ -127,7 +140,28 @@ function fixture() {
     global: { fetch: fetcher },
   });
   const getClient = vi.fn(async () => ({ client, userId }));
-  const sender = createSinopiaSender(getClient);
+  /** The model's row as `ensureSinopiaCadModel` answers it; each call is noted with the uploads seen until then. */
+  let registered: SinopiaCadModel | Error = {
+    id: modelId,
+    project_id: projectId,
+    user_id: owner,
+    name: 'Collana',
+    engine: 'smlib',
+    head_revision_id: null,
+    snapshot_path: null,
+    thumbnail_path: null,
+    snapshot_bytes: null,
+    updated_at: '2026-10-29T10:00:00Z',
+  };
+  const ensured: Array<{ uploadsBefore: number; model: unknown }> = [];
+  const ensureModel = vi.fn(async (_link: SinopiaCadLink, model: unknown) => {
+    ensured.push({ uploadsBefore: uploadCount, model });
+    if (registered instanceof Error) {
+      throw registered;
+    }
+    return registered;
+  });
+  const sender = createSinopiaSender(getClient, ensureModel);
   const send = async (
     id = deliveryId,
     signal = new AbortController().signal,
@@ -141,10 +175,16 @@ function fixture() {
       note: '  Marquise 12 × 5  ',
       deliveryId: id,
       signal,
+      model: { name: 'Collana', engine: 'smlib' },
       ...extra,
     });
   return {
     assets,
+    ensured,
+    ensureModel,
+    register: (row: Partial<SinopiaCadModel> | Error) => {
+      registered = row instanceof Error ? row : { ...(registered as SinopiaCadModel), ...row };
+    },
     requests,
     uploaded,
     removed,
@@ -356,6 +396,100 @@ describe('Sinopia delivery', () => {
       selectedSinopiaFiles({ ...prepared, step: { status: 'needsFix', problem: 'independent' } }, ['glb']),
     ).toEqual([{ format: 'glb', file: prepared.glb.files?.[0] }]);
     expect(() => selectedSinopiaFiles(prepared, [])).toThrow('Sinopia delivery: files');
+  });
+
+  it('should register the model’s row before the first upload, so a version never points at a missing model', async () => {
+    const test = fixture();
+    await test.send();
+    expect(test.ensured).toEqual([{ uploadsBefore: 0, model: { name: 'Collana', engine: 'smlib' } }]);
+    expect(test.assets).toHaveLength(1);
+  });
+
+  it('should send nothing when the model cannot be registered, nor into a project that is not the model’s', async () => {
+    const test = fixture();
+    const diagnostic = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      test.register(new Error('SINOPIA_MODEL_UNAVAILABLE'));
+      await expect(test.send()).rejects.toMatchObject({ name: 'SinopiaSendError', problem: 'model' });
+      expect(test.uploaded.size).toBe(0);
+      expect(test.assets).toEqual([]);
+      const elsewhere = fixture();
+      await expect(
+        elsewhere.send(deliveryId, new AbortController().signal, { projectId: '20000000-0000-4000-8000-000000000009' }),
+      ).rejects.toMatchObject({ name: 'SinopiaSendError', problem: 'destination' });
+      expect(elsewhere.uploaded.size).toBe(0);
+    } finally {
+      diagnostic.mockRestore();
+    }
+  });
+
+  it('should take the thumbnail from the model’s row read at send time, even when «Invia» is pressed at once', async () => {
+    const test = fixture();
+    const thumbnail = `projects/${projectId}/cad/${modelId}/saves/s1/thumbnail.webp`;
+    test.register({ thumbnail_path: thumbnail });
+    await test.send(deliveryId, new AbortController().signal, { selected: ['step', 'glb'] });
+    expect(test.assets[0]!.metadata).toMatchObject({ thumbnail_path: thumbnail });
+  });
+
+  it('should write the content the version was sent from, and only a well-formed one (difetto 31)', async () => {
+    const test = fixture();
+    await test.send(deliveryId, new AbortController().signal, { contentKey: 'e'.repeat(64) });
+    expect(test.assets[0]!.metadata).toMatchObject({ content_key: 'e'.repeat(64) });
+    const malformed = fixture();
+    await malformed.send(deliveryId, new AbortController().signal, { contentKey: 'not a key' });
+    expect(malformed.assets[0]!.metadata).not.toHaveProperty('content_key');
+  });
+
+  it('should use the captured photo as the thumbnail of a version whose model has no preview yet', async () => {
+    const test = fixture();
+    await test.send(deliveryId, new AbortController().signal, { selected: ['step', 'glb'] });
+    const metadata = test.assets[0]?.metadata as Record<string, unknown> & { files: Array<{ storage_path: string }> };
+    expect(metadata['thumbnail_path']).toMatch(/\/v1\/[\da-f-]+\/thumbnail\.png$/u);
+    expect(test.uploaded.has(String(metadata['thumbnail_path']))).toBe(true);
+    // The thumbnail is not a delivered format.
+    expect(metadata.files.map((file) => file.storage_path.split('/').at(-1))).toEqual(['model.step', 'model.glb']);
+  });
+
+  it('should leave only the newest version of the model current, whichever of two sends ends last', async () => {
+    const test = fixture();
+    await Promise.all([test.send(), test.send('40000000-0000-4000-8000-000000000002')]);
+    await test.send('40000000-0000-4000-8000-000000000003');
+    expect(
+      test.assets
+        .toSorted((left, right) => left.version_number - right.version_number)
+        .map((asset) => [asset.version_number, asset.is_current]),
+    ).toEqual([
+      [1, false],
+      [2, false],
+      [3, true],
+    ]);
+    const lowering = test.requests.filter(
+      (request) => request.url.pathname === '/rest/v1/assets' && request.method === 'PATCH',
+    );
+    for (const request of lowering) {
+      expect(request.url.searchParams.get('user_id')).toBe(`eq.${owner}`);
+      expect(request.url.searchParams.get('project_id')).toBe(`eq.${projectId}`);
+      expect(request.url.searchParams.get('type')).toBe('eq.cad_model');
+      expect(request.url.searchParams.get('metadata')).toContain(modelId);
+    }
+  });
+
+  it('should report a pinned version number taken meanwhile instead of sending the sheet under another number', async () => {
+    const test = fixture();
+    await test.send();
+    await expect(
+      test.send('40000000-0000-4000-8000-000000000002', new AbortController().signal, {
+        versionNumber: 1,
+        selected: ['step', 'glb', 'pdf'],
+      }),
+    ).rejects.toMatchObject({ name: 'SinopiaSendError', problem: 'version' });
+    expect(test.assets).toHaveLength(1);
+    // The number still free is accepted as pinned.
+    const sent = await test.send('40000000-0000-4000-8000-000000000002', new AbortController().signal, {
+      versionNumber: 2,
+      selected: ['step', 'glb', 'pdf'],
+    });
+    expect(sent.versionNumber).toBe(2);
   });
 
   it('should query only the admitted owner’s active destination projects', async () => {

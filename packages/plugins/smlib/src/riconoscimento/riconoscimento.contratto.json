@@ -2178,7 +2178,7 @@
     },
     {
       "id": "tacco",
-      "versione": 1,
+      "versione": 2,
       "varianti": [
         "stiletto",
         "blocco",
@@ -2195,7 +2195,7 @@
         "facce": [
           {
             "id": "fianco_esterno",
-            "descrizione": "outer side profile of the heel, the foot-side view of a product photo: toe to the right, top lift on the ground line (shows height, curve of the back, seat slope)"
+            "descrizione": "outer side profile of the heel, the foot-side view of a product photo: toe to the right, top lift on the ground line (shows height, back curve, breast curve, seat slope)"
           },
           {
             "id": "fianco_interno",
@@ -2203,7 +2203,7 @@
           },
           {
             "id": "davanti",
-            "descrizione": "front of the heel, the face that looks toward the toe (shows width at the seat and at the top lift)"
+            "descrizione": "front of the heel, the breast that looks toward the toe (shows width at the seat and at the top lift)"
           },
           {
             "id": "dietro",
@@ -2250,7 +2250,7 @@
           "default": 85,
           "critico": true,
           "silhouetteSensibile": true,
-          "descrizione": "Altezza dal piano d’appoggio al punto posteriore della seduta"
+          "descrizione": "Altezza dal piano d’appoggio al punto posteriore della seduta (si misura dietro)"
         },
         {
           "chiave": "tacco.spinta",
@@ -2259,18 +2259,18 @@
           "max": 10,
           "default": 3,
           "silhouetteSensibile": true,
-          "descrizione": "Inclinazione in avanti dell’asse del tacco"
+          "descrizione": "Inclinazione in avanti dell’asse dal tappo al centro della seduta"
         },
         {
           "chiave": "seduta.forma",
           "unita": "enum",
-          "default": "ellisse",
+          "default": "scudo",
           "valori": [
             "ellisse",
             "rettangolo",
             "scudo"
           ],
-          "descrizione": "Forma della seduta"
+          "descrizione": "Pianta della seduta: scudo = dorso tondo, petto dritto"
         },
         {
           "chiave": "seduta.lunghezza",
@@ -2280,7 +2280,7 @@
           "default": 55,
           "critico": true,
           "silhouetteSensibile": true,
-          "descrizione": "Lunghezza della seduta (verso la punta)"
+          "descrizione": "Lunghezza della seduta, dal dorso al petto lungo la seduta"
         },
         {
           "chiave": "seduta.larghezza",
@@ -2290,7 +2290,7 @@
           "default": 48,
           "critico": true,
           "silhouetteSensibile": true,
-          "descrizione": "Larghezza della seduta"
+          "descrizione": "Larghezza della seduta (non si vede di fianco)"
         },
         {
           "chiave": "seduta.raggioAngoli",
@@ -2298,15 +2298,16 @@
           "min": 0,
           "max": 30,
           "default": 12,
-          "descrizione": "Raggio degli angoli (rettangolo, scudo)"
+          "descrizione": "Raggio degli angoli verso il petto (rettangolo, scudo)"
         },
         {
           "chiave": "seduta.inclinazione",
           "unita": "deg",
           "min": 0,
-          "max": 15,
-          "default": 6,
-          "descrizione": "Inclinazione della seduta (calzata media), scende verso la punta"
+          "max": 35,
+          "default": 14,
+          "silhouetteSensibile": true,
+          "descrizione": "Inclinazione della seduta vista di fianco, scende verso la punta: 5–10° nei tacchi bassi, 15–30° negli alti"
         },
         {
           "chiave": "tappo.forma",
@@ -2364,34 +2365,34 @@
           "max": 0.8,
           "default": 0.55,
           "silhouetteSensibile": true,
-          "descrizione": "Quota della vita (0 tappo, 1 seduta)"
+          "descrizione": "Quota (0 tappo, 1 seduta) dove il fusto si apre verso la seduta; rocchetto: il punto più stretto"
         },
         {
           "chiave": "vita.scala",
           "unita": "frazione",
-          "min": 0.25,
+          "min": 0.2,
           "max": 1.2,
-          "default": 0.45,
+          "default": 0.3,
           "silhouetteSensibile": true,
-          "descrizione": "Larghezza della vita rispetto alla seduta"
+          "descrizione": "Spessore del fusto a quella quota rispetto alla seduta (stiletto ≈ 0,3)"
         },
         {
           "chiave": "dorso.bombatura",
           "unita": "mm",
           "min": -10,
           "max": 15,
-          "default": 6,
+          "default": 0,
           "silhouetteSensibile": true,
-          "descrizione": "Bombatura del dorso (verso −Y)"
+          "descrizione": "Dorso di fianco: + più pieno verso dietro, − più incavato"
         },
         {
           "chiave": "fronte.bombatura",
           "unita": "mm",
           "min": -12,
           "max": 10,
-          "default": -4,
+          "default": 0,
           "silhouetteSensibile": true,
-          "descrizione": "Bombatura del fronte (verso +Y; negativa = concavo)"
+          "descrizione": "Petto di fianco: − arco più profondo sotto la seduta, + più pieno"
         },
         {
           "chiave": "anima.diametro",
@@ -2404,9 +2405,9 @@
         {
           "chiave": "anima.lunghezza",
           "unita": "mm",
-          "default": 72,
+          "default": 65,
           "derivato": true,
-          "descrizione": "Altezza − tappo − 8 mm"
+          "descrizione": "Dal tappo (2 mm dentro) a 6 mm sotto la seduta"
         },
         {
           "chiave": "fori.numero",
@@ -2463,7 +2464,7 @@
           "min": 0.5,
           "max": 3,
           "default": 1.5,
-          "descrizione": "Sformo della cavità"
+          "descrizione": "Sformo della cavità (estratta perpendicolare alla seduta)"
         },
         {
           "chiave": "costruzione.svuotato",

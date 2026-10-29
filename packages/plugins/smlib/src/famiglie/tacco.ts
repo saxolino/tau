@@ -1,4 +1,5 @@
 /* oxlint-disable new-cap -- SMLib exposes capitalized shape factory functions. */
+/* eslint-disable @typescript-eslint/naming-convention -- chiavi dei dati della specifica (viste per nome come `tre_quarti`): snake_case come in Sinopia. */
 import type * as Smlib from '@classcad/smlibwasm';
 import type {
   DefinizioneParametro,
@@ -12,7 +13,6 @@ import type {
 import { emettiMainFamiglia } from '#famiglie/emetti-main.js';
 import { aspettoMateriale } from '#famiglie/materiali.js';
 import {
-  interpolaMonotona,
   limita,
   normalizzaConParametri,
   predefinitiDaParametri,
@@ -20,6 +20,32 @@ import {
   schemaDaParametri,
 } from '#famiglie/parametri.js';
 import { sogliaSformo } from '#famiglie/processi.js';
+import {
+  assePerno,
+  cavitaTacco,
+  contornoSezione,
+  dentroSezione,
+  haFusto,
+  inclinazioneMassima,
+  profiloTacco,
+  puntoDaSeduta,
+  quotaMassimaVita,
+  quotaSeduta,
+  sedutaDaPunto,
+  sedutaDi,
+  sezioneDiCavita,
+  strettezzaVita,
+  profonditaForo,
+  profonditaIncavo,
+} from '#famiglie/tacco-profilo.js';
+import type {
+  CavitaTacco,
+  ParametriTacco,
+  ProfiloTacco,
+  SedutaTacco,
+  SezioneTacco,
+  VarianteTacco,
+} from '#famiglie/tacco-profilo.js';
 import {
   esitiPezzi,
   esitiSformo,
@@ -41,63 +67,27 @@ import { faccia as f } from '#famiglie/viste.js';
 /**
  * Famiglia `tacco` (specifica §1.1): varianti stiletto, blocco, rocchetto, cono e kitten.
  *
- * Telaio locale: origine sul piano d'appoggio al centro del tappo; +Y verso la punta del piede (il fronte del
- * tacco guarda +Y, il dorso −Y); +X verso l'esterno del piede destro. La seduta (dove il tacco incontra la forma)
- * è inclinata di `seduta.inclinazione` attorno a X: scende verso la punta e ha il punto posteriore a
- * z = `tacco.altezza` (l'altezza del mestiere si misura lì).
- *
- * Scelte registrate (esiti T-D1-02):
- * - corpo = `loft` di 7 sezioni chiuse (≈ 5–20 ms); le bombature sono «a sezioni» perché `loft` con `rails` rifiuta le
- *   sezioni chiuse; il rocchetto non usa `sweep` con scala (≈ 400 ms): stesso loft.
- * - le facce del loft sono B-spline e `draft` le rifiuta: la cavità di svuotamento è un secondo loft di sezioni
- *   ridotte di `parete + profondità · tan(sformo)`, già sformato, poi tolto dal corpo con le colonne per perno e
- *   chiodi (coni sformati);
- * - le sezioni sono piane, quindi le facce del tappo e della seduta lo sono già: lo `split` del passo 5 non serve.
+ * Ricetta v2. La forma la dà `tacco-profilo.ts` come la disegna il modellista (dorso e petto di fianco, larghezza da
+ * dietro, pianta a scudo, seduta inclinata e concava); qui diventa solido:
+ * - corpo = `loft` liscio di sezioni orizzontali, ognuna una spline chiusa per gli stessi 32 punti parametrici (stesso
+ *   punto d'inizio sul dorso, stesso verso): il loft non si attorciglia, anche fra tappo tondo e seduta a scudo;
+ * - le sezioni salgono oltre la seduta (scorta) e la seduta si taglia con tre utensili: la superficie scavata fra B e
+ *   F (loft di parabole), una scatola dietro B sopra l'altezza e il piano inclinato davanti a F;
+ * - la cavità di svuotamento (solo a iniezione) si estrae lungo la normale della seduta: superellissi concentriche
+ *   parallele alla seduta, ognuna dentro quella sopra (sformo per costruzione) e a una parete dall'esterno (erosione
+ *   con una sfera); colonne del perno e dei chiodi = coni paralleli alla normale tolti dalla cavità;
+ * - perno d'acciaio sull'asse inclinato della spinta, dal tappo a 6 mm sotto la seduta; fori dei chiodi lungo la normale.
  */
 
 type Lib = typeof Smlib;
 
-/**
- * Varianti della famiglia tacco.
- * @public
- */
-export type VarianteTacco = 'stiletto' | 'blocco' | 'rocchetto' | 'cono' | 'kitten';
-type FormaSeduta = 'ellisse' | 'rettangolo' | 'scudo';
-
-/**
- * Parametri della famiglia tacco, annidati per pezzo.
- * @public
- */
-export type ParametriTacco = {
-  tacco: { altezza: number; spinta: number };
-  seduta: { forma: FormaSeduta; lunghezza: number; larghezza: number; raggioAngoli: number; inclinazione: number };
-  tappo: {
-    forma: 'ellisse' | 'rettangolo' | 'come_seduta';
-    lunghezza: number;
-    larghezza: number;
-    altezza: number;
-    materiale: 'tpu' | 'pu';
-  };
-  vita: { quota: number; scala: number };
-  dorso: { bombatura: number };
-  fronte: { bombatura: number };
-  anima: { diametro: number };
-  fori: { numero: number; diametro: number };
-  costruzione: {
-    processo: 'stampaggio_iniezione' | 'cnc' | 'stampa_3d_resina';
-    materiale: 'abs' | 'pa6' | 'pa_gf30' | 'pu' | 'legno_faggio' | 'alluminio';
-    parete: number;
-    sformo: number;
-    lato: 'dx' | 'sx' | 'coppia';
-  };
-};
-
 const varianti = ['stiletto', 'blocco', 'rocchetto', 'cono', 'kitten'] as const;
-const variantiRigate: ReadonlySet<VarianteTacco> = new Set<VarianteTacco>(['blocco', 'cono']);
+
+/** Versione della ricetta: la 2 disegna dorso e petto separati, la seduta inclinata e scavata. */
+const versioneRicetta = 2;
 
 const svuotatoDi = (p: ParametriTacco): boolean =>
   p.costruzione.processo === 'stampaggio_iniezione' && p.seduta.lunghezza * p.seduta.larghezza > 900;
-const lunghezzaAnima = (p: ParametriTacco): number => p.tacco.altezza - p.tappo.altezza - 8;
 
 const parametri: readonly DefinizioneParametro[] = [
   {
@@ -109,7 +99,7 @@ const parametri: readonly DefinizioneParametro[] = [
     fonteDefault: 'mestiere',
     critico: true,
     silhouetteSensibile: true,
-    descrizione: 'Altezza dal piano d’appoggio al punto posteriore della seduta',
+    descrizione: 'Altezza dal piano d’appoggio al punto posteriore della seduta (si misura dietro)',
   },
   {
     chiave: 'tacco.spinta',
@@ -119,15 +109,15 @@ const parametri: readonly DefinizioneParametro[] = [
     default: 3,
     fonteDefault: 'mestiere',
     silhouetteSensibile: true,
-    descrizione: 'Inclinazione in avanti dell’asse del tacco',
+    descrizione: 'Inclinazione in avanti dell’asse dal tappo al centro della seduta',
   },
   {
     chiave: 'seduta.forma',
     unita: 'enum',
     valori: ['ellisse', 'rettangolo', 'scudo'],
-    default: 'ellisse',
+    default: 'scudo',
     fonteDefault: 'mestiere',
-    descrizione: 'Forma della seduta',
+    descrizione: 'Pianta della seduta: scudo = dorso tondo, petto dritto',
   },
   {
     chiave: 'seduta.lunghezza',
@@ -138,7 +128,7 @@ const parametri: readonly DefinizioneParametro[] = [
     fonteDefault: 'mestiere',
     critico: true,
     silhouetteSensibile: true,
-    descrizione: 'Lunghezza della seduta (verso la punta)',
+    descrizione: 'Lunghezza della seduta, dal dorso al petto lungo la seduta',
   },
   {
     chiave: 'seduta.larghezza',
@@ -149,7 +139,7 @@ const parametri: readonly DefinizioneParametro[] = [
     fonteDefault: 'mestiere',
     critico: true,
     silhouetteSensibile: true,
-    descrizione: 'Larghezza della seduta',
+    descrizione: 'Larghezza della seduta (non si vede di fianco)',
   },
   {
     chiave: 'seduta.raggioAngoli',
@@ -158,16 +148,18 @@ const parametri: readonly DefinizioneParametro[] = [
     max: 30,
     default: 12,
     fonteDefault: 'scelta_nostra',
-    descrizione: 'Raggio degli angoli (rettangolo, scudo)',
+    descrizione: 'Raggio degli angoli verso il petto (rettangolo, scudo)',
   },
   {
     chiave: 'seduta.inclinazione',
     unita: 'deg',
     min: 0,
-    max: 15,
-    default: 6,
+    max: 35,
+    default: 14,
     fonteDefault: 'mestiere',
-    descrizione: 'Inclinazione della seduta (calzata media), scende verso la punta',
+    silhouetteSensibile: true,
+    descrizione:
+      'Inclinazione della seduta vista di fianco, scende verso la punta: 5–10° nei tacchi bassi, 15–30° negli alti',
   },
   {
     chiave: 'tappo.forma',
@@ -224,37 +216,37 @@ const parametri: readonly DefinizioneParametro[] = [
     default: 0.55,
     fonteDefault: 'scelta_nostra',
     silhouetteSensibile: true,
-    descrizione: 'Quota della vita (0 tappo, 1 seduta)',
+    descrizione: 'Quota (0 tappo, 1 seduta) dove il fusto si apre verso la seduta; rocchetto: il punto più stretto',
   },
   {
     chiave: 'vita.scala',
     unita: 'frazione',
-    min: 0.25,
+    min: 0.2,
     max: 1.2,
-    default: 0.45,
+    default: 0.3,
     fonteDefault: 'mestiere',
     silhouetteSensibile: true,
-    descrizione: 'Larghezza della vita rispetto alla seduta',
+    descrizione: 'Spessore del fusto a quella quota rispetto alla seduta (stiletto ≈ 0,3)',
   },
   {
     chiave: 'dorso.bombatura',
     unita: 'mm',
     min: -10,
     max: 15,
-    default: 6,
+    default: 0,
     fonteDefault: 'mestiere',
     silhouetteSensibile: true,
-    descrizione: 'Bombatura del dorso (verso −Y)',
+    descrizione: 'Dorso di fianco: + più pieno verso dietro, − più incavato',
   },
   {
     chiave: 'fronte.bombatura',
     unita: 'mm',
     min: -12,
     max: 10,
-    default: -4,
+    default: 0,
     fonteDefault: 'mestiere',
     silhouetteSensibile: true,
-    descrizione: 'Bombatura del fronte (verso +Y; negativa = concavo)',
+    descrizione: 'Petto di fianco: − arco più profondo sotto la seduta, + più pieno',
   },
   {
     chiave: 'anima.diametro',
@@ -268,10 +260,10 @@ const parametri: readonly DefinizioneParametro[] = [
   {
     chiave: 'anima.lunghezza',
     unita: 'mm',
-    default: 72,
+    default: 65,
     fonteDefault: 'derivato',
-    derivato: (p) => lunghezzaAnima(p as ParametriTacco),
-    descrizione: 'Altezza − tappo − 8 mm',
+    derivato: (p) => assePerno(p as ParametriTacco).lunghezza,
+    descrizione: 'Dal tappo (2 mm dentro) a 6 mm sotto la seduta',
   },
   {
     chiave: 'fori.numero',
@@ -323,7 +315,7 @@ const parametri: readonly DefinizioneParametro[] = [
     max: 3,
     default: 1.5,
     fonteDefault: 'mestiere',
-    descrizione: 'Sformo della cavità',
+    descrizione: 'Sformo della cavità (estratta perpendicolare alla seduta)',
   },
   {
     chiave: 'costruzione.svuotato',
@@ -348,38 +340,43 @@ const sostituzioniVariante: Readonly<Record<VarianteTacco, Readonly<Record<strin
   blocco: {
     'tacco.altezza': 60,
     'tacco.spinta': 0,
-    'seduta.forma': 'rettangolo',
+    'seduta.inclinazione': 8,
     'tappo.forma': 'come_seduta',
     'tappo.lunghezza': 49,
     'tappo.larghezza': 42,
     'vita.scala': 1,
-    'dorso.bombatura': 0,
-    'fronte.bombatura': 0,
     'anima.diametro': 0,
     'fori.numero': 4,
   },
   rocchetto: {
     'tacco.altezza': 55,
     'tacco.spinta': 2,
-    'tappo.lunghezza': 16,
-    'tappo.larghezza': 16,
-    'vita.quota': 0.5,
-    'vita.scala': 0.5,
-    'dorso.bombatura': 8,
-    'fronte.bombatura': 6,
+    'seduta.inclinazione': 10,
+    'tappo.lunghezza': 26,
+    'tappo.larghezza': 26,
+    'vita.quota': 0.42,
+    'vita.scala': 0.32,
     'anima.diametro': 0,
   },
   cono: {
     'tacco.altezza': 45,
     'tacco.spinta': 2,
+    'seduta.inclinazione': 8,
     'tappo.lunghezza': 20,
     'tappo.larghezza': 20,
-    'vita.scala': 0.725,
-    'dorso.bombatura': 0,
-    'fronte.bombatura': 0,
     'anima.diametro': 0,
   },
-  kitten: { 'tacco.altezza': 40, 'anima.diametro': 0 },
+  kitten: {
+    'tacco.altezza': 40,
+    'seduta.lunghezza': 50,
+    'seduta.larghezza': 44,
+    'seduta.inclinazione': 6,
+    'tappo.lunghezza': 11,
+    'tappo.larghezza': 11,
+    'vita.quota': 0.45,
+    'vita.scala': 0.32,
+    'anima.diametro': 0,
+  },
 };
 
 const varianteDi = (opzioni?: OpzioniFamiglia): VarianteTacco =>
@@ -406,13 +403,20 @@ const vincoli = (p: ParametriTacco): Array<{ chiave: string; messaggio: string }
   if (anima.diametro > 0 && anima.diametro < 3) {
     violati.push({ chiave: 'anima.diametro', messaggio: 'Il perno va da 3 a 8 mm (0 = assente).' });
   }
-  if (vita.scala * seduta.larghezza < tappo.larghezza * 0.8) {
-    violati.push({ chiave: 'vita.scala', messaggio: 'La vita è più stretta del tappo oltre il 20 %.' });
+  // Il vincolo non conosce la variante: vale il limite del rocchetto, il più largo (`normalizza` applica quello giusto).
+  if (vita.scala * seduta.larghezza < tappo.larghezza * strettezzaVita('rocchetto') - 1e-9) {
+    violati.push({ chiave: 'vita.scala', messaggio: 'La vita è troppo stretta rispetto al tappo.' });
   }
-  if (Math.abs(spostamentoTappo(p)) > seduta.lunghezza / 2) {
+  if (Math.abs(spostamentoTappo(p)) > (seduta.lunghezza * Math.cos(radianti(seduta.inclinazione))) / 2) {
     violati.push({
       chiave: 'tacco.spinta',
       messaggio: 'Con questa spinta il tappo esce dalla proiezione della seduta.',
+    });
+  }
+  if (seduta.inclinazione > inclinazioneMassima(p) + 1e-9) {
+    violati.push({
+      chiave: 'seduta.inclinazione',
+      messaggio: 'Con questa inclinazione il punto anteriore della seduta scende troppo vicino al tappo.',
     });
   }
   const legno = costruzione.materiale === 'legno_faggio' || costruzione.materiale === 'alluminio';
@@ -426,7 +430,8 @@ const vincoli = (p: ParametriTacco): Array<{ chiave: string; messaggio: string }
 };
 
 const normalizza = (grezzi: unknown, opzioni?: OpzioniFamiglia): ParametriTacco => {
-  const p = normalizzaConParametri(parametri, grezzi, predefiniti(varianteDi(opzioni)));
+  const variante = varianteDi(opzioni);
+  const p = normalizzaConParametri(parametri, grezzi, predefiniti(variante));
   const { tacco, seduta, tappo, vita, anima, costruzione } = p;
   // (1) Tappo dentro la seduta.
   tappo.lunghezza = Math.min(tappo.lunghezza, seduta.lunghezza);
@@ -441,11 +446,21 @@ const normalizza = (grezzi: unknown, opzioni?: OpzioniFamiglia): ParametriTacco 
         Math.min(tappo.lunghezza, tappo.larghezza) - 3 >= 3 ? Math.min(tappo.lunghezza, tappo.larghezza) - 3 : 0;
     }
   }
-  // (4) Vita non più stretta del tappo oltre il 20 %.
-  vita.scala = limita(Math.max(vita.scala, (tappo.larghezza * 0.8) / seduta.larghezza), 0.25, 1.2);
-  // (5) Spinta: il tappo resta sotto la seduta.
-  const massima = (Math.atan(seduta.lunghezza / 2 / (tacco.altezza - tappo.altezza)) * 180) / Math.PI;
+  // (4) Vita non più stretta del tappo oltre il 20 % (il rocchetto, che si riapre verso terra, fino al 55 %).
+  vita.scala = limita(Math.max(vita.scala, (tappo.larghezza * strettezzaVita(variante)) / seduta.larghezza), 0.2, 1.2);
+  // (5) Seduta: il punto anteriore resta ben sopra il tappo.
+  seduta.inclinazione = Math.min(seduta.inclinazione, inclinazioneMassima(p));
+  // (6) Spinta: il tappo resta sotto la seduta.
+  const pianta = seduta.lunghezza * Math.cos(radianti(seduta.inclinazione));
+  const massima = (Math.atan(pianta / 2 / (tacco.altezza - tappo.altezza)) * 180) / Math.PI;
   tacco.spinta = limita(tacco.spinta, -massima, massima);
+  // (7) La vita sta sotto il punto anteriore della seduta, così il petto ha spazio per aprirsi.
+  if (haFusto(variante)) {
+    const corpo = tacco.altezza - tappo.altezza;
+    const quota = (quotaMassimaVita(p) - tappo.altezza) / corpo;
+    // Continuo, senza arrotondare: la verifica D3 muove questi valori e un gradino sarebbe un piano per il simplesso.
+    vita.quota = limita(Math.min(vita.quota, quota), 0.2, 0.8);
+  }
   // Materiale coerente col processo.
   const legno = costruzione.materiale === 'legno_faggio' || costruzione.materiale === 'alluminio';
   if (costruzione.processo === 'cnc' && !legno) {
@@ -456,267 +471,243 @@ const normalizza = (grezzi: unknown, opzioni?: OpzioniFamiglia): ParametriTacco 
   return p;
 };
 
-/** Una sezione del tacco centrata su XY: x = larghezza, y = lunghezza (verso la punta). */
-function sezione(
+/**
+ * I punti del contorno per la spline chiusa di una sezione: 16 bastano alla superellisse (stesso volume entro lo 0,1 %),
+ * e con 24 le booleane sul loft costano tre volte tanto.
+ */
+const puntiContorno = 16;
+
+/** Il bordo chiuso di una sezione orizzontale (spline per i punti del contorno), alla sua quota. */
+function bordoSezione(lib: Lib, sezione: SezioneTacco): Smlib.Edge {
+  // Il loft accetta il bordo chiuso così com'è: farne prima una faccia costa 1,5 ms a sezione.
+  return lib.Pos(0, 0, sezione.z).mul(lib.Spline(contornoSezione(sezione, puntiContorno), { closed: true }));
+}
+
+/**
+ * Una forma disegnata nel telaio della seduta (x, s sul piano XY, la normale della seduta lungo +Z), posata sul piano
+ * parallelo alla seduta a profondità h.
+ * @param lib - Libreria SMLib.
+ * @param seduta - La seduta del profilo.
+ * @param posa - La forma e la profondità sotto il piano della seduta.
+ * @returns La forma posata.
+ */
+function posaInSeduta(lib: Lib, seduta: SedutaTacco, posa: { forma: Smlib.Sketch; h: number }): Smlib.Sketch;
+function posaInSeduta(lib: Lib, seduta: SedutaTacco, posa: { forma: Smlib.Part; h: number }): Smlib.Part;
+function posaInSeduta(
   lib: Lib,
-  forma: FormaSeduta,
-  misure: { larghezza: number; lunghezza: number; raggio: number },
-): Smlib.Sketch {
-  const { larghezza, lunghezza, raggio } = misure;
-  const r = Math.min(raggio, 0.49 * Math.min(larghezza, lunghezza / 2));
-  if (forma === 'ellisse') {
-    return lib.Ellipse(larghezza / 2, lunghezza / 2);
-  }
-  if (forma === 'rettangolo') {
-    return lib.Rectangle(
-      larghezza,
-      lunghezza,
-      r > 0.05 ? { fillet: Math.min(r, 0.49 * Math.min(larghezza, lunghezza)) } : {},
-    );
-  }
-  // Scudo: petto dritto verso la punta, tallone tondo (Hull di un rettangolo e di un cerchio: solo rette e archi).
-  const raggioTallone = Math.min(larghezza, lunghezza) / 2;
-  const petto = lib.Rectangle(larghezza, lunghezza / 2).translate(0, lunghezza / 4);
-  const scudo = lib.Hull(petto, lib.Pos(0, -lunghezza / 2 + raggioTallone).mul(lib.Circle(raggioTallone)));
-  return r > 0.05
-    ? scudo.fillet(r, [
-        [-larghezza / 2, lunghezza / 2],
-        [larghezza / 2, lunghezza / 2],
-      ])
-    : scudo;
+  seduta: SedutaTacco,
+  posa: { forma: Smlib.Sketch | Smlib.Part; h: number },
+): Smlib.Sketch | Smlib.Part {
+  const [y, z] = puntoDaSeduta(seduta, 0, posa.h);
+  const luogo = lib.Pos(0, y, z).mul(lib.Rot((-seduta.inclinazione * 180) / Math.PI, 0, 0));
+  return posa.forma instanceof lib.Part ? luogo.mul(posa.forma) : luogo.mul(posa.forma);
 }
+
+/** Il loft di bordi chiusi è un solido: lo dice il tipo (`loft` di bordi può dare anche un guscio, qui mai). */
+function loftSolido(
+  lib: Lib,
+  bordi: readonly Smlib.Edge[],
+  opzioni: { smooth?: boolean; ruled?: boolean },
+): Smlib.Part {
+  const solido = lib.loft(bordi, opzioni);
+  if (!(solido instanceof lib.Part)) {
+    throw new TypeError('Il loft delle sezioni del tacco non ha chiuso un solido.');
+  }
+  return solido;
+}
+
+/** La normale della seduta (in alto e in avanti): la direzione in cui si estrae la cavità. */
+const normaleSeduta = (seduta: SedutaTacco): [number, number, number] => [
+  0,
+  Math.sin(seduta.inclinazione),
+  Math.cos(seduta.inclinazione),
+];
 
 /**
- * Se un punto sta dentro il contorno di una sezione ridotto di `riduzione` (l'ellisse a semiassi ridotti approssima
- * l'offset vero a meno di centesimi: il margine di 0,8 mm delle colonne lo copre).
+ * L'utensile che taglia la seduta dalla scorta sopra: un loft di sezioni trasversali (piani y = cost.) con il fondo a
+ * parabola, da poco dietro B fin oltre la scorta del petto. Il fondo è la seduta scavata fra B e F e il suo piano fuori
+ * (l'incavo è nullo e piatto in B e in F: niente spigoli nel loft); un solo utensile, niente contatti al limite fra
+ * utensili diversi nel punto B o F.
  */
-function dentroSezione(
-  forma: FormaSeduta,
-  dimensioni: { larghezza: number; lunghezza: number; raggio: number; riduzione: number },
-  punto: readonly [number, number],
-): boolean {
-  const a = dimensioni.larghezza / 2 - dimensioni.riduzione;
-  const b = dimensioni.lunghezza / 2 - dimensioni.riduzione;
-  if (a <= 0 || b <= 0) {
-    return false;
-  }
-  const [x, y] = punto;
-  const nellEllisse = (x / a) ** 2 + (y / b) ** 2 <= 1;
-  if (forma === 'ellisse') {
-    return nellEllisse;
-  }
-  const r = Math.max(
-    0,
-    Math.min(dimensioni.raggio, 0.49 * Math.min(dimensioni.larghezza, dimensioni.lunghezza / 2)) - dimensioni.riduzione,
-  );
-  const nelRettangolo =
-    Math.abs(x) <= a &&
-    Math.abs(y) <= b &&
-    Math.max(Math.abs(x) - (a - r), 0) ** 2 + Math.max(Math.abs(y) - (b - r), 0) ** 2 <= r ** 2 + 1e-9;
-  if (forma === 'rettangolo') {
-    return nelRettangolo;
-  }
-  const raggioTallone = Math.min(dimensioni.larghezza, dimensioni.lunghezza) / 2 - dimensioni.riduzione;
-  const centroTallone = -dimensioni.lunghezza / 2 + Math.min(dimensioni.larghezza, dimensioni.lunghezza) / 2;
-  return y >= centroTallone
-    ? Math.abs(x) <= a &&
-        y <= b &&
-        (y < b - r || Math.max(Math.abs(x) - (a - r), 0) ** 2 + (y - (b - r)) ** 2 <= r ** 2 + 1e-9)
-    : Math.hypot(x, y - centroTallone) <= raggioTallone;
+function utensileSeduta(lib: Lib, profilo: ProfiloTacco, larghezza: number): Smlib.Part {
+  const { seduta } = profilo;
+  const [yB] = seduta.dorso;
+  const [yF] = seduta.petto;
+  const fuori = larghezza / 2 + 12;
+  const cima = profilo.tetto + 10;
+  const lunghezza = yF - yB;
+  const ultimo = profilo.sezioni.at(-1)!;
+  // Fin oltre la punta della scorta del petto (sopra la seduta prosegue sulla sua tangente).
+  const uOltre = Math.max(1.2, (ultimo.petto - yB + 3) / lunghezza);
+  // Con una sezione proprio in B (u = 0) e in F (u = 1): lì la superficie passa esatta per l'altezza e per il petto.
+  const quote = [-0.05, 0, 0.25, 0.5, 0.75, 1, uOltre];
+  const sezioni = quote.map((u) => {
+    const y = yB + u * lunghezza;
+    const centro = quotaSeduta(seduta, larghezza, [0, y]);
+    // Fondo z = centro + k·x²: la parabola trasversale dell'incavo, nulla fuori da B…F.
+    const k =
+      (profonditaIncavo(seduta, larghezza, [0, y]) - profonditaIncavo(seduta, larghezza, [larghezza / 2, y])) /
+      (larghezza / 2) ** 2;
+    const lato = centro + k * fuori * fuori;
+    const filo = new lib.Wire([
+      lib.Bezier([-fuori, lato], [0, centro - k * fuori * fuori], [fuori, lato]),
+      lib.Line([fuori, lato], [fuori, cima]),
+      lib.Line([fuori, cima], [-fuori, cima]),
+      lib.Line([-fuori, cima], [-fuori, lato]),
+    ]);
+    // Disegnata su XY con (x, z) e girata di 90° attorno a X: (x, v, 0) → (x, 0, v).
+    return lib.Pos(0, y, 0).mul(lib.Rot(90, 0, 0).mul(lib.makeFace(filo)));
+  });
+  return lib.loft(sezioni, { smooth: true });
 }
 
-type Stazione = { larghezza: number; lunghezza: number; y: number; z: number; scala: number; inclinazione: number };
-
-/** La legge delle sezioni lungo l'asse: t = 0 al tappo, t = 1 alla seduta (§1.1, passo 2). */
-function stazione(p: ParametriTacco, variante: VarianteTacco, t: number): Stazione {
-  const { tacco, seduta, tappo, vita } = p;
-  const corpo = tacco.altezza - tappo.altezza;
-  const z = tappo.altezza + t * corpo;
-  const sx0 = tappo.larghezza / seduta.larghezza;
-  const sy0 = tappo.lunghezza / seduta.lunghezza;
-  const rigata = variantiRigate.has(variante);
-  const sx = rigata
-    ? sx0 + (1 - sx0) * t
-    : interpolaMonotona(
-        [
-          [0, sx0],
-          [vita.quota, vita.scala],
-          [1, 1],
-        ],
-        t,
-      );
-  const sy = rigata
-    ? sy0 + (1 - sy0) * t
-    : interpolaMonotona(
-        [
-          [0, sy0],
-          [vita.quota, vita.scala],
-          [1, 1],
-        ],
-        t,
-      );
-  const b = rigata ? 0 : Math.sin(Math.PI * t);
-  const lunghezzaLegge = seduta.lunghezza * sy;
-  return {
-    larghezza: seduta.larghezza * sx,
-    lunghezza: Math.max(0.3 * lunghezzaLegge, lunghezzaLegge + (p.fronte.bombatura + p.dorso.bombatura) * b),
-    y: -(1 - t) * spostamentoTappo(p) + ((p.fronte.bombatura - p.dorso.bombatura) / 2) * b,
-    z,
-    scala: Math.min(sx, sy),
-    // La seduta è inclinata e la sezione sotto lo è a metà (nei tacchi bassi le due non si toccano); le altre restano
-    // orizzontali, così le pareti della cavità tengono lo sformo dato.
-    inclinazione: t >= 1 - 1e-9 ? seduta.inclinazione : t >= 5 / 6 - 1e-9 ? seduta.inclinazione / 2 : 0,
-  };
-}
-
-/** Le quote delle sezioni (t di 0…1): k/6, come nella ricetta della specifica. */
-function quoteSezioni(): number[] {
-  return [0, 1, 2, 3, 4, 5, 6].map((k) => k / 6);
-}
-
-/**
- * Posa uno schizzo centrato nella sua stazione: traslato al centro e ruotato attorno all'asse X che passa per il
- * punto posteriore della sezione, così il dorso resta alla quota della legge (e la seduta ha il punto posteriore
- * a z = altezza).
- */
-const posa = (lib: Lib, schizzo: Smlib.Sketch, s: Stazione): Smlib.Sketch => {
-  const posato = lib.Pos(0, s.y, s.z).mul(schizzo);
-  return s.inclinazione === 0
-    ? posato
-    : posato.rotate(new lib.Axis([0, s.y - s.lunghezza / 2, s.z], [1, 0, 0]), -s.inclinazione);
-};
-
-/** Il punto dell'asse del perno alla quota z (dal tappo verso la seduta, inclinato della spinta). */
-const assePerno = (p: ParametriTacco, z: number): { y: number; z: number } => ({
-  y: -spostamentoTappo(p) + (z - p.tappo.altezza) * Math.tan(radianti(p.tacco.spinta)),
-  z,
-});
-
-/** Posizioni (x, y) dei fori di fissaggio sulla seduta (§1.1, passo 9). */
+/** Posizioni dei fori di fissaggio nel telaio della seduta [x, s] (§1.1, passo 9), attorno al centro della seduta. */
 function posizioniFori(lib: Lib, p: ParametriTacco): Array<[number, number]> {
   const { numero } = p.fori;
   const { lunghezza, larghezza } = p.seduta;
+  const centro = lunghezza / 2;
   if (numero <= 0) {
     return [];
   }
   if (numero === 1) {
-    return [[0, 0]];
+    return [[0, centro]];
   }
   if (numero === 2) {
     return [
-      [0, lunghezza * 0.175],
-      [0, -lunghezza * 0.175],
+      [0, centro + lunghezza * 0.175],
+      [0, centro - lunghezza * 0.175],
     ];
   }
   const posizioni =
     numero === 3
       ? lib.PolarLocations(larghezza * 0.25, 3, { startAngle: 90 })
       : lib.GridLocations(larghezza * 0.3, lunghezza * 0.35, 2, 2);
-  return posizioni.points.map((punto) => [punto.x, punto.y]);
+  return posizioni.points.map((punto) => [punto.x, centro + punto.y]);
 }
 
-type CorpoTacco = {
-  corpo: Smlib.Part;
-  cavita: Array<readonly [number, number, number]>;
-  anima?: Smlib.Part;
-  foroAnima?: Smlib.Part;
-};
+/** Profondità minima della cavità sotto il piano della seduta (mm). */
+const profonditaMinimaCavita = 10;
 
-type Colonna = { x: number; y: (z: number) => number; raggio: number; sformo: number };
+/** Una colonna (perno o chiodo): asse parallelo alla normale della seduta in (x, s), raggio in cima. */
+type Colonna = { x: number; s: number; raggio: number };
+
+/** Il raggio di una colonna alla profondità h: si allarga scendendo dello sformo (più la deriva del perno). */
+const raggioColonna = (colonna: Colonna, h: number, crescita: number): number =>
+  colonna.raggio + Math.max(0, h + 1.5) * crescita;
+
+/** Se un cerchio (x, s, r) sta nella sezione della cavità con 0,8 mm di margine. */
+function cerchioInCavita(cavita: CavitaTacco, indice: number, cerchio: { x: number; s: number; r: number }): boolean {
+  const sezione = sezioneDiCavita(cavita, cavita.sezioni[indice]!);
+  return Array.from({ length: 16 }, (_, k) => (k * Math.PI) / 8).every((angolo) =>
+    dentroSezione(sezione, [
+      cerchio.x + (cerchio.r + 0.8) * Math.cos(angolo),
+      cerchio.s + (cerchio.r + 0.8) * Math.sin(angolo),
+    ]),
+  );
+}
+
+type Svuotamento = { cavita?: Smlib.Part; fori: Array<[number, number]>; colonnaPerno?: Colonna };
 
 /**
- * La cavità di svuotamento dal lato seduta, in un solo loft: sezioni ridotte di `parete + profondità · tan(sformo)`
- * (già sformate verso la seduta) alle quote delle sezioni del corpo, chiuse da una sezione 1,5 mm sopra la seduta;
- * le colonne del perno e dei chiodi sono fori delle sezioni, più larghi in basso (sformate anch'esse). Il fondo
- * scende finché nucleo e colonne ci stanno e le sezioni non si allargano scendendo. I chiodi si avvicinano al centro
- * finché la loro colonna sta dentro la cavità senza toccare quella del perno; se non ci stanno restano fuori.
+ * La cavità di svuotamento dal lato seduta con le colonne del perno e dei chiodi. I chiodi si avvicinano al centro
+ * finché la loro colonna sta nella cavità senza toccare quella del perno; se non ci stanno restano fuori.
  */
 function costruisciCavita(
   lib: Lib,
   p: ParametriTacco,
-  contesto: { variante: VarianteTacco; fori: ReadonlyArray<[number, number]>; esiti: Esito[] },
-): { cavita?: Smlib.Part; fori: Array<[number, number]> } {
-  const { variante, fori, esiti } = contesto;
-  const { costruzione, seduta, tacco, anima } = p;
-  const tanSformo = Math.tan(radianti(costruzione.sformo));
-  const riduzione = (z: number): number => costruzione.parete + (tacco.altezza - z) * tanSformo;
-  const margine = 0.8;
-  const cerchio = (colonna: Colonna, s: Stazione): { x: number; y: number; r: number } => ({
-    x: colonna.x,
-    y: colonna.y(s.z) - s.y,
-    r: colonna.raggio + (tacco.altezza - s.z) * Math.tan(radianti(colonna.sformo)),
-  });
-  const ciStanno = (s: Stazione, elenco: readonly Colonna[]): boolean => {
-    const dimensioni = {
-      larghezza: s.larghezza,
-      lunghezza: s.lunghezza,
-      raggio: s.scala * seduta.raggioAngoli,
-      riduzione: riduzione(s.z),
-    };
-    if (Math.min(s.larghezza, s.lunghezza) - 2 * dimensioni.riduzione < 6) {
-      return false;
-    }
-    const cerchi = elenco.map((colonna) => cerchio(colonna, s));
-    const separati = cerchi.every((a, i) =>
-      cerchi.every((b, j) => j <= i || Math.hypot(a.x - b.x, a.y - b.y) >= a.r + b.r + 1.5),
+  contesto: { profilo: ProfiloTacco; esiti: Esito[] },
+): Svuotamento {
+  const { profilo, esiti } = contesto;
+  const { seduta } = profilo;
+  const { costruzione, anima } = p;
+  const fori = posizioniFori(lib, p);
+  const corpo = p.tacco.altezza - p.tappo.altezza;
+  const zPetto = seduta.petto[1];
+  const quotaMinima =
+    profilo.vita === undefined ? p.tappo.altezza + 0.4 * corpo : profilo.vita + 0.25 * (zPetto - profilo.vita);
+  const cavita = cavitaTacco(p, profilo, { quotaMinima });
+  if (!cavita) {
+    esiti.push(
+      esito('info', 'SVUOTAMENTO', { messaggio: 'Seduta troppo stretta per la cavità: tacco pieno.', pezzo: 'Tacco' }),
     );
-    return (
-      separati &&
-      cerchi.every(({ x, y, r }) =>
-        Array.from({ length: 16 }, (_, k) => (k * Math.PI) / 8).every((angolo) =>
-          dentroSezione(seduta.forma, dimensioni, [
-            x + (r + margine) * Math.cos(angolo),
-            y + (r + margine) * Math.sin(angolo),
-          ]),
-        ),
-      )
-    );
+    return { fori };
+  }
+  const tanSformo = Math.tan(radianti(costruzione.sformo + 0.5));
+  const perno = assePerno(p);
+  // Il perno, nel telaio della seduta: dove passa in cima alla cavità e quanto deriva per mm di profondità.
+  const pernoIn = (h: number): [number, number] => {
+    const [s0, h0] = sedutaDaPunto(seduta, perno.base);
+    const [s1, h1] = sedutaDaPunto(seduta, [
+      perno.base[0] + perno.direzione[0] * perno.lunghezza,
+      perno.base[1] + perno.direzione[1] * perno.lunghezza,
+    ]);
+    return [0, s0 + ((s1 - s0) * (h - h0)) / (h1 - h0)];
   };
-  // Scendendo le sezioni non si allargano (in pianta), altrimenti la parete interna andrebbe in sottosquadro.
-  const annidata = (sotto: Stazione, sopra: Stazione): boolean =>
-    sotto.larghezza <= sopra.larghezza + 1e-6 &&
-    sotto.y - sotto.lunghezza / 2 >= sopra.y - sopra.lunghezza / 2 - 1e-6 &&
-    sotto.y + sotto.lunghezza / 2 <= sopra.y + sopra.lunghezza / 2 + 1e-6;
-  const colonne: Colonna[] =
+  const derivaPerno = (() => {
+    const [, sa] = pernoIn(0);
+    const [, sb] = pernoIn(10);
+    return Math.abs(sb - sa) / 10;
+  })();
+  const colonnaPerno: Colonna | undefined =
     anima.diametro > 0
-      ? [
-          {
-            x: 0,
-            y: (z) => assePerno(p, z).y,
-            raggio: anima.diametro / 2 + 0.1 + costruzione.parete,
-            sformo: costruzione.sformo + Math.abs(tacco.spinta) + 0.5,
-          },
-        ]
-      : [];
-  const griglia = quoteSezioni();
-  const alta = stazione(p, variante, griglia[5]!);
-  const seduta1 = stazione(p, variante, 1);
-  const colonnaChiodo = (x: number, y: number): Colonna => ({
-    x,
-    y: () => y,
-    raggio: p.fori.diametro / 2 + costruzione.parete,
-    sformo: costruzione.sformo + 0.5,
-  });
+      ? { x: 0, s: pernoIn(-1.5)[1], raggio: anima.diametro / 2 + 0.1 + costruzione.parete }
+      : undefined;
+  const crescitaPerno = tanSformo + derivaPerno;
+  const colonnaChiodo = (x: number, s: number): Colonna => ({ x, s, raggio: p.fori.diametro / 2 + costruzione.parete });
+  type Elenco = ReadonlyArray<{ colonna: Colonna; crescita: number }>;
+  /** Se le colonne stanno, separate di 1,5 mm, nella sezione `indice` della cavità. */
+  const stannoA = (indice: number, elenco: Elenco): boolean => {
+    const { h } = cavita.sezioni[indice]!;
+    const cerchi = elenco.map(({ colonna, crescita }) => ({
+      x: colonna.x,
+      s: colonna.s,
+      r: raggioColonna(colonna, h, crescita),
+    }));
+    const separati = cerchi.every((a, i) =>
+      cerchi.every((b, j) => j <= i || Math.hypot(a.x - b.x, a.s - b.s) >= a.r + b.r + 1.5),
+    );
+    return separati && cerchi.every((cerchio) => cerchioInCavita(cavita, indice, cerchio));
+  };
+  /** L'ultima sezione (dall'alto) fin dove le colonne stanno tutte; −1 se non stanno nemmeno in cima. */
+  const fondoPer = (elenco: Elenco): number => {
+    let fondo = -1;
+    for (let indice = 0; indice < cavita.sezioni.length && stannoA(indice, elenco); indice++) {
+      fondo = indice;
+    }
+    return fondo;
+  };
+  const conPerno = colonnaPerno ? [{ colonna: colonnaPerno, crescita: crescitaPerno }] : [];
+  // La colonna del perno si allarga scendendo e la cavità si stringe: la cavità si ferma dove la colonna ci sta ancora.
+  const fondoPerno = colonnaPerno ? fondoPer(conPerno) : cavita.sezioni.length - 1;
+  if (fondoPerno < 0 || cavita.sezioni[fondoPerno]!.h < 4) {
+    esiti.push(
+      esito('info', 'SVUOTAMENTO', {
+        messaggio: 'La colonna del perno non lascia spazio alla cavità: tacco pieno.',
+        pezzo: 'Tacco',
+      }),
+    );
+    return { fori, ...(colonnaPerno ? { colonnaPerno } : {}) };
+  }
   // I chiodi: le posizioni della ricetta, poi più vicine al centro (a passi del 10 %); con il perno, anche in giro
-  // attorno alla sua colonna (un chiodo dietro e due davanti, o il contrario), finché le colonne ci stanno.
+  // attorno alla sua colonna. Si tiene il primo giro che lascia la cavità profonda almeno la metà di quella senza chiodi;
+  // se nessuno ci riesce, quello che la lascia più profonda (almeno 4 mm): meglio una cavità più bassa che niente chiodi.
+  const profonditaDi = (fondo: number): number => (fondo < 0 ? 0 : cavita.sezioni[fondo]!.h);
+  const centro = p.seduta.lunghezza / 2;
   const candidati: Array<{ posizioni: Array<[number, number]>; nota?: string }> = [];
   for (let fattore = 1; fattore >= 0.45; fattore -= 0.1) {
     candidati.push({
-      posizioni: fori.map(([x, y]) => [x * fattore, y * fattore]),
+      posizioni: fori.map(([x, s]) => [x * fattore, centro + (s - centro) * fattore]),
       ...(fattore < 1 ? { nota: `avvicinati al centro (${Math.round(fattore * 100)} %)` } : {}),
     });
   }
-  if (anima.diametro > 0 && fori.length >= 2) {
-    // Con il perno: i chiodi in giro attorno alla sua colonna, dietro (dove il dorso è più largo) o davanti.
-    const centro = assePerno(p, tacco.altezza).y;
-    const separazione = colonne[0]!.raggio + p.fori.diametro / 2 + costruzione.parete + 2.5;
-    const chiodi = fori.length;
+  if (colonnaPerno && fori.length >= 2) {
+    const separazione = colonnaPerno.raggio + p.fori.diametro / 2 + costruzione.parete + 2.5;
     for (const inizio of [-90, 90]) {
-      for (let raggio = seduta.larghezza * 0.25; raggio >= separazione - 1e-9; raggio -= 1) {
+      for (let raggio = p.seduta.larghezza * 0.25; raggio >= separazione - 1e-9; raggio -= 1) {
         candidati.push({
-          posizioni: Array.from({ length: chiodi }, (_, k) => {
-            const angolo = radianti(inizio + (360 * k) / chiodi);
-            return [raggio * Math.cos(angolo), centro + raggio * Math.sin(angolo)];
+          posizioni: Array.from({ length: fori.length }, (_, k) => {
+            const angolo = radianti(inizio + (360 * k) / fori.length);
+            return [raggio * Math.cos(angolo), colonnaPerno.s + raggio * Math.sin(angolo)];
           }),
           nota: `attorno al perno a ${mm(raggio, 1)}`,
         });
@@ -725,21 +716,37 @@ function costruisciCavita(
     // Ultima scelta: la vite centrale entra nella colonna del perno, sopra la sua testa; i chiodi restano fuori.
     candidati.push({ posizioni: [], nota: 'ridotti alla vite centrale nella colonna del perno' });
   }
-  let foriTenuti: Array<[number, number]> = [];
-  for (const { posizioni, nota } of fori.length > 0 ? candidati : []) {
-    const elenco = [...colonne, ...posizioni.map(([x, y]) => colonnaChiodo(x, y))];
-    if (ciStanno(alta, elenco) && ciStanno(seduta1, elenco)) {
-      foriTenuti = posizioni.length > 0 ? posizioni : [[0, assePerno(p, tacco.altezza).y]];
-      if (nota) {
-        esiti.push(
-          esito('info', 'FORI_SPOSTATI', {
-            messaggio: `Fori di fissaggio ${nota}: così le colonne stanno nella cavità.`,
-            pezzo: 'Tacco',
-          }),
-        );
-      }
-      break;
-    }
+  const conChiodi = (posizioni: ReadonlyArray<[number, number]>): Elenco => [
+    ...conPerno,
+    ...posizioni.map(([x, s]) => ({ colonna: colonnaChiodo(x, s), crescita: tanSformo })),
+  ];
+  const valutati = (fori.length > 0 ? candidati : []).map((candidato) => ({
+    ...candidato,
+    profondita: profonditaDi(fondoPer(conChiodi(candidato.posizioni))),
+  }));
+  const piuProfondo = valutati
+    .filter(({ posizioni }) => posizioni.length > 0)
+    .toSorted((a, b) => b.profondita - a.profondita)[0];
+  const sogliaProfondita = 0.5 * profonditaDi(fondoPerno);
+  const scelto =
+    valutati.find(({ profondita }) => profondita > 0 && profondita >= sogliaProfondita) ??
+    (piuProfondo && piuProfondo.profondita >= 4
+      ? { ...piuProfondo, nota: `${piuProfondo.nota ?? 'nelle posizioni della ricetta'}, con la cavità più bassa` }
+      : undefined);
+  const foriTenuti: Array<[number, number]> = scelto
+    ? scelto.posizioni.length > 0
+      ? scelto.posizioni
+      : colonnaPerno
+        ? [[0, colonnaPerno.s]]
+        : []
+    : [];
+  if (scelto?.nota) {
+    esiti.push(
+      esito('info', 'FORI_SPOSTATI', {
+        messaggio: `Fori di fissaggio ${scelto.nota}: così le colonne stanno nella cavità.`,
+        pezzo: 'Tacco',
+      }),
+    );
   }
   if (fori.length > 0 && foriTenuti.length === 0) {
     esiti.push(
@@ -750,59 +757,59 @@ function costruisciCavita(
     );
   }
   const vitePerno =
-    anima.diametro > 0 &&
+    colonnaPerno !== undefined &&
     foriTenuti.length === 1 &&
     Math.abs(foriTenuti[0]![0]) < 1e-9 &&
-    Math.abs(foriTenuti[0]![1] - assePerno(p, tacco.altezza).y) < 1e-9;
-  colonne.push(...(vitePerno ? [] : foriTenuti.map(([x, y]) => colonnaChiodo(x, y))));
-  if (!ciStanno(alta, colonne) || !annidata(alta, seduta1)) {
+    Math.abs(foriTenuti[0]![1] - colonnaPerno.s) < 1e-9;
+  const colonne = conChiodi(vitePerno ? [] : foriTenuti);
+  const ultima = Math.max(0, fondoPer(colonne));
+  // Una cavità più bassa di 10 mm sotto la seduta toglie poco materiale e aggiunge un'anima allo stampo (e la booleana
+  // più cara della ricetta): il tacco resta pieno, i fori di fissaggio restano.
+  if (cavita.sezioni[ultima]!.h < profonditaMinimaCavita) {
     esiti.push(
-      esito('info', 'SVUOTAMENTO', { messaggio: 'Seduta troppo stretta per la cavità: tacco pieno.', pezzo: 'Tacco' }),
+      esito('info', 'SVUOTAMENTO', {
+        messaggio: `Cavità possibile solo per ${mm(cavita.sezioni[ultima]!.h, 0)} sotto la seduta: tacco pieno.`,
+        pezzo: 'Tacco',
+      }),
     );
-    return { fori: [...fori] };
+    return { fori: foriTenuti, ...(colonnaPerno ? { colonnaPerno } : {}) };
   }
-  // Il fondo sta su una quota delle sezioni del corpo: interno ed esterno si interpolano sulle stesse stazioni.
-  const minimo = Math.max(p.vita.quota, 0.35);
-  let fondo = 5;
-  while (fondo > 1 && griglia[fondo - 1]! >= minimo - 1e-9) {
-    const sotto = stazione(p, variante, griglia[fondo - 1]!);
-    if (!ciStanno(sotto, colonne) || !annidata(sotto, stazione(p, variante, griglia[fondo]!))) {
-      break;
-    }
-    fondo -= 1;
-  }
-  const ridotta = (s: Stazione, profondita: number): Smlib.Sketch => {
-    let schizzo = sezione(lib, seduta.forma, {
-      larghezza: s.larghezza,
-      lunghezza: s.lunghezza,
-      raggio: s.scala * seduta.raggioAngoli,
-    }).offset(-(costruzione.parete + profondita * tanSformo), { corners: 'round' });
-    for (const colonna of colonne) {
-      const { x, y, r } = cerchio(colonna, { ...s, z: tacco.altezza - profondita });
-      schizzo = schizzo.cut(lib.Pos(x, y).mul(lib.Circle(r)));
-    }
-    return posa(lib, schizzo, s);
-  };
-  const sezioni = griglia.slice(fondo, 6).map((t) => {
-    const s = stazione(p, variante, t);
-    return ridotta(s, tacco.altezza - s.z);
+  // Le sezioni del loft: da 4 a 6, equidistanti in profondità, sempre la prima e l'ultima (la cavità è liscia: di più
+  // costano nelle booleane senza cambiare la forma).
+  const quante = limita(Math.round(cavita.sezioni[ultima]!.h / 8) + 1, 4, 6);
+  const indici = [...new Set(Array.from({ length: quante }, (_, k) => Math.round((k * ultima) / (quante - 1))))];
+  // Le colonne sono fori delle sezioni (un loft di sezioni con fori fa un solido cavo): crescono scendendo con lo
+  // sformo, quindi escono già sformate e senza una booleana in più.
+  const schizzi = indici.map((indice) => {
+    const sezione = cavita.sezioni[indice]!;
+    const bordo = lib.Spline(contornoSezione(sezioneDiCavita(cavita, sezione), puntiContorno), { closed: true });
+    const cerchi = colonne.map(({ colonna, crescita }) =>
+      lib.Pos(colonna.x, colonna.s).mul(lib.Circle(raggioColonna(colonna, sezione.h, crescita))),
+    );
+    // Un taglio solo con l'unione dei cerchi: metà del tempo di una faccia con i fori uno per uno.
+    const faccia = lib.makeFace(bordo);
+    const schizzo =
+      cerchi.length === 0 ? faccia : faccia.cut(cerchi.length === 1 ? cerchi[0]! : cerchi[0]!.fuse(...cerchi.slice(1)));
+    return posaInSeduta(lib, seduta, { forma: schizzo, h: sezione.h });
   });
-  const normale = new lib.Vector(0, Math.sin(radianti(seduta.inclinazione)), Math.cos(radianti(seduta.inclinazione)));
-  const cima = ridotta(seduta1, 0).translate(normale.mul(1.5));
-  return { cavita: lib.loft([...sezioni, cima], { smooth: sezioni.length + 1 >= 4 }), fori: foriTenuti };
+  // Rigata, a tratti dritti fra sezioni annidate: lo sformo resta positivo per costruzione (un loft liscio, dove il
+  // tacco si apre forte sotto una seduta inclinata, ondeggia fra le sezioni e va in sottosquadro).
+  const solido = lib.loft(schizzi, { ruled: true });
+  return { cavita: solido, fori: foriTenuti, ...(colonnaPerno ? { colonnaPerno } : {}) };
 }
 
 /**
- * Toglie gli strumenti dal corpo con una sola booleana; se il kernel la rifiuta («cut failed», che sui tacchi bassi come
- * il kitten capita con certe combinazioni di cavità, fori e perno) li applica uno alla volta e scarta quello che
- * fallisce, con un avviso pulito al posto dell'errore: il tacco si costruisce comunque, più pieno del previsto.
+ * Toglie gli strumenti dal corpo con una sola booleana; se il kernel la rifiuta li applica uno alla volta e scarta
+ * quello che fallisce, con un avviso pulito al posto dell'errore: il tacco si costruisce comunque, più pieno del previsto.
+ * @param corpo - Il corpo.
+ * @param taglio - Gli strumenti, gli esiti dove scrivere l'avviso e chi avvisare dello strumento scartato.
+ * @returns Il corpo tagliato.
  */
 function tagliaConRiserva(
   corpo: Smlib.Part,
-  strumenti: readonly Smlib.Part[],
-  esiti: Esito[],
-  scartato: (strumento: Smlib.Part) => void,
+  taglio: { strumenti: readonly Smlib.Part[]; esiti: Esito[]; scartato: (strumento: Smlib.Part) => void },
 ): Smlib.Part {
+  const { strumenti, esiti, scartato } = taglio;
   try {
     return corpo.cut(...strumenti);
   } catch {
@@ -825,52 +832,46 @@ function tagliaConRiserva(
   return risultato;
 }
 
-/** Corpo del tacco destro con cavità, fori e sede del perno. */
+type CorpoTacco = {
+  corpo: Smlib.Part;
+  cavita: Array<readonly [number, number, number]>;
+  anima?: Smlib.Part;
+  foroAnima?: Smlib.Part;
+};
+
+/** Il perno (o il suo foro, 0,1 mm più largo) lungo l'asse inclinato della spinta. */
+function cilindroPerno(lib: Lib, p: ParametriTacco, gioco: number): Smlib.Part {
+  const { base, lunghezza } = assePerno(p);
+  return lib.Pos(0, base[0], base[1]).mul(
+    lib.Rot(-p.tacco.spinta, 0, 0).mul(
+      lib.Cylinder(p.anima.diametro / 2 + gioco, lunghezza + gioco, {
+        align: [lib.Align.CENTER, lib.Align.CENTER, lib.Align.MIN],
+      }),
+    ),
+  );
+}
+
+/** Corpo del tacco destro: loft delle sezioni, seduta tagliata, cavità, fori e sede del perno. */
 function costruisciCorpo(
   lib: Lib,
   p: ParametriTacco,
-  contesto: { variante: VarianteTacco; esiti: Esito[] },
+  contesto: { variante: VarianteTacco; profilo: ProfiloTacco; esiti: Esito[] },
 ): CorpoTacco {
-  const { variante, esiti } = contesto;
-  const { seduta, tappo, tacco, anima } = p;
-  const formaTappo: FormaSeduta = tappo.forma === 'come_seduta' ? seduta.forma : tappo.forma;
-  const griglia = quoteSezioni();
-  const indici = variantiRigate.has(variante) ? [0, 6] : [0, 1, 2, 3, 4, 5, 6];
-  const sezioni = indici.map((k) => {
-    const s = stazione(p, variante, griglia[k]!);
-    const schizzo =
-      k === 0
-        ? sezione(lib, formaTappo, {
-            larghezza: tappo.larghezza,
-            lunghezza: tappo.lunghezza,
-            raggio: seduta.raggioAngoli * s.scala,
-          })
-        : sezione(lib, seduta.forma, {
-            larghezza: s.larghezza,
-            lunghezza: s.lunghezza,
-            raggio: seduta.raggioAngoli * s.scala,
-          });
-    return posa(lib, schizzo, s);
-  });
-  let corpo = lib.loft(sezioni, variantiRigate.has(variante) ? { ruled: true } : { smooth: true });
-  // Raccordo del bordo verso il tappo (spigolo del loft, non di una booleana); nessuno sul bordo della seduta.
-  try {
-    corpo = corpo.fillet(corpo.edges().bottom(), Math.min(0.6, 0.2 * Math.min(tappo.larghezza, tappo.lunghezza)));
-  } catch {
-    esiti.push(
-      esito('avviso', 'RACCORDO_RIDOTTO', {
-        messaggio: 'Raccordo del bordo verso il tappo non costruibile: spigolo vivo.',
-        pezzo: 'Tacco',
-      }),
-    );
-  }
-  let fori = posizioniFori(lib, p);
-  let cavita: Smlib.Part | undefined;
+  const { profilo, esiti } = contesto;
+  const { seduta } = profilo;
+  let corpo = loftSolido(
+    lib,
+    profilo.sezioni.map((sezione) => bordoSezione(lib, sezione)),
+    { smooth: true },
+  );
+  // Nessun raccordo sul bordo verso il tappo: il sopratacco combacia di testa (si rifila in finitura), e sul loft di
+  // spline il raccordo costava da solo più di metà della ricostruzione.
+  // La seduta: senza questo taglio il tacco non ha la sua forma, quindi un errore qui è un errore della ricetta.
+  corpo = corpo.cut(utensileSeduta(lib, profilo, p.seduta.larghezza));
+  let svuotamento: Svuotamento = { fori: posizioniFori(lib, p) };
   if (svuotatoDi(p)) {
     try {
-      const risultato = costruisciCavita(lib, p, { variante, fori, esiti });
-      cavita = risultato.cavita;
-      fori = risultato.fori;
+      svuotamento = costruisciCavita(lib, p, contesto);
     } catch (error) {
       esiti.push(
         esito('avviso', 'SVUOTAMENTO', {
@@ -880,45 +881,62 @@ function costruisciCorpo(
       );
     }
   }
+  const { cavita } = svuotamento;
   const strumenti: Smlib.Part[] = cavita ? [cavita] : [];
-  const pendenza = Math.tan(radianti(seduta.inclinazione));
-  for (const [x, y] of fori) {
+  const perno = p.anima.diametro > 0 ? assePerno(p) : undefined;
+  for (const [x, s] of svuotamento.fori) {
+    const [y] = puntoDaSeduta(seduta, s, 0);
+    const superficie = quotaSeduta(seduta, p.seduta.larghezza, [x, y]);
+    const [, zPiano] = puntoDaSeduta(seduta, s, 0);
+    const scavo = Math.max(0, zPiano - superficie);
     // Sull'asse del perno la vite si ferma 1 mm sopra la sua testa.
-    const sulPerno = anima.diametro > 0 && Math.hypot(x, y - assePerno(p, tacco.altezza).y) < anima.diametro / 2 + 0.1;
-    const testaPerno = tappo.altezza - 2 + lunghezzaAnima(p) * Math.cos(radianti(tacco.spinta));
-    const utile = sulPerno ? Math.max(3, Math.min(14, tacco.altezza - testaPerno - 1)) : 14;
-    const profondita = utile + (y + seduta.lunghezza / 2) * pendenza + 2;
-    strumenti.push(
-      lib
-        .Pos(x, y, tacco.altezza + 2)
-        .mul(
-          lib.Cylinder(p.fori.diametro / 2, profondita, { align: [lib.Align.CENTER, lib.Align.CENTER, lib.Align.MAX] }),
-        ),
-    );
+    const sulPerno =
+      svuotamento.colonnaPerno !== undefined &&
+      Math.hypot(x - svuotamento.colonnaPerno.x, s - svuotamento.colonnaPerno.s) < 1e-6;
+    const testaPerno = perno ? perno.base[1] + perno.direzione[1] * perno.lunghezza : 0;
+    // Il foro scende al più fin dove resta a una parete dalla superficie esterna (sotto una cavità bassa il tacco
+    // si stringe: un foro di 14 mm uscirebbe dal fianco).
+    const sicura = profonditaForo(profilo, {
+      x,
+      s,
+      raggio: p.fori.diametro / 2,
+      parete: Math.min(p.costruzione.parete, 1.5),
+      massima: scavo + 14,
+    });
+    const utile = Math.min(sulPerno ? Math.max(3, Math.min(14, superficie - testaPerno - 1)) : 14, sicura - scavo);
+    if (utile < 3) {
+      esiti.push(
+        esito('avviso', 'FORO_FUORI', {
+          messaggio: 'Un foro di fissaggio uscirebbe dal fianco del tacco: tolto, fissaggio da definire.',
+          pezzo: 'Tacco',
+        }),
+      );
+      continue;
+    }
+    const lunghezza = 2 + scavo + utile;
+    const cilindro = lib.Cylinder(p.fori.diametro / 2, lunghezza, {
+      align: [lib.Align.CENTER, lib.Align.CENTER, lib.Align.MAX],
+    });
+    // Lungo la normale della seduta, dalla cima 2 mm sopra il piano.
+    strumenti.push(posaInSeduta(lib, seduta, { forma: lib.Pos(x, s, 0).mul(cilindro), h: -2 }));
   }
   let pernoPezzo: Smlib.Part | undefined;
   let foroAnima: Smlib.Part | undefined;
-  if (anima.diametro > 0) {
-    const base = assePerno(p, tappo.altezza - 2);
-    const lungo = lunghezzaAnima(p);
-    const lungoAsse = (raggio: number, lunghezza: number): Smlib.Part =>
-      lib
-        .Pos(0, base.y, base.z)
-        .mul(
-          lib
-            .Rot(-tacco.spinta, 0, 0)
-            .mul(lib.Cylinder(raggio, lunghezza, { align: [lib.Align.CENTER, lib.Align.CENTER, lib.Align.MIN] })),
-        );
-    pernoPezzo = lungoAsse(anima.diametro / 2, lungo);
-    foroAnima = lungoAsse(anima.diametro / 2 + 0.1, lungo + 0.1);
+  if (perno && perno.lunghezza > 0) {
+    pernoPezzo = cilindroPerno(lib, p, 0);
+    foroAnima = cilindroPerno(lib, p, 0.1);
     strumenti.push(foroAnima);
   }
   let cavitaTenuta = cavita;
   if (strumenti.length > 0) {
-    corpo = tagliaConRiserva(corpo, strumenti, esiti, (scartato) => {
-      if (scartato === cavita) {
-        cavitaTenuta = undefined;
-      }
+    corpo = tagliaConRiserva(corpo, {
+      strumenti,
+      esiti,
+      scartato: (scartato) => {
+        if (scartato === cavita) {
+          cavitaTenuta = undefined;
+        }
+      },
     });
   }
   const cavitaPunti = cavitaTenuta ? puntiDiFacce(corpo.faces().derivedFrom(cavitaTenuta)) : [];
@@ -935,28 +953,30 @@ function costruisciCorpo(
   };
 }
 
-function costruisciTappo(lib: Lib, p: ParametriTacco, foroAnima: Smlib.Part | undefined): Smlib.Part {
-  const { tappo, seduta } = p;
-  const forma: FormaSeduta = tappo.forma === 'come_seduta' ? seduta.forma : tappo.forma;
-  const scala = Math.min(tappo.larghezza / seduta.larghezza, tappo.lunghezza / seduta.lunghezza);
-  let pezzo = lib
-    .Pos(0, -spostamentoTappo(p), 0)
-    .mul(
-      sezione(lib, forma, {
-        larghezza: tappo.larghezza,
-        lunghezza: tappo.lunghezza,
-        raggio: seduta.raggioAngoli * scala,
-      }),
-    )
-    .extrude(tappo.altezza);
-  try {
-    pezzo = pezzo.fillet(
-      pezzo.edges().bottom(),
-      Math.min(0.8, 0.45 * tappo.altezza, 0.2 * Math.min(tappo.larghezza, tappo.lunghezza)),
-    );
-  } catch {
-    // Spigolo vivo: il sopratacco si rifila comunque in finitura.
-  }
+/**
+ * Il sopratacco: la pianta della prima sezione estrusa per la sua altezza, con uno smusso sul bordo a terra.
+ * @param lib - Libreria SMLib.
+ * @param p - I parametri.
+ * @param tappo - Il profilo del tacco e il foro del perno, se c'è.
+ * @returns Il sopratacco.
+ */
+function costruisciTappo(
+  lib: Lib,
+  p: ParametriTacco,
+  { profilo, foroAnima }: { profilo: ProfiloTacco; foroAnima: Smlib.Part | undefined },
+): Smlib.Part {
+  const { tappo } = p;
+  // Smusso del bordo a terra come loft di tre sezioni (la prima rientrata): costa un decimo del raccordo sul bordo spline.
+  const smusso = Math.min(0.8, 0.45 * tappo.altezza, 0.2 * Math.min(tappo.larghezza, tappo.lunghezza));
+  const sezione = (z: number, rientro: number): Smlib.Edge =>
+    bordoSezione(lib, {
+      ...profilo.tappo,
+      z,
+      dorso: profilo.tappo.dorso + rientro,
+      petto: profilo.tappo.petto - rientro,
+      larghezza: profilo.tappo.larghezza - 2 * rientro,
+    });
+  const pezzo = loftSolido(lib, [sezione(0, smusso), sezione(smusso, 0), sezione(tappo.altezza, 0)], { ruled: true });
   return normalizzaForma(lib, foroAnima ? pezzo.cut(foroAnima) : pezzo);
 }
 
@@ -965,8 +985,9 @@ function costruisciConEsiti(lib: Lib, p: ParametriTacco, opzioni?: OpzioniFamigl
   const esiti: Esito[] = [];
   const destri: PezzoFamiglia[] = [];
   try {
+    const profilo = profiloTacco(p, variante);
     const { corpo, cavita, anima, foroAnima } = misuraPezzo('Tacco', () =>
-      costruisciCorpo(lib, p, { variante, esiti }),
+      costruisciCorpo(lib, p, { variante, profilo, esiti }),
     );
     if (cavita.length > 0) {
       marcaFacce(corpo, 'cavita', cavita);
@@ -980,7 +1001,7 @@ function costruisciConEsiti(lib: Lib, p: ParametriTacco, opzioni?: OpzioniFamigl
     });
     destri.push({
       name: 'Tappo DX',
-      shape: misuraPezzo('Tappo', () => costruisciTappo(lib, p, foroAnima)),
+      shape: misuraPezzo('Tappo', () => costruisciTappo(lib, p, { profilo, foroAnima })),
       ruolo: 'tappo',
       materiale: p.tappo.materiale,
       ...aspettoMateriale(p.tappo.materiale),
@@ -1041,19 +1062,20 @@ const sogliaPareteTacco = (processo: Processo, materiale: string): number => {
   return materiale === 'pu' ? 2 : 1.8;
 };
 
-/** Distanza minima del perno dalla superficie esterna, sezione per sezione (ellisse equivalente). */
-function distanzaPerno(p: ParametriTacco, variante: VarianteTacco): number {
+/** Distanza minima del perno dalla superficie esterna, sezione per sezione (contorno della legge). */
+function distanzaPerno(p: ParametriTacco, profilo: ProfiloTacco): number {
+  const perno = assePerno(p);
   let minima = Number.POSITIVE_INFINITY;
-  const fine = (lunghezzaAnima(p) * Math.cos(radianti(p.tacco.spinta)) - 2) / (p.tacco.altezza - p.tappo.altezza);
-  for (let k = 0; k <= 24; k++) {
-    const t = (k / 24) * limita(fine, 0, 1);
-    const s = stazione(p, variante, t);
-    const asse = assePerno(p, s.z);
-    const scarto = Math.abs(asse.y - s.y);
-    const semiLunghezza = s.lunghezza / 2;
-    const semiLarghezza = s.larghezza / 2;
-    const lato = scarto < semiLunghezza ? semiLarghezza * Math.sqrt(1 - (scarto / semiLunghezza) ** 2) : 0;
-    minima = Math.min(minima, Math.min(lato, semiLunghezza - scarto) - p.anima.diametro / 2);
+  for (let k = 0; k <= 32; k++) {
+    const lungo = (k / 32) * perno.lunghezza;
+    const y = perno.base[0] + perno.direzione[0] * lungo;
+    const z = perno.base[1] + perno.direzione[1] * lungo;
+    if (z < p.tappo.altezza) {
+      continue;
+    }
+    const contorno = contornoSezione(profilo.sezioneA(z), 96);
+    const distanza = Math.min(...contorno.map(([cx, cy]) => Math.hypot(cx, cy - y)));
+    minima = Math.min(minima, distanza - p.anima.diametro / 2);
   }
   return minima;
 }
@@ -1084,11 +1106,14 @@ function verifiche(
     const minimoSformo = sogliaSformo(processo, p.costruzione.materiale);
     if (minimoSformo !== undefined) {
       esiti.push(
-        ...esitiSformo(sformo(corpo.shape, { direzione: [0, 0, 1], minimo: minimoSformo - 1e-3, facce }), {
-          soglia: minimoSformo,
-          pezzo: corpo.name,
-          dove: 'Cavità (estrazione verso la seduta)',
-        }),
+        ...esitiSformo(
+          sformo(corpo.shape, { direzione: normaleSeduta(sedutaDi(p)), minimo: minimoSformo - 1e-3, facce }),
+          {
+            soglia: minimoSformo,
+            pezzo: corpo.name,
+            dove: 'Cavità (estrazione perpendicolare alla seduta)',
+          },
+        ),
       );
     }
   } else {
@@ -1126,7 +1151,7 @@ function verifiche(
   }
   if (p.anima.diametro > 0) {
     const nelTappo = Math.min(p.tappo.lunghezza, p.tappo.larghezza) - p.anima.diametro;
-    const nelCorpo = distanzaPerno(p, variante);
+    const nelCorpo = distanzaPerno(p, profiloTacco(p, variante));
     esiti.push(
       nelTappo >= 3 && nelCorpo >= 1.5
         ? esito('ok', 'PERNO_PARETE', {
@@ -1151,7 +1176,7 @@ function verifiche(
  */
 export const tacco: Famiglia<ParametriTacco> = {
   id: 'tacco',
-  versione: 1,
+  versione: versioneRicetta,
   varianti,
   partTypes: ['heel', 'top_lift'],
   schema: schemaDaParametri<ParametriTacco>(parametri),
@@ -1169,14 +1194,14 @@ export const tacco: Famiglia<ParametriTacco> = {
         'fianco_esterno',
         90,
         0,
-        'outer side profile of the heel, the foot-side view of a product photo: toe to the right, top lift on the ground line (shows height, curve of the back, seat slope)',
+        'outer side profile of the heel, the foot-side view of a product photo: toe to the right, top lift on the ground line (shows height, back curve, breast curve, seat slope)',
       ),
       f('fianco_interno', -90, 0, 'inner (arch) side profile, toe to the left'),
       f(
         'davanti',
         180,
         0,
-        'front of the heel, the face that looks toward the toe (shows width at the seat and at the top lift)',
+        'front of the heel, the breast that looks toward the toe (shows width at the seat and at the top lift)',
       ),
       f('dietro', 0, 0, 'back of the heel (dorso) seen from behind the shoe, the classic heel-from-behind view'),
       f('sopra', 0, 90, 'the seat from above, toe up (rare)'),
@@ -1192,5 +1217,5 @@ export const tacco: Famiglia<ParametriTacco> = {
   silhouette: { assi: ['x', 'y', 'z'], simmetrie: ['yz'] },
   materialiAmmessi: ['abs', 'pa6', 'pa_gf30', 'pu', 'legno_faggio', 'alluminio', 'tpu', 'acciaio'],
   emettiMain: (p, ipotesi, opzioni) =>
-    emettiMainFamiglia({ id: 'tacco', versione: 1, variante: varianteDi(opzioni) }, p, ipotesi),
+    emettiMainFamiglia({ id: 'tacco', versione: versioneRicetta, variante: varianteDi(opzioni) }, p, ipotesi),
 };

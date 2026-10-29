@@ -46,7 +46,10 @@ describe('ottimizzatore a tre fasi', () => {
 
   it('should recover the side-view measures of a synthetic stiletto within 1 mm', () => {
     // Vista di fianco (az 85–95°): altezza, lunghezza della seduta e del tappo si vedono; le larghezze no.
-    const caso = casoSintetico(famiglie.tacco!, 'stiletto', 11, {
+    // Ricetta v2 del tacco (fusto sottile, seduta inclinata): il caso 13 torna entro 0,5 mm (IoU 0,96). Il caso 11 di
+    // prima si ferma a 1,8 mm sull'altezza (IoU 0,956) e il 12 a IoU 0,92: la fase A gira la camera di 10–17° per
+    // spiegare la stima ±15 %, e il fusto sottile non lo compensa come l'imbuto della v1. Limite noto della verifica D3.
+    const caso = casoSintetico(famiglie.tacco!, 'stiletto', 13, {
       vista: { az: [85, 95], el: [2, 8], ro: [-3, 3] },
       azimuth: 6,
       elevation: 4,

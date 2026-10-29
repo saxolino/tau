@@ -37,7 +37,15 @@ type Request = { url: URL; method: string; body: string };
 
 /** A real supabase-js client over an in-memory transport: no network, no database. */
 function fixture(
-  options: { columns?: boolean; failInsert?: boolean; failSend?: boolean; cadInbox?: boolean; stepCheck?: number } = {},
+  options: {
+    columns?: boolean;
+    failInsert?: boolean;
+    failSend?: boolean;
+    cadInbox?: boolean;
+    stepCheck?: number;
+    /** How the model's Sinopia project answers its vertical: read, missing, or failing. */
+    vertical?: 'error' | 'missing';
+  } = {},
 ) {
   const requests: Request[] = [];
   const response = (data: unknown, status = 200): Response =>
@@ -58,7 +66,9 @@ function fixture(
         : new Response(null, { status: 201 });
     }
     if (url.pathname === '/rest/v1/projects') {
-      return response({ vertical: 'footwear' });
+      return options.vertical === 'error'
+        ? response({ code: 'XX000', message: 'boom' }, 500)
+        : response(options.vertical === 'missing' ? null : { vertical: 'footwear' });
     }
     if (url.pathname === '/rest/v1/supplier_products') {
       return response([
@@ -181,7 +191,7 @@ describe('Salva in Libreria', () => {
     ).toBe(false);
   });
 
-  it('should upload the photo publicly, STEP and GLB privately in the account folder, then insert the row', async () => {
+  it('should upload photo, STEP and GLB privately in the account folder, then insert the row', async () => {
     const test = fixture();
     const id = await salvaInLibreria(
       {
@@ -201,8 +211,9 @@ describe('Salva in Libreria', () => {
     const uploads = test.requests.filter(
       ({ url, method }) => url.pathname.startsWith('/storage/') && method === 'POST',
     );
+    // The photo is the part of a private model: never in the public `library-components` bucket.
     expect(uploads.map(({ url }) => decodeURIComponent(url.pathname))).toEqual([
-      `/storage/v1/object/library-components/${owner}/${id}.png`,
+      `/storage/v1/object/creator-private/components/${owner}/cad/${id}/foto.png`,
       `/storage/v1/object/creator-private/components/${owner}/cad/${id}/model.step`,
       `/storage/v1/object/creator-private/components/${owner}/cad/${id}/model.glb`,
     ]);
@@ -216,8 +227,11 @@ describe('Salva in Libreria', () => {
       type: 'closure',
       file_path: `components/${owner}/cad/${id}/model.step`,
       glb_path: `components/${owner}/cad/${id}/model.glb`,
-      thumbnail_url: expect.stringContaining(`/library-components/${owner}/${id}.png`),
+      // Sinopia's media service worker serves this «public» form of a private path with the session.
+      thumbnail_url: `https://sinopia.invalid/storage/v1/object/public/creator-private/components/${owner}/cad/${id}/foto.png`,
+      image_url: `https://sinopia.invalid/storage/v1/object/public/creator-private/components/${owner}/cad/${id}/foto.png`,
     });
+    expect(test.requests.some(({ url }) => url.pathname.includes('library-components'))).toBe(false);
   });
 
   it('should remove its own uploads when the row is refused, and upload nothing without the columns', async () => {
@@ -240,7 +254,7 @@ describe('Salva in Libreria', () => {
       ),
     ).rejects.toMatchObject({ problema: 'failed' });
     const removed = rifiutata.requests.filter(({ method }) => method === 'DELETE').map(({ body }) => JSON.parse(body));
-    expect(removed).toHaveLength(2);
+    expect(removed).toHaveLength(1);
     expect(removed.flatMap(({ prefixes }) => prefixes as string[])).toHaveLength(3);
 
     const senzaColonne = fixture({ columns: false });
@@ -263,6 +277,37 @@ describe('Salva in Libreria', () => {
     ).rejects.toMatchObject({ problema: 'columns' });
     expect(senzaColonne.requests.some(({ url }) => url.pathname.startsWith('/storage/'))).toBe(false);
   });
+
+  it.each([
+    { vertical: 'error', problema: 'failed' },
+    { vertical: 'missing', problema: 'project' },
+  ] as const)(
+    'should not invent the vertical when the project answers $vertical: nothing uploaded, no row',
+    async ({ vertical, problema }) => {
+      const test = fixture({ vertical });
+      await expect(
+        salvaInLibreria(
+          {
+            link,
+            step,
+            glb,
+            foto,
+            nome: 'Fibbia',
+            tipo: 'buckle',
+            larghezza: 1,
+            altezza: 1,
+            ingombro: [1, 1, 1],
+            pezzi: [],
+          },
+          test.apri,
+        ),
+      ).rejects.toMatchObject({ problema });
+      expect(test.requests.some(({ url }) => url.pathname.startsWith('/storage/'))).toBe(false);
+      expect(
+        test.requests.some(({ url, method }) => url.pathname === '/rest/v1/library_components' && method === 'POST'),
+      ).toBe(false);
+    },
+  );
 
   it('should refuse a missing or wrong file before any call', async () => {
     const test = fixture();

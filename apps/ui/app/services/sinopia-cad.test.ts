@@ -23,6 +23,9 @@ import {
   sinopiaCadSourceHint,
   withSinopiaCadSource,
   reconcileSinopiaCadLink,
+  sinopiaCadContentKey,
+  sinopiaCadSnapshotContentKey,
+  SinopiaCadOriginTakenError,
 } from '#services/sinopia-cad.js';
 import type { SinopiaCadLink, SinopiaCadModel } from '#services/sinopia-cad.js';
 
@@ -93,32 +96,12 @@ beforeEach(() => {
 });
 
 describe('Sinopia CAD persistence', () => {
-  it('creates an owned accessories project with a separate UUID model identity', async () => {
-    transport.fetch
-      .mockResolvedValueOnce(json({ current_vertical: 'accessories' }))
-      .mockResolvedValueOnce(json(null, 201));
+  it('mints the identity without writing to Sinopia: no project exists before the first save (difetto 11)', async () => {
     const result = await createSinopiaCadLink('Ring');
-    expect(requests()[1]?.body).toMatchObject({ name: 'Ring', vertical: 'accessories', user_id: userId });
+    expect(transport.fetch).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ userId, baseRevisionId: null, projectCreatedByCad: true });
     expect(result.modelId).toMatch(/^[0-9a-f-]{36}$/u);
     expect(result.projectId).not.toBe(result.modelId);
-  });
-  it('creates the project in the vertical the person is working in on Sinopia, so a heel is born in Calzature', async () => {
-    transport.fetch
-      .mockResolvedValueOnce(json({ current_vertical: 'footwear' }))
-      .mockResolvedValueOnce(json(null, 201));
-    await createSinopiaCadLink('Tacco');
-    expect(requests()[0]?.url).toContain('/rest/v1/profiles');
-    expect(requests()[0]?.url).toContain(`id=eq.${userId}`);
-    expect(requests()[1]?.body).toMatchObject({ name: 'Tacco', vertical: 'footwear' });
-  });
-  it.each([
-    { name: 'no vertical chosen yet', profile: json({ current_vertical: null }) },
-    { name: 'an unknown vertical', profile: json({ current_vertical: 'spaceships' }) },
-    { name: 'a profile that cannot be read', profile: json({ message: 'boom' }, 500) },
-  ])('falls back to accessories with $name', async ({ profile }) => {
-    transport.fetch.mockResolvedValueOnce(profile).mockResolvedValueOnce(json(null, 201));
-    await createSinopiaCadLink('Ring');
-    expect(requests()[1]?.body).toMatchObject({ vertical: 'accessories' });
   });
   it('reuses only a verified owned origin project and performs no project insert', async () => {
     transport.fetch.mockResolvedValueOnce(json({ id: link.projectId }));
@@ -142,29 +125,6 @@ describe('Sinopia CAD persistence', () => {
     expect(other.projectId).not.toBe(ids.projectId);
     const otherAccount = await sinopiaCadLinkIds('00000000-0000-4000-8000-000000000009', 'proj_0123456789ABCDEFGHIJK');
     expect(otherAccount.projectId).not.toBe(ids.projectId);
-  });
-  it('verifies an earlier attempt’s named project instead of inserting a second one', async () => {
-    const ids = await sinopiaCadLinkIds(userId, 'proj_0123456789ABCDEFGHIJK');
-    transport.fetch
-      .mockResolvedValueOnce(json({ current_vertical: 'accessories' }))
-      .mockResolvedValueOnce(json({ code: '23505', message: 'duplicate key value violates unique constraint' }, 409))
-      .mockResolvedValueOnce(json({ id: ids.projectId }));
-    const created = await createSinopiaCadLink('Collana col ramo', undefined, ids);
-    expect(created).toEqual({ ...ids, userId, baseRevisionId: null, projectCreatedByCad: true });
-    expect(requests().map((request) => request.method)).toEqual(['GET', 'POST', 'GET']);
-    expect(requests()[1]?.body).toMatchObject({ id: ids.projectId, name: 'Collana col ramo', vertical: 'accessories' });
-    expect(requests()[2]?.url).toContain(`id=eq.${ids.projectId}`);
-    expect(requests()[2]?.url).toContain(`user_id=eq.${userId}`);
-    expect(requests()[2]?.url).toContain('deleted_at=is.null');
-  });
-  it('fails without a link when the named project is not this account’s', async () => {
-    const ids = await sinopiaCadLinkIds(userId, 'proj_0123456789ABCDEFGHIJK');
-    transport.fetch
-      .mockResolvedValueOnce(json({ code: '23505', message: 'duplicate key value violates unique constraint' }, 409))
-      .mockResolvedValueOnce(json({ code: 'PGRST116', message: 'no rows' }, 406));
-    await expect(createSinopiaCadLink('Collana', undefined, ids)).rejects.toMatchObject({
-      code: 'PGRST116',
-    });
   });
   it('links a model made before the link existed once, through the new-model creation path', async () => {
     const stored = new Map<string, Uint8Array<ArrayBuffer>>();
@@ -190,13 +150,8 @@ describe('Sinopia CAD persistence', () => {
     const [first, again] = await Promise.all([linkSinopiaCadModel(input), linkSinopiaCadModel(input)]);
     expect(first).toEqual({ ...ids, userId, baseRevisionId: null, projectCreatedByCad: true });
     expect(again).toEqual(first);
-    expect(inserts).toBe(1);
-    expect(requests().find((request) => request.method === 'POST')?.body).toMatchObject({
-      id: ids.projectId,
-      user_id: userId,
-      name: 'Collana col ramo',
-      vertical: 'accessories',
-    });
+    // Opening an unlinked model creates no Sinopia project: its first save does (no empty card in the dashboard).
+    expect(inserts).toBe(0);
     expect(files.writeFile).toHaveBeenCalledOnce();
     expect(files.writeFile.mock.calls[0]?.[0]).toBe(`/projects/${localProjectId}/.tau/sinopia.json`);
     // A later open (a remount, a retry, another tab) reads the persisted link and creates nothing.
@@ -475,6 +430,95 @@ describe('Sinopia CAD persistence', () => {
     expect(opened.link.baseRevisionId).toBe(first);
     expect(opened.files['.tau/sinopia.json']).toBeDefined();
   });
+  it('keys a model by its authored content, not by the revision or the records around it (difetti 7, 31)', async () => {
+    const one = await sinopiaCadContentKey({ 'main.ts': bytes('shape'), 'tau.json': bytes('{}') });
+    expect(one).toMatch(/^[0-9a-f]{64}$/u);
+    expect(
+      await sinopiaCadContentKey({
+        'tau.json': bytes('{}'),
+        'main.ts': bytes('shape'),
+        '.tau/sinopia.json': bytes('a link'),
+        'thumbnail.webp': bytes('a preview'),
+      }),
+    ).toBe(one);
+    expect(
+      await sinopiaCadSnapshotContentKey({
+        'main.ts': uint8ArrayToBase64(bytes('shape')),
+        'tau.json': uint8ArrayToBase64(bytes('{}')),
+      }),
+    ).toBe(one);
+    // A changed measure is a changed model.
+    expect(
+      await sinopiaCadContentKey({
+        'main.ts': bytes('shape'),
+        'tau.json': bytes('{}'),
+        '.tau/parameters/main.ts.json': bytes('{"width":31}'),
+      }),
+    ).not.toBe(one);
+  });
+  it('remembers what the opened copy holds, as this device will mint it (difetto 7)', async () => {
+    const { default: Zip } = await import('jszip');
+    const zip = new Zip();
+    const manifest = serializeProjectManifest(
+      projectToManifest({ name: 'Fibbia', description: '', tags: [], assets: { main: { entryPath: 'main.ts' } } }),
+    );
+    zip.file('tau.json', manifest);
+    zip.file('main.ts', 'shape');
+    transport.fetch.mockResolvedValueOnce(
+      new Response(new Uint8Array(await zip.generateAsync({ type: 'uint8array' })), {
+        headers: { 'content-type': 'application/zip' },
+      }),
+    );
+    const opened = await importSinopiaCadModel({
+      ...model,
+      head_revision_id: first,
+      snapshot_path: `projects/${link.projectId}/cad/${link.modelId}/saves/one/model.zip`,
+    });
+    expect(opened.link.baseContentKey).toBe(
+      await sinopiaCadContentKey({ 'tau.json': manifest, 'main.ts': bytes('shape') }),
+    );
+  });
+  it('does not upload a revision whose files Sinopia already holds (difetto 7)', async () => {
+    const key = 'e'.repeat(64);
+    transport.fetch.mockResolvedValueOnce(
+      json({
+        ...model,
+        head_revision_id: first,
+        snapshot_path: 'projects/x/model.zip',
+        thumbnail_path: 'projects/x/t.webp',
+      }),
+    );
+    const result = await saveSinopiaCadRevision({
+      link: { ...link, baseRevisionId: first, baseContentKey: key },
+      revisionId: second,
+      engine: 'smlib',
+      name: 'Ring',
+      snapshot: new Blob(['zip']),
+      contentKey: key,
+    });
+    expect(result).toMatchObject({ kind: 'saved', previewPending: false });
+    // The head on Sinopia stays the one this content was saved under: no new archive, no row update.
+    expect(result.kind === 'saved' ? result.link.baseRevisionId : undefined).toBe(first);
+    expect(requests().map((request) => request.method)).toEqual(['GET']);
+  });
+  it('records the content key of what it uploaded, and forgets a stale one', async () => {
+    transport.fetch
+      .mockResolvedValueOnce(json({ ...model, head_revision_id: first, snapshot_path: 'projects/x/model.zip' }))
+      .mockResolvedValueOnce(json({ Key: 'zip' }))
+      .mockResolvedValueOnce(json([{ id: model.id }]));
+    const result = await saveSinopiaCadRevision({
+      link: { ...link, baseRevisionId: first, baseContentKey: 'e'.repeat(64) },
+      revisionId: second,
+      engine: 'smlib',
+      name: 'Ring',
+      snapshot: new Blob(['zip']),
+      contentKey: 'f'.repeat(64),
+    });
+    expect(result.kind === 'saved' ? result.link : undefined).toMatchObject({
+      baseRevisionId: second,
+      baseContentKey: 'f'.repeat(64),
+    });
+  });
   it('rejects traversal or nonauthor records before the project can be created', async () => {
     const { default: Zip } = await import('jszip');
     const zip = new Zip();
@@ -517,16 +561,148 @@ describe('One Sinopia project per piece', () => {
     );
   });
 
+  /** A new model's first save, as the server answers it: the project and the row appear when they are written. */
+  const firstSave = (options: {
+    profile?: Response;
+    project?: (method: string) => Response;
+    /** The row of this id as the server holds it, deleted or in another project; absent for a new model. */
+    row?: Readonly<{ deletedAt?: string; projectId: string }>;
+  }): void => {
+    let registered = false;
+    route([
+      [/GET .*\/rest\/v1\/profiles/u, () => options.profile ?? json({ current_vertical: 'accessories' })],
+      [/\/rest\/v1\/projects/u, options.project ?? (() => json(null, 201))],
+      [
+        /GET .*cad_models.*select=id,project_id,deleted_at/u,
+        () =>
+          json(
+            options.row === undefined
+              ? null
+              : { id: model.id, project_id: options.row.projectId, deleted_at: options.row.deletedAt ?? null },
+          ),
+      ],
+      [
+        /cad_models/u,
+        (method) => {
+          if (method === 'POST') {
+            registered = true;
+            return json(null, 201);
+          }
+          return json(registered ? model : null);
+        },
+      ],
+    ]);
+  };
+  const created = { ...link, projectCreatedByCad: true };
+
+  it('creates the CAD’s own project at the model’s first save, then the model in it (difetto 11)', async () => {
+    firstSave({});
+    await ensureSinopiaCadModel(created, 'Ring', 'smlib');
+    const posts = requests().filter((request) => request.method === 'POST');
+    expect(posts.map((request) => new URL(request.url).pathname)).toEqual(['/rest/v1/projects', '/rest/v1/cad_models']);
+    expect(posts[0]?.body).toMatchObject({
+      id: link.projectId,
+      user_id: userId,
+      name: 'Ring',
+      vertical: 'accessories',
+    });
+  });
+  it('creates no project for a model saved in a project the person chose', async () => {
+    firstSave({});
+    await ensureSinopiaCadModel(link, 'Ring', 'smlib');
+    expect(requests().some((request) => request.url.includes('/rest/v1/projects'))).toBe(false);
+  });
+  it('creates the project in the vertical the person is working in on Sinopia, so a heel is born in Calzature', async () => {
+    firstSave({ profile: json({ current_vertical: 'footwear' }) });
+    await ensureSinopiaCadModel(created, 'Tacco', 'smlib');
+    expect(requests().find((request) => request.url.includes('/rest/v1/profiles'))?.url).toContain(`id=eq.${userId}`);
+    expect(requests().find((request) => request.method === 'POST')?.body).toMatchObject({
+      name: 'Tacco',
+      vertical: 'footwear',
+    });
+  });
+  it.each([
+    { name: 'no vertical chosen yet', profile: json({ current_vertical: null }) },
+    { name: 'an unknown vertical', profile: json({ current_vertical: 'spaceships' }) },
+    { name: 'a profile that cannot be read', profile: json({ message: 'boom' }, 500) },
+  ])('falls back to accessories with $name', async ({ profile }) => {
+    firstSave({ profile });
+    await ensureSinopiaCadModel(created, 'Ring', 'smlib');
+    expect(requests().find((request) => request.method === 'POST')?.body).toMatchObject({ vertical: 'accessories' });
+  });
+  it('verifies an earlier attempt’s project instead of inserting a second one', async () => {
+    firstSave({
+      project: (method) =>
+        method === 'POST'
+          ? json({ code: '23505', message: 'duplicate key value violates unique constraint' }, 409)
+          : json({ id: link.projectId }),
+    });
+    await ensureSinopiaCadModel(created, 'Collana col ramo', 'smlib');
+    const project = requests().filter((request) => request.url.includes('/rest/v1/projects'));
+    expect(project.map((request) => request.method)).toEqual(['POST', 'GET']);
+    expect(project[1]?.url).toContain(`user_id=eq.${userId}`);
+    expect(project[1]?.url).toContain('deleted_at=is.null');
+    expect(requests().some((request) => request.method === 'POST' && request.url.includes('cad_models'))).toBe(true);
+  });
+  it('registers nothing when the existing project is not this account’s (or was deleted)', async () => {
+    firstSave({
+      project: (method) =>
+        method === 'POST'
+          ? json({ code: '23505', message: 'duplicate key value violates unique constraint' }, 409)
+          : json(null),
+    });
+    await expect(ensureSinopiaCadModel(created, 'Collana', 'smlib')).rejects.toThrow('SINOPIA_PROJECT_UNAVAILABLE');
+    expect(requests().some((request) => request.method === 'POST' && request.url.includes('cad_models'))).toBe(false);
+  });
   it.each(['New Project', 'Untitled Project', '  '])(
     'never names a CAD-born Sinopia project %j: it becomes «Nuovo progetto»',
     async (name) => {
-      transport.fetch
-        .mockResolvedValueOnce(json({ current_vertical: 'accessories' }))
-        .mockResolvedValueOnce(json(null, 201));
-      await createSinopiaCadLink(name);
-      expect(requests()[1]?.body).toMatchObject({ name: 'Nuovo progetto' });
+      firstSave({});
+      await ensureSinopiaCadModel(created, name, 'smlib');
+      expect(requests().find((request) => request.method === 'POST')?.body).toMatchObject({ name: 'Nuovo progetto' });
     },
   );
+  it('does not bring back a model deleted on Sinopia, nor its project (difetto 12)', async () => {
+    firstSave({ row: { deletedAt: '2026-10-29T08:00:00Z', projectId: link.projectId } });
+    await expect(ensureSinopiaCadModel(created, 'Ring', 'smlib')).rejects.toThrow('SINOPIA_MODEL_DELETED');
+    expect(requests().some((request) => request.method === 'POST')).toBe(false);
+  });
+  it('says a model moved to another project instead of registering it again here', async () => {
+    firstSave({ row: { projectId: target } });
+    await expect(ensureSinopiaCadModel(created, 'Ring', 'smlib')).rejects.toThrow('SINOPIA_MODEL_MOVED');
+    expect(requests().some((request) => request.method === 'POST')).toBe(false);
+  });
+  it('find or create: a part that already became another model hands that model over (difetto 10)', async () => {
+    const other = '00000000-0000-4000-8000-0000000000c3';
+    const linked = { ...link, sourceAssetId: asset, sourcePartId: 'buckle_frame', localRevisionId: first };
+    route([
+      [
+        /GET .*cad_models.*select=id,name,project_id,user_id/u,
+        () => json({ id: other, name: 'Cornice fibbia', project_id: link.projectId, user_id: userId }),
+      ],
+      [/GET .*cad_models/u, () => json(null)],
+      [
+        /POST .*cad_models/u,
+        () =>
+          json(
+            {
+              code: '23505',
+              message: 'duplicate key value violates unique constraint "cad_models_source_unico_idx"',
+            },
+            409,
+          ),
+      ],
+    ]);
+    const failure = await ensureSinopiaCadModel(linked, 'Cornice fibbia', 'smlib').catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(SinopiaCadOriginTakenError);
+    expect((failure as SinopiaCadOriginTakenError).adopted).toEqual({
+      ...link,
+      modelId: other,
+      baseRevisionId: null,
+      sourceAssetId: asset,
+      sourcePartId: 'buckle_frame',
+    });
+  });
 
   it('registers the model with its origin, and without it while the origin columns are not migrated yet', async () => {
     const linked = { ...link, sourceAssetId: asset, sourcePartId: 'buckle_frame' };
@@ -641,6 +817,8 @@ describe('One Sinopia project per piece', () => {
       [/POST .*\/storage\/v1\/object\/list/u, () => json([])],
       [/POST .*\/storage\/v1\/object\/copy/u, () => json({ Key: 'copied' })],
       [/PATCH .*\/rest\/v1\/cad_models/u, () => json([{ id: link.modelId }])],
+      [/GET .*\/rest\/v1\/assets.*type=eq\.ai_render/u, () => json([])],
+      [new RegExp(`GET .*/rest/v1/assets.*project_id=eq\\.${target}`, 'u'), () => json([])],
       [
         /GET .*\/rest\/v1\/assets/u,
         () =>
@@ -741,6 +919,8 @@ describe('One Sinopia project per piece', () => {
           return json([{ id: link.modelId }]);
         },
       ],
+      [/GET .*\/rest\/v1\/assets.*type=eq\.ai_render/u, () => json([])],
+      [new RegExp(`GET .*/rest/v1/assets.*project_id=eq\\.${target}`, 'u'), () => json([])],
       [
         /GET .*\/rest\/v1\/assets/u,
         () =>
@@ -773,6 +953,197 @@ describe('One Sinopia project per piece', () => {
     expect(files.writeFile).toHaveBeenCalledOnce();
   });
 
+  it('moves the model’s sample photos too, with their files, into the new project', async () => {
+    const files = { writeFile: vi.fn(async () => undefined) };
+    const photo = '00000000-0000-4000-8000-0000000000d4';
+    const version = '00000000-0000-4000-8000-0000000000c3';
+    const from = `projects/${link.projectId}/canvas-gen/req-1-generate-from-sketch.png`;
+    route([
+      [/GET .*\/rest\/v1\/projects/u, () => json({ id: target })],
+      [/GET .*\/rest\/v1\/cad_models/u, () => json({ ...model, project_id: target })],
+      [/POST .*\/storage\/v1\/object\/list/u, () => json([])],
+      [/POST .*\/storage\/v1\/object\/copy/u, () => json({ Key: 'copied' })],
+      [
+        /GET .*\/rest\/v1\/assets.*type=eq\.ai_render/u,
+        () =>
+          json([
+            {
+              id: photo,
+              storage_bucket: 'creator-private',
+              storage_path: from,
+              public_url: `https://sinopia.example.test/storage/v1/object/public/assets/${from}`,
+              metadata: { cad_model_id: link.modelId, source: 'sinopiacad', cad_asset_id: version, version_number: 1 },
+            },
+          ]),
+      ],
+      [
+        new RegExp(`GET .*/rest/v1/assets.*project_id=eq\\.${target}`, 'u'),
+        () => json([{ id: version, version_number: 1 }]),
+      ],
+      [/GET .*\/rest\/v1\/assets/u, () => json([])],
+      [/PATCH .*\/rest\/v1\/assets/u, () => noContent()],
+      [/PATCH .*\/rest\/v1\/projects/u, () => noContent()],
+    ]);
+    await moveSinopiaCadModel({ link, targetProjectId: target, files, localProjectId: 'p' });
+    const to = `projects/${target}/canvas-gen/req-1-generate-from-sketch.png`;
+    expect(
+      requests()
+        .filter((request) => request.url.includes('/object/copy'))
+        .map((request) => request.body),
+    ).toContainEqual(expect.objectContaining({ sourceKey: from, destinationKey: to }));
+    const moved = requests().find(
+      (request) => request.method === 'PATCH' && decodeURIComponent(request.url).includes(`id=eq.${photo}`),
+    );
+    expect(moved?.body).toMatchObject({
+      project_id: target,
+      storage_path: to,
+      metadata: { cad_model_id: link.modelId, cad_asset_id: version, version_number: 1 },
+    });
+    expect(z.object({ public_url: z.string() }).loose().parse(moved?.body).public_url).toContain(to);
+    // Compare-and-swap on the old project, like the versions.
+    expect(decodeURIComponent(moved?.url ?? '')).toContain(`project_id=eq.${link.projectId}`);
+    expect(files.writeFile).toHaveBeenCalledOnce();
+  });
+
+  it('renumbers the versions after the ones the target project already has, before they arrive (A → B → A)', async () => {
+    const files = { writeFile: vi.fn(async () => undefined) };
+    const from = `projects/${link.projectId}/cad/${link.modelId}`;
+    const versions = ['00000000-0000-4000-8000-0000000000c1', '00000000-0000-4000-8000-0000000000c2'];
+    const photo = '00000000-0000-4000-8000-0000000000d4';
+    /** The version numbers of this model in the target, as the server holds them (the unique index's view). */
+    const inTarget = new Map<string, number>([['00000000-0000-4000-8000-0000000000e9', 1]]);
+    route([
+      [/GET .*\/rest\/v1\/projects/u, () => json({ id: target })],
+      [/GET .*\/rest\/v1\/cad_models/u, () => json({ ...model, project_id: target })],
+      [/POST .*\/storage\/v1\/object\/list/u, () => json([])],
+      [/POST .*\/storage\/v1\/object\/copy/u, () => json({ Key: 'copied' })],
+      [
+        /GET .*\/rest\/v1\/assets.*type=eq\.ai_render/u,
+        () =>
+          json([
+            {
+              id: photo,
+              storage_bucket: 'creator-private',
+              storage_path: `projects/${target}/canvas-gen/x.png`,
+              public_url: null,
+              metadata: {
+                cad_model_id: link.modelId,
+                source: 'sinopiacad',
+                cad_asset_id: versions[1],
+                version_number: 2,
+              },
+            },
+          ]),
+      ],
+      [
+        new RegExp(`GET .*/rest/v1/assets.*project_id=eq\\.${target}`, 'u'),
+        () => json([...inTarget].map(([id, number]) => ({ id, version_number: number }))),
+      ],
+      [
+        /GET .*\/rest\/v1\/assets/u,
+        () =>
+          json(
+            versions.map((id, index) => ({
+              id,
+              version_number: index + 1,
+              storage_path: `${from}/v${String(index + 1)}/x/model.glb`,
+              metadata: { cad_model_id: link.modelId },
+            })),
+          ),
+      ],
+      [/PATCH .*\/rest\/v1\/assets/u, () => noContent()],
+      [/PATCH .*\/rest\/v1\/projects/u, () => noContent()],
+    ]);
+    const base = transport.fetch.getMockImplementation()!;
+    transport.fetch.mockImplementation(async (url, init) => {
+      const href = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+      if ((init?.method ?? 'GET') === 'PATCH' && href.includes('/rest/v1/assets')) {
+        const id = new URL(href).searchParams.get('id')?.slice(3) ?? '';
+        const body = JSON.parse(typeof init?.body === 'string' ? init.body : '{}') as {
+          project_id?: string;
+          version_number?: number;
+        };
+        if (body.project_id === target && versions.includes(id)) {
+          const number = body.version_number ?? versions.indexOf(id) + 1;
+          if ([...inTarget].some(([other, taken]) => other !== id && taken === number)) {
+            return json({ code: '23505', message: 'assets_cad_model_version_idx' }, 409);
+          }
+          inTarget.set(id, number);
+        }
+      }
+      return base(url, init);
+    });
+    await moveSinopiaCadModel({ link, targetProjectId: target, files, localProjectId: 'p' });
+    // The old v1 and v2 arrive as v2 and v3, in their order, after the target's own v1.
+    expect(Object.fromEntries(inTarget)).toEqual({
+      '00000000-0000-4000-8000-0000000000e9': 1,
+      [versions[0]!]: 2,
+      [versions[1]!]: 3,
+    });
+    // The photo of the old v2 now names v3, the number of the version it shows.
+    const photoPatch = requests().find(
+      (request) => request.method === 'PATCH' && decodeURIComponent(request.url).includes(`id=eq.${photo}`),
+    );
+    expect(photoPatch?.body).toMatchObject({ metadata: { cad_asset_id: versions[1], version_number: 3 } });
+    expect(files.writeFile).toHaveBeenCalledOnce();
+  });
+
+  it('says in the console when a cover or a project name could not be written, and stays cosmetic', async () => {
+    const diagnostic = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      transport.fetch
+        .mockResolvedValueOnce(json({ ...model, head_revision_id: first }))
+        .mockResolvedValueOnce(json({ Key: 'image' }))
+        .mockResolvedValueOnce(json([{ id: model.id }]))
+        .mockResolvedValueOnce(json({ message: 'denied' }, 403));
+      const result = await patchSinopiaCadThumbnail({
+        link: { ...link, baseRevisionId: first },
+        revisionId: first,
+        thumbnail: new Uint8Array([1]),
+        isCurrent: () => true,
+      });
+      expect(result.kind).toBe('saved');
+      expect(diagnostic).toHaveBeenCalledWith(expect.stringContaining('cover'), expect.anything());
+      diagnostic.mockClear();
+      transport.fetch.mockReset();
+      transport.fetch
+        .mockResolvedValueOnce(json(model))
+        .mockResolvedValueOnce(json({ Key: 'zip' }))
+        .mockResolvedValueOnce(json([{ id: model.id }]))
+        .mockResolvedValueOnce(json({ message: 'denied' }, 403));
+      const saved = await saveSinopiaCadRevision({
+        link: { ...link, projectCreatedByCad: true },
+        revisionId: first,
+        engine: 'smlib',
+        name: 'Fibbia 30 mm',
+        snapshot: new Blob(['zip']),
+      });
+      expect(saved.kind).toBe('saved');
+      expect(diagnostic).toHaveBeenCalledWith(expect.stringContaining('name'), expect.anything());
+    } finally {
+      diagnostic.mockRestore();
+    }
+  });
+
+  it('says in the console when the old project keeps a cover of the moved model', async () => {
+    const diagnostic = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const files = { writeFile: vi.fn(async () => undefined) };
+      route([
+        [/GET .*\/rest\/v1\/projects/u, () => json({ id: target })],
+        [/GET .*\/rest\/v1\/cad_models/u, () => json({ ...model, project_id: target })],
+        [/POST .*\/storage\/v1\/object\/list/u, () => json([])],
+        [/GET .*\/rest\/v1\/assets/u, () => json([])],
+        [/PATCH .*\/rest\/v1\/projects/u, () => json({ message: 'denied' }, 403)],
+      ]);
+      const moved = await moveSinopiaCadModel({ link, targetProjectId: target, files, localProjectId: 'p' });
+      expect(moved.projectId).toBe(target);
+      expect(diagnostic).toHaveBeenCalledWith(expect.stringContaining('cover'), expect.anything());
+    } finally {
+      diagnostic.mockRestore();
+    }
+  });
+
   it('repairs a local link whose model now lives in another project, and leaves a current one alone', async () => {
     const files = { writeFile: vi.fn(async () => undefined) };
     const stale = { ...link, sourceAssetId: asset, sourcePartId: 'buckle_frame', projectCreatedByCad: true };
@@ -790,9 +1161,6 @@ describe('One Sinopia project per piece', () => {
   });
 
   it('marks only a project the CAD created, and renames only that one, only from «Nuovo progetto»', async () => {
-    transport.fetch
-      .mockResolvedValueOnce(json({ current_vertical: 'accessories' }))
-      .mockResolvedValueOnce(json(null, 201));
     expect(await createSinopiaCadLink('Nuovo progetto')).toMatchObject({ projectCreatedByCad: true });
     transport.fetch.mockReset();
     transport.fetch.mockResolvedValueOnce(json({ id: link.projectId }));

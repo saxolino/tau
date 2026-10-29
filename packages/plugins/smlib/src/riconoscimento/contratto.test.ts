@@ -15,9 +15,12 @@ const impronta = (percorso: string): string => createHash('sha256').update(readF
  * Le impronte delle due copie gemelle in Sinopia (`supabase/functions/sinopiacad/riconoscimento/{contratto.json,
  * condiviso.ts}`): lo stesso valore è scritto in `recognize.test.ts` di Sinopia. Se cambi uno dei due file, copia
  * entrambi in Sinopia e aggiorna le impronte nei DUE test.
+ *
+ * 29 ottobre 2026: tacco ricetta v2 (scheda della famiglia: descrizioni, seduta.inclinazione fino a 35°, predefiniti di
+ * forma della seduta, vita e bombature). La copia in Sinopia va aggiornata con la funzione `sinopiacad`.
  */
 const impronteGemelle = {
-  contratto: 'f253d1436985f050790bebd217d1e43f357a7abe58bd2070ef37b668697d2fe1',
+  contratto: '2574d9b3aa6d43dc29f15df03b29ec5fcd3ec81bd8a7d230d571cbc9bb90e2c0',
   condiviso: 'afd4b290524950152adc7ada94e872d35ada0b142f979d380ba1d6c37a58660e',
 };
 

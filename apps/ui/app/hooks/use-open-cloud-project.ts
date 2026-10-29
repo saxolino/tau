@@ -19,6 +19,34 @@ import type { CreateProjectOptions } from '#hooks/use-project-manager.js';
 import { useFileManager } from '#hooks/use-file-manager.js';
 import { importSinopiaCadModel, readSinopiaCadLink, sinopiaCadLocalId } from '#services/sinopia-cad.js';
 import { requireSinopiaUser } from '#lib/sinopia-data-client.js';
+import type { PlainMessageKey } from '#i18n/translate.js';
+
+/** The open verb's failures that have a sentence of their own; anything else is the connection's. */
+/* eslint-disable @typescript-eslint/naming-convention -- Keys are the error codes the services throw, verbatim. */
+const openErrorMessages: Readonly<Record<string, PlainMessageKey>> = {
+  /* A row registered before its first save (a piece from a Sinopia part): there is nothing to download yet. */
+  SINOPIA_MODEL_NOT_SAVED: 'sinopiaImages.modelNotSaved',
+  SINOPIA_MODEL_IDENTITY_MISMATCH: 'sinopiaImages.modelMismatch',
+  ARCHIVE_TOO_LARGE: 'sinopiaImages.modelDamaged',
+  SINOPIA_INVALID_ARCHIVE: 'sinopiaImages.modelDamaged',
+  SINOPIA_INVALID_MANIFEST: 'sinopiaImages.modelDamaged',
+  SINOPIA_INVALID_ENTRY: 'sinopiaImages.modelDamaged',
+  SINOPIA_INVALID_STORAGE_PATH: 'sinopiaImages.modelDamaged',
+  SINOPIA_SESSION_REQUIRED: 'sinopiaImages.sessionChanged',
+  SINOPIA_SESSION_CHANGED: 'sinopiaImages.sessionChanged',
+};
+/* eslint-enable @typescript-eslint/naming-convention -- Back to the domain's camelCase names. */
+
+/**
+ * The sentence for a failed open of a Sinopia model: the actual reason when the verb names one (a model not saved
+ * yet, a local copy that is another model, a damaged archive, the account changed), otherwise the connection.
+ *
+ * @param error - What the open verb threw.
+ * @returns The message key.
+ * @public
+ */
+export const sinopiaOpenErrorMessage = (error: unknown): PlainMessageKey =>
+  (error instanceof Error ? openErrorMessages[error.message] : undefined) ?? 'sinopiaImages.openError';
 
 /**
  * What this device creates for a Tau Cloud project before its first pull: the
@@ -69,7 +97,22 @@ export const useOpenCloudProject = (): ((entry: CloudProject) => Promise<void>) 
   const { projects } = useProjects({ includeDeleted: true });
   const { createProject, getProjects } = useProjectManager();
   const navigate = useNavigate();
-  const { recordFiles } = useFileManager();
+  const { recordFiles, whenServicesReady } = useFileManager();
+  /* The link record of a model this device holds. In a tab opened cold the root's file services may not answer yet,
+     and an unreadable record reads as no record: once they are up it is read again, so a held model is never refused
+     as «another model» for having been asked too early. */
+  const readHeldLink = useCallback(
+    async (projectId: string): ReturnType<typeof readSinopiaCadLink> => {
+      const root = `/projects/${projectId}`;
+      const link = await readSinopiaCadLink(recordFiles, root);
+      if (link !== undefined) {
+        return link;
+      }
+      await whenServicesReady();
+      return readSinopiaCadLink(recordFiles, root);
+    },
+    [recordFiles, whenServicesReady],
+  );
 
   return useCallback(
     async (entry: CloudProject): Promise<void> => {
@@ -89,7 +132,7 @@ export const useOpenCloudProject = (): ((entry: CloudProject) => Promise<void>) 
       if (held?.slugs !== undefined) {
         if (entry.sinopia !== undefined) {
           await requireSinopiaUser(entry.sinopia.user_id);
-          const link = await readSinopiaCadLink(recordFiles, `/projects/${held.id}`);
+          const link = await readHeldLink(held.id);
           if (link?.modelId !== entry.sinopia.id || link.userId !== entry.sinopia.user_id) {
             throw new Error('SINOPIA_MODEL_IDENTITY_MISMATCH');
           }
@@ -105,7 +148,7 @@ export const useOpenCloudProject = (): ((entry: CloudProject) => Promise<void>) 
         }
         if (current?.slugs !== undefined) {
           if (entry.sinopia !== undefined) {
-            const link = await readSinopiaCadLink(recordFiles, `/projects/${entry.id}`);
+            const link = await readHeldLink(entry.id);
             if (link?.modelId !== entry.sinopia.id || link.userId !== entry.sinopia.user_id) {
               throw new Error('SINOPIA_MODEL_IDENTITY_MISMATCH');
             }
@@ -146,6 +189,6 @@ export const useOpenCloudProject = (): ((entry: CloudProject) => Promise<void>) 
          the command when the project client replaces the root client. */
       await navigate(projectUrl(created.slugs));
     },
-    [createProject, getProjects, navigate, projects, recordFiles],
+    [createProject, getProjects, navigate, projects, readHeldLink],
   );
 };

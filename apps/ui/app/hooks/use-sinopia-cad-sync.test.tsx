@@ -8,6 +8,8 @@ import { act, renderHook } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useSinopiaCadSync } from '#hooks/use-sinopia-cad-sync.js';
+import { applySinopiaRemoteSnapshot } from '#services/sinopia-cad-restore.js';
+import { sinopiaCadThumbnailReady } from '#services/sinopia-cad-thumbnail.js';
 
 const fake = vi.hoisted(() => {
   const link: SinopiaCadLink = {
@@ -72,6 +74,7 @@ vi.mock('#services/sinopia-cad.js', () => ({
   patchSinopiaCadThumbnail: fake.save,
   inferSinopiaCadEngine: () => 'smlib',
   archiveSinopiaRevision: async () => new Blob(['zip']),
+  sinopiaCadSnapshotContentKey: async () => 'e'.repeat(64),
 }));
 vi.mock('#services/sinopia-cad-thumbnail.js', async (importOriginal) => ({
   ...(await importOriginal<typeof SinopiaThumbnailModule>()),
@@ -82,6 +85,9 @@ vi.mock('#services/sinopia-cad-restore.js', () => ({ applySinopiaRemoteSnapshot:
 
 beforeEach(() => {
   vi.useFakeTimers();
+  fake.status.headRevisionId = 'a'.repeat(40);
+  fake.status.dirty = false;
+  delete fake.link.previewPending;
   fake.persist.mockClear();
   fake.save.mockReset();
   fake.read.mockReset();
@@ -143,7 +149,8 @@ describe('mounted Sinopia autosave lifecycle', () => {
       updated_at: '2026-10-23T10:00:00Z',
     };
     fake.link.baseRevisionId = fake.status.headRevisionId;
-    fake.link.localRevisionId = fake.status.headRevisionId;
+    // The last revision Sinopia acknowledged is an older one: this computer has work of its own.
+    fake.link.localRevisionId = 'c'.repeat(40);
     fake.read.mockResolvedValue(remote);
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const wrapper = ({ children }: { children: ReactNode }) => (
@@ -196,7 +203,7 @@ describe('mounted Sinopia autosave lifecycle', () => {
   it('keeps the stored link, and its conflict protection, when the link check itself fails', async () => {
     fake.reconcile.mockRejectedValue(new Error('offline'));
     fake.link.baseRevisionId = fake.status.headRevisionId;
-    fake.link.localRevisionId = fake.status.headRevisionId;
+    fake.link.localRevisionId = 'c'.repeat(40);
     fake.read.mockResolvedValue({
       id: fake.link.modelId,
       project_id: fake.link.projectId,
@@ -219,6 +226,127 @@ describe('mounted Sinopia autosave lifecycle', () => {
     expect(view.result.current.link).toEqual(fake.link);
     expect(view.result.current.state.kind).toBe('conflict');
     expect(fake.save).not.toHaveBeenCalled();
+    view.unmount();
+    client.clear();
+  });
+
+  const mount = () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+    return { client, view: renderHook(() => useSinopiaCadSync(), { wrapper }) };
+  };
+  const stamp = () => ({
+    projectId: fake.project.projectId,
+    userId: fake.link.userId,
+    revisionId: fake.status.headRevisionId,
+    checkoutId: 'live',
+    checkoutRoot: fake.status.checkoutRoot,
+  });
+
+  it('does not upload a new preview on every open when Sinopia already has one (difetto 6)', async () => {
+    fake.link.baseRevisionId = fake.status.headRevisionId;
+    fake.link.localRevisionId = fake.status.headRevisionId;
+    const { client, view } = mount();
+    await flush();
+    await flush();
+    expect(view.result.current.state.kind).toBe('saved');
+    // The thumbnail every open renders.
+    act(() => {
+      sinopiaCadThumbnailReady.emit(stamp());
+    });
+    await flush(5000);
+    expect(fake.save).not.toHaveBeenCalled();
+    expect(view.result.current.state.kind).toBe('saved');
+    view.unmount();
+    client.clear();
+  });
+  it('sends the preview once when Sinopia has none yet', async () => {
+    fake.link.baseRevisionId = fake.status.headRevisionId;
+    fake.link.localRevisionId = fake.status.headRevisionId;
+    fake.link.previewPending = true;
+    fake.save.mockImplementation(async (input: { link: typeof fake.link }) => ({
+      kind: 'saved',
+      link: input.link,
+      at: 100,
+      previewPending: false,
+    }));
+    const { client, view } = mount();
+    await flush();
+    await flush(2000);
+    await flush();
+    expect(fake.save).toHaveBeenCalledOnce();
+    act(() => {
+      sinopiaCadThumbnailReady.emit(stamp());
+    });
+    await flush(5000);
+    expect(fake.save).toHaveBeenCalledOnce();
+    view.unmount();
+    client.clear();
+  });
+  it('says the edits are only here, then saves them at once when the tab is hidden (difetto 2)', async () => {
+    fake.link.baseRevisionId = fake.status.headRevisionId;
+    fake.link.localRevisionId = fake.status.headRevisionId;
+    const { client, view } = mount();
+    await flush();
+    await flush();
+    expect(view.result.current.state.kind).toBe('saved');
+    fake.status.dirty = true;
+    view.rerender();
+    await flush();
+    expect(view.result.current.state.kind).toBe('pending');
+    // The close cut mints the revision; the hidden tab sends it without waiting for the debounce.
+    fake.status.dirty = false;
+    fake.status.headRevisionId = 'b'.repeat(40);
+    view.rerender();
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await flush();
+    expect(fake.save).toHaveBeenCalledOnce();
+    expect(fake.save).toHaveBeenCalledWith(expect.objectContaining({ revisionId: 'b'.repeat(40) }));
+    visibility.mockRestore();
+    view.unmount();
+    client.clear();
+  });
+  it('takes the newer copy saved on another device when nothing changed here (difetto 8)', async () => {
+    fake.link.baseRevisionId = fake.status.headRevisionId;
+    fake.link.localRevisionId = fake.status.headRevisionId;
+    fake.read.mockResolvedValue({
+      id: fake.link.modelId,
+      project_id: fake.link.projectId,
+      user_id: fake.link.userId,
+      name: 'Ring',
+      engine: 'smlib',
+      head_revision_id: 'b'.repeat(40),
+      snapshot_path: 'remote',
+      thumbnail_path: null,
+      snapshot_bytes: 1,
+      updated_at: '2026-10-23T10:00:00Z',
+    });
+    vi.mocked(applySinopiaRemoteSnapshot).mockResolvedValueOnce({ revisionId: 'c'.repeat(40) });
+    const { client, view } = mount();
+    await flush();
+    await flush();
+    await flush();
+    expect(applySinopiaRemoteSnapshot).toHaveBeenCalledOnce();
+    expect(view.result.current.state.kind).not.toBe('conflict');
+    expect(fake.persist).toHaveBeenCalledWith(
+      fake.fileManager.recordFiles,
+      `/projects/${fake.project.projectId}`,
+      expect.objectContaining({ baseRevisionId: 'b'.repeat(40), localRevisionId: 'c'.repeat(40) }),
+    );
+    view.unmount();
+    client.clear();
+  });
+  it('says a link of another account in words, with no «Riprova» that could never help (difetto 28)', async () => {
+    fake.stored = { ...fake.link, userId: '00000000-0000-4000-8000-000000000009' };
+    const { client, view } = mount();
+    await flush();
+    await flush();
+    expect(view.result.current.state.kind).toBe('foreign');
     view.unmount();
     client.clear();
   });

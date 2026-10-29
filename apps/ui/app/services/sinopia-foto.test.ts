@@ -205,4 +205,24 @@ describe('Sinopia reads of the gallery', () => {
     expect(filtri).toContainEqual(['contains', 'metadata', { cad_model_id: MODELLO }]);
     expect(await versioneInviata(link, client([]).getClient as never)).toBeUndefined();
   });
+
+  it('should read the content the version was sent from and when, ignoring a malformed key (difetto 31)', async () => {
+    const glb = { format: 'glb', storage_path: `projects/${PROGETTO}/cad/${MODELLO}/v4/x/model.glb` };
+    const link = { modelId: MODELLO, projectId: PROGETTO, userId: 'u', baseRevisionId: null };
+    const riga = {
+      id: ASSET,
+      version_number: 4,
+      storage_bucket: 'creator-private',
+      created_at: '2026-10-27T17:00:00Z',
+    };
+    const conChiave = client([{ ...riga, metadata: { files: [glb], content_key: 'e'.repeat(64) } }]);
+    expect(await versioneInviata(link, conChiave.getClient as never)).toMatchObject({
+      contentKey: 'e'.repeat(64),
+      createdAt: Date.parse('2026-10-27T17:00:00Z'),
+    });
+    const storta = client([{ ...riga, metadata: { files: [glb], content_key: 'non una chiave' } }]);
+    const letta = await versioneInviata(link, storta.getClient as never);
+    expect(letta?.versionNumber).toBe(4);
+    expect(letta).not.toHaveProperty('contentKey');
+  });
 });

@@ -78,8 +78,13 @@ export function pianoCostruzione(
       .map((p) => [p.chiave, p]),
   );
   const grezzi = structuredClone(famiglia.predefiniti(variante)) as ParametriAnnidati;
+  // Un valore «non visibile» è il predefinito della scheda della famiglia ripetuto dal modello (regola 3 del prompt), cioè
+  // quello di base, non quello della variante: la variante ne sa di più (la seduta del blocco non è quella dello
+  // stiletto). Resta il predefinito della variante; l'ipotesi tiene il motivo del modello.
   for (const parametro of riconosciuti.values()) {
-    scriviParametro(grezzi, parametro.chiave, parametro.valore);
+    if (parametro.fonte !== 'non_visibile') {
+      scriviParametro(grezzi, parametro.chiave, parametro.valore);
+    }
   }
   // Il materiale riconosciuto va alla famiglia: `costruzione.materiale`, o `lega` per anelli e pendenti.
   const chiaveMateriale = ['costruzione.materiale', 'lega'].find(
@@ -136,7 +141,7 @@ export function pianoCostruzione(
       }
       continue;
     }
-    const portato = !uguali(finale, parametro.valore);
+    const portato = parametro.fonte !== 'non_visibile' && !uguali(finale, parametro.valore);
     const stato = statoValore(parametro, { scalaStimata, unita: definizione.unita });
     if (stato === 'misurata' && !portato) {
       continue;

@@ -2,7 +2,8 @@ import { z } from 'zod';
 import { randomUuid } from '@taucad/utils/id';
 import type { ExportFile } from '@taucad/types';
 import { getSinopiaDataClient } from '#lib/sinopia-data-client.js';
-import type { SinopiaCadLink } from '#services/sinopia-cad.js';
+import { ensureSinopiaCadModel, getSinopiaCadModel } from '#services/sinopia-cad.js';
+import type { SinopiaCadEngine, SinopiaCadLink, SinopiaCadModel } from '#services/sinopia-cad.js';
 import type { prepareSinopiaFiles } from '#services/project-export.js';
 import { isNotFound } from '#db/attachment-store.js';
 
@@ -16,7 +17,15 @@ export type SinopiaSendReceipt = Readonly<{
   versionNumber: number;
   createdAt: number;
 }>;
-export type SinopiaSendProblem = 'migration' | 'session' | 'destination' | 'files' | 'failed' | 'history';
+export type SinopiaSendProblem =
+  | 'migration'
+  | 'session'
+  | 'destination'
+  | 'files'
+  | 'failed'
+  | 'history'
+  | 'model'
+  | 'version';
 export type SinopiaDeliveryEvent = Readonly<{ kind: 'sent'; id: string; createdAt: number; versionNumber: number }>;
 type SinopiaSendRecordFiles = {
   readFile(path: string): Promise<Uint8Array<ArrayBuffer>>;
@@ -44,7 +53,23 @@ type SinopiaSendRequest = {
   pieces?: readonly SinopiaSendPiece[];
   /** The model's own preview in the same project, used as the version's thumbnail when no photo is sent. */
   fallbackThumbnailPath?: string;
+  /** What registers the model's `cad_models` row when it has none yet: its name and engine. */
+  model: SinopiaSendModel;
+  /**
+   * The number the prepared files name (the PDF sheet's «v<n>»). A number another send took meanwhile fails with
+   * `version`, so the caller prepares again, instead of the sheet saying one number and the version another.
+   */
+  versionNumber?: number;
+  /**
+   * `sinopiaCadContentKey` of the files the sent model was rendered from, when they are all in a revision: the sample
+   * photo then knows the model on screen is still this version by its content, not by guessing from the shape.
+   */
+  contentKey?: string;
 };
+/** The model as the send registers it: the engine is `undefined` when the CAD cannot tell it. */
+export type SinopiaSendModel = Readonly<{ name: string; engine: SinopiaCadEngine | undefined }>;
+/** The model's row, registered first when it has none; a model whose engine is unknown can only be read. */
+type EnsureModel = (link: SinopiaCadLink, model: SinopiaSendModel) => Promise<SinopiaCadModel>;
 type SinopiaSender = {
   nextVersion(link: SinopiaCadLink, projectId: string, signal?: AbortSignal): Promise<number>;
   receipt(input: ReceiptQuery): Promise<SinopiaSendReceipt | undefined>;
@@ -133,8 +158,23 @@ export function selectedSinopiaFiles(
   });
 }
 
+/** The model's row before any version of it: the existing one, or the one its first send registers. */
+async function ensureSentModel(link: SinopiaCadLink, model: SinopiaSendModel): Promise<SinopiaCadModel> {
+  if (model.engine !== undefined) {
+    return ensureSinopiaCadModel(link, model.name, model.engine);
+  }
+  const existing = await getSinopiaCadModel(link);
+  if (existing === undefined) {
+    throw new SinopiaSendError('model');
+  }
+  return existing;
+}
+
 /** The delivery uses the admitted user's JWT and explicit ownership filters at every read. */
-export function createSinopiaSender(getClient = getSinopiaDataClient): SinopiaSender {
+export function createSinopiaSender(
+  getClient = getSinopiaDataClient,
+  ensureModel: EnsureModel = ensureSentModel,
+): SinopiaSender {
   const admitted = async (userId: string, signal?: AbortSignal) => {
     signal?.throwIfAborted();
     let session: Awaited<ReturnType<typeof getClient>>;
@@ -206,6 +246,40 @@ export function createSinopiaSender(getClient = getSinopiaDataClient): SinopiaSe
     };
   };
 
+  /**
+   * Only the newest version of a model is current: every older one of the same model in the project goes to
+   * `is_current: false`. Lowering only the numbers BELOW this one keeps two sends racing safe (the newer always stays
+   * current, whichever ends last) and makes it repeatable: a failure here leaves the version sent, and the next send
+   * (or the resume of this one) lowers them again.
+   */
+  const retireOlderVersions = async ({
+    link,
+    projectId,
+    assetId,
+    versionNumber,
+  }: Readonly<{ link: SinopiaCadLink; projectId: string; assetId: string; versionNumber: number }>): Promise<void> => {
+    try {
+      const client = await admitted(link.userId);
+      const { error } = await client
+        .from('assets')
+        // eslint-disable-next-line @typescript-eslint/naming-convention -- Supabase asset wire column.
+        .update({ is_current: false })
+        .eq('user_id', link.userId)
+        .eq('project_id', projectId)
+        .eq('type', 'cad_model')
+        // eslint-disable-next-line @typescript-eslint/naming-convention -- This containment predicate uses the persisted Supabase JSON field.
+        .contains('metadata', { cad_model_id: link.modelId })
+        .neq('id', assetId)
+        .lt('version_number', versionNumber)
+        .eq('is_current', true);
+      if (error !== null) {
+        console.error('[sinopia-send] the older versions are still marked current', error);
+      }
+    } catch (error) {
+      console.error('[sinopia-send] the older versions are still marked current', error);
+    }
+  };
+
   return {
     nextVersion,
     receipt: reconcile,
@@ -233,15 +307,40 @@ export function createSinopiaSender(getClient = getSinopiaDataClient): SinopiaSe
       deliveryId,
       pieces,
       fallbackThumbnailPath,
+      model,
+      versionNumber: pinned,
+      contentKey,
     }: SinopiaSendRequest): Promise<SinopiaSendReceipt> {
       if (![link.modelId, projectId, link.userId, deliveryId].every((id) => uuid.safeParse(id).success)) {
         throw new SinopiaSendError('destination');
       }
       const previous = await reconcile({ link, projectId, assetId: deliveryId, signal });
       if (previous) {
+        await retireOlderVersions({
+          link,
+          projectId,
+          assetId: previous.assetId,
+          versionNumber: previous.versionNumber,
+        });
         return previous;
       }
+      // One project per model: a version sent into any other project would point at a model that is not there.
+      if (projectId !== link.projectId) {
+        throw new SinopiaSendError('destination');
+      }
       const files = selectedSinopiaFiles(prepared, selected);
+      // The model's row comes first (a model never saved yet has none): a version never names a missing model.
+      let registered: SinopiaCadModel;
+      try {
+        registered = await ensureModel(link, model);
+      } catch (error) {
+        signal.throwIfAborted();
+        if (error instanceof SinopiaSendError) {
+          throw error;
+        }
+        console.error('[sinopia-send] the model could not be registered before its version', error);
+        throw new SinopiaSendError('model');
+      }
       const client = await admitted(link.userId, signal);
       const destination = await client
         .from('projects')
@@ -258,6 +357,10 @@ export function createSinopiaSender(getClient = getSinopiaDataClient): SinopiaSe
       for (let attempt = 0; attempt < 4; attempt++) {
         // oxlint-disable-next-line no-await-in-loop -- A conflict must read the winner's number before trying the next one.
         const versionNumber = await nextVersion(link, projectId, signal);
+        if (pinned !== undefined && versionNumber !== pinned) {
+          // The files name another number (the PDF sheet): prepare again rather than send a sheet that lies.
+          throw new SinopiaSendError('version');
+        }
         const assetId = deliveryId;
         const prefix = `projects/${projectId}/cad/${link.modelId}/v${versionNumber}/${randomUuid()}`;
         const uploaded: string[] = [];
@@ -267,8 +370,24 @@ export function createSinopiaSender(getClient = getSinopiaDataClient): SinopiaSe
           file,
           path: `${prefix}/${deliveryFileName(format)}`,
         }));
+        // Every version has a thumbnail (E3a): the photo sent, else the model's own preview in this project, else the
+        // view captured for this send (a model whose preview is not on Sinopia yet), stored beside the version.
+        const photo = entries.find((entry) => entry.format === 'photo')?.path;
+        const preview = sameProjectThumbnail(
+          fallbackThumbnailPath ?? registered.thumbnail_path ?? undefined,
+          projectId,
+          link.modelId,
+        );
+        const captured = prepared.photo.status === 'needsFix' ? undefined : prepared.photo.files[0];
+        const extraThumbnail =
+          photo === undefined &&
+          preview === undefined &&
+          captured?.mimeType === 'image/png' &&
+          captured.bytes.length > 0
+            ? { file: captured, path: `${prefix}/thumbnail.png` }
+            : undefined;
         try {
-          for (const entry of entries) {
+          for (const entry of [...entries, ...(extraThumbnail ? [extraThumbnail] : [])]) {
             // oxlint-disable-next-line no-await-in-loop -- Bound uploads and recheck identity before every mutation.
             const current = await admitted(link.userId, signal);
             // oxlint-disable-next-line no-await-in-loop -- Serial upload gives cleanup an exact list of completed writes.
@@ -322,11 +441,9 @@ export function createSinopiaSender(getClient = getSinopiaDataClient): SinopiaSe
                 mime_type: entry.file.mimeType,
                 size_bytes: entry.file.bytes.length,
               })),
-              thumbnail_path:
-                entries.find((entry) => entry.format === 'photo')?.path ??
-                sameProjectThumbnail(fallbackThumbnailPath, projectId, link.modelId) ??
-                null,
+              thumbnail_path: photo ?? preview ?? extraThumbnail?.path ?? null,
               ...(pieces && pieces.length > 0 ? { pezzi: deliveryPieces(pieces) } : {}),
+              ...(contentKey !== undefined && /^[0-9a-f]{64}$/u.test(contentKey) ? { content_key: contentKey } : {}),
               // The image (and part) of the project the model was built from: Sinopia shows it beside the version.
               ...(link.sourceAssetId !== undefined && projectId === link.projectId
                 ? { source_asset_id: link.sourceAssetId, source_part_id: link.sourcePartId ?? null }
@@ -354,6 +471,10 @@ export function createSinopiaSender(getClient = getSinopiaDataClient): SinopiaSe
               if (saved) {
                 return saved;
               }
+              if (pinned !== undefined) {
+                // Another send took the pinned number: this attempt's files go, the caller prepares again.
+                throw new SinopiaSendError('version');
+              }
               continue;
             }
             throw new SinopiaSendError(migrationMissing(error) ? 'migration' : 'failed');
@@ -361,6 +482,8 @@ export function createSinopiaSender(getClient = getSinopiaDataClient): SinopiaSe
           isCommitted = true;
           // oxlint-disable-next-line no-await-in-loop -- Never present the previous user's completed delivery after a switch.
           await admitted(link.userId, signal);
+          // oxlint-disable-next-line no-await-in-loop -- The older versions stop being current once this one exists.
+          await retireOlderVersions({ link, projectId, assetId, versionNumber });
           return { assetId, projectId, modelId: link.modelId, userId: link.userId, versionNumber, createdAt };
         } finally {
           if (!isCommitted && uploaded.length > 0) {

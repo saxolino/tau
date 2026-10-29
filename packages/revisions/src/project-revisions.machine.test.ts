@@ -7,7 +7,7 @@ import * as machineModule from '#project-revisions.machine.js';
 import { projectRevisionsMachine, selectRevisionStatus } from '#project-revisions.machine.js';
 import type { ProjectRevisionsMachineEvent } from '#project-revisions.machine.js';
 import { releaseUnplacedTurns, pushExplicitly } from '#revision-effects.js';
-import { checkoutIgnoredEvents, checkoutMachine } from '#checkout.machine.js';
+import { checkoutIdleWindowMilliseconds, checkoutIgnoredEvents, checkoutMachine } from '#checkout.machine.js';
 import type { CheckoutFenceActorInput } from '#checkout.machine.js';
 import { checkoutsMachine } from '#checkouts.machine.js';
 import { RevisionPortError } from '#revision-port.js';
@@ -133,7 +133,7 @@ type Harness = Readonly<{
   emitted: ReturnType<typeof recordEmitted>;
 }>;
 
-const start = (): Harness => {
+const start = (options?: Readonly<{ idleWindow?: number }>): Harness => {
   const guard = guardActors({ ignore: { ...knownDefects, turn: turnIgnoredEvents, checkout: checkoutIgnoredEvents } });
   const promises = createFakePromiseActors();
   const callbacks = createFakeCallbackActors();
@@ -215,7 +215,11 @@ const start = (): Harness => {
       },
     }),
     {
-      input: { projectId: 'project-1', liveCheckoutId: 'checkout-live' },
+      input: {
+        projectId: 'project-1',
+        liveCheckoutId: 'checkout-live',
+        ...(options?.idleWindow === undefined ? {} : { idleWindow: options.idleWindow }),
+      },
       clock: new StepClock(),
       inspect: guard.inspect,
     },
@@ -323,6 +327,22 @@ describe('projectRevisionsMachine', () => {
     expect(references['checkout-b']?.getSnapshot().context.parentRef).toBeDefined();
 
     harness.actor.stop();
+  });
+
+  /* S30: the idle window is the host's policy (SinopiaCAD passes 30 s); every checkout the root spawns keeps it. */
+  it('gives every spawned checkout the host’s idle window, and the checkout default otherwise', () => {
+    const host = start({ idleWindow: 30_000 });
+    registerCheckouts(host);
+    for (const reference of Object.values(host.actor.getSnapshot().context.checkoutRefs)) {
+      expect(reference.getSnapshot().context.idleWindow).toBe(30_000);
+    }
+    host.actor.stop();
+    const plain = start();
+    registerCheckouts(plain);
+    expect(plain.actor.getSnapshot().context.checkoutRefs['checkout-live']?.getSnapshot().context.idleWindow).toBe(
+      checkoutIdleWindowMilliseconds,
+    );
+    plain.actor.stop();
   });
 
   it('never spawns one checkout twice and stops one that disappeared', () => {

@@ -108,6 +108,61 @@ describe('SinopiaProjectStrip', () => {
     ).toBeInTheDocument();
   });
 
+  it.each([
+    { link: 'project-a', open: true, outcome: 'found', sheet: true },
+    { link: 'PROJECT-A', open: false, outcome: 'found', sheet: false },
+    { link: 'project-z', open: true, outcome: 'missing', sheet: false },
+  ] as const)(
+    'should report a linked project as $outcome and open its images only when asked ($link, open: $open)',
+    async ({ link, open, outcome, sheet }) => {
+      const handled = vi.fn();
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      clients.push(client);
+      render(
+        <QueryClientProvider client={client}>
+          <SinopiaProjectStrip
+            onChoose={choose}
+            isPickerOpen={false}
+            onPickerOpenChange={vi.fn()}
+            preselectProjectId={link}
+            openPreselected={open}
+            onPreselectHandled={handled}
+          />
+        </QueryClientProvider>,
+      );
+      await waitFor(() => {
+        expect(handled).toHaveBeenCalledWith(outcome);
+      });
+      if (sheet) {
+        expect(await screen.findByRole('dialog', { name: 'Immagini di «Spring necklace»' })).toBeInTheDocument();
+      } else {
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+        expect(images).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it('should report a linked project as unverified when the list cannot be read', async () => {
+    projects.mockRejectedValueOnce(new Error('offline'));
+    const handled = vi.fn();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    clients.push(client);
+    render(
+      <QueryClientProvider client={client}>
+        <SinopiaProjectStrip
+          onChoose={choose}
+          isPickerOpen={false}
+          onPickerOpenChange={vi.fn()}
+          preselectProjectId='project-a'
+          onPreselectHandled={handled}
+        />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => {
+      expect(handled).toHaveBeenCalledWith('unverified');
+    });
+  });
+
   it('should discard the image sheet and selection when the admitted account changes', async () => {
     const view = mount();
     await userEvent.click(await screen.findByRole('button', { name: 'Spring necklace' }));

@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetLanguageForTests, setLanguage } from '#i18n/language.js';
 import type * as CloudProjectsModule from '#hooks/use-cloud-projects.js';
+import type * as OpenCloudProjectModule from '#hooks/use-open-cloud-project.js';
 import type { CloudProject } from '#hooks/use-cloud-projects.js';
 import type { ProjectListItem } from '#types/project-library.types.js';
 
@@ -25,7 +26,12 @@ vi.mock('#hooks/use-cloud-projects.js', async (importOriginal) => ({
     retry: vi.fn(),
   }),
 }));
-vi.mock('#hooks/use-open-cloud-project.js', () => ({ useOpenCloudProject: () => openCloud }));
+vi.mock('#hooks/use-open-cloud-project.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof OpenCloudProjectModule>()),
+  useOpenCloudProject: () => openCloud,
+}));
+const toastError = vi.hoisted(() => vi.fn());
+vi.mock('#components/ui/sonner.js', () => ({ toast: { error: toastError } }));
 vi.mock('#routes/_index/sinopia-project-strip.js', () => ({ SinopiaReferenceThumbnail: () => <div /> }));
 
 const retry = vi.hoisted(() => vi.fn(async () => undefined));
@@ -150,6 +156,52 @@ describe('HomeRecentProjects', () => {
     expect(screen.queryByRole('heading', { name: 'Remote copy' })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Apri Remote bracelet' }));
     expect(openCloud).toHaveBeenCalledWith(expect.objectContaining(state.cloudProjects[1]!));
+  });
+
+  it('should mark a Sinopia model with no saved file yet and say so when it cannot open', async () => {
+    const sinopia = {
+      id: '70d7a84c-0000-4000-8000-000000000001',
+      // eslint-disable-next-line @typescript-eslint/naming-convention -- Supabase wire columns.
+      project_id: '11111111-0000-4000-8000-000000000002',
+      // eslint-disable-next-line @typescript-eslint/naming-convention -- Supabase wire columns.
+      user_id: '22222222-0000-4000-8000-000000000003',
+      name: 'Cornice fibbia',
+      engine: 'smlib',
+      // eslint-disable-next-line @typescript-eslint/naming-convention -- Supabase wire columns.
+      head_revision_id: null,
+      // eslint-disable-next-line @typescript-eslint/naming-convention -- Supabase wire columns.
+      snapshot_path: null,
+      // eslint-disable-next-line @typescript-eslint/naming-convention -- Supabase wire columns.
+      thumbnail_path: null,
+      // eslint-disable-next-line @typescript-eslint/naming-convention -- Supabase wire columns.
+      snapshot_bytes: null,
+      // eslint-disable-next-line @typescript-eslint/naming-convention -- Supabase wire columns.
+      updated_at: new Date(now).toISOString(),
+    } as const;
+    state.cloudProjects = [
+      { id: 'proj_cornice', name: 'Cornice fibbia', role: 'owner', updatedAt: Date.now() - 5 * 60_000, sinopia },
+      {
+        id: 'proj_fibbia',
+        name: 'Fibbia',
+        role: 'owner',
+        updatedAt: Date.now() - 6 * 60_000,
+        // eslint-disable-next-line @typescript-eslint/naming-convention -- Supabase wire column.
+        sinopia: {
+          ...sinopia,
+          id: '70d7a84c-0000-4000-8000-000000000009',
+          snapshot_path: 'projects/p/cad/m/model.zip',
+        },
+      },
+    ];
+    openCloud.mockRejectedValueOnce(new Error('SINOPIA_MODEL_NOT_SAVED'));
+    renderSection();
+    const [unsaved, saved] = within(screen.getByRole('list')).getAllByRole('listitem');
+    expect(unsaved).toHaveTextContent('Modificato 5 minuti fa · Non ancora salvato');
+    expect(saved).not.toHaveTextContent('Non ancora salvato');
+    await userEvent.click(screen.getByRole('button', { name: 'Apri Cornice fibbia' }));
+    expect(toastError).toHaveBeenCalledWith(
+      'Questo modello non è ancora salvato su Sinopia: aprilo sul computer dove l’hai creato.',
+    );
   });
 
   it('keeps to two rows of the widest grid', () => {

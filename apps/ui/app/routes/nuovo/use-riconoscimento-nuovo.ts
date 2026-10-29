@@ -25,7 +25,12 @@ import { creaVerificatoreBrowser } from '#services/riconoscimento-verifica.js';
 import { caricaSchedaParte, ErroreParte } from '#services/sinopia-parts.js';
 import { caricaSchedaPezzo } from '#services/sinopia-pezzo.js';
 import type { LetturaNuovo, ParteCaricata } from '#services/sinopia-parts.js';
-import { ErroreRiconoscimento, riconosciParte, riconoscimentoRegistrato } from '#services/sinopia-recognize.js';
+import {
+  ErroreRiconoscimento,
+  riconosciParte,
+  riconosciUnaVolta,
+  riconoscimentoRegistrato,
+} from '#services/sinopia-recognize.js';
 import type { EsitoRiconoscimento } from '#services/sinopia-recognize.js';
 import { readSinopiaCadLink } from '#services/sinopia-cad.js';
 import { cercaModelloEsistente } from '#services/sinopia-modello-esistente.js';
@@ -77,7 +82,7 @@ const messaggioParte: Record<ErroreParte['codice'], PlainMessageKey> = {
 const messaggioRiconoscimento = (errore: ErroreRiconoscimento): PlainMessageKey =>
   errore.codice === 'RECOGNITION_REFUSED'
     ? 'riconoscimento.errors.refused'
-    : errore.codice === 'BILLING_ACCOUNT_RESTRICTED'
+    : errore.codice === 'BILLING_ACCOUNT_RESTRICTED' || errore.codice === 'CAD_PILOT_NOT_ALLOWED'
       ? 'riconoscimento.errors.restricted'
       : errore.codice === 'RATE_LIMITED'
         ? 'riconoscimento.errors.rateLimited'
@@ -138,6 +143,12 @@ export function useRiconoscimentoNuovo(
   const userId = session.status === 'signed-in' ? session.user.id : undefined;
   /** Set by «Rifallo da capo»: this visit no longer asks about the existing model. */
   const rifai = useRef(false);
+  /**
+   * The visit a recognition is booked under (the address and the number of «Rifallo da capo»): a reload or a «Riprova»
+   * repeats its request, so Sinopia charges it once; rebuilding from scratch is a new visit.
+   */
+  const rifacimenti = useRef(0);
+  const visita = useRef('');
   const [fase, setFase] = useState<FaseNuovo>(
     lettura.stato === 'incompleto'
       ? { fase: 'errore', messaggio: 'riconoscimento.errors.incomplete', riprova: false }
@@ -174,14 +185,17 @@ export function useRiconoscimentoNuovo(
           if (parte.prova || immaginiRientro.current === undefined) {
             return scheda;
           }
-          const seconda = await riconosciParte(
-            {
-              schedaParte: parte.schedaParte,
-              immagini: immaginiRientro.current,
-              lingua,
-              rientro: { differenzaPng, testo, iou },
-            },
-            { segnale },
+          const immagini = immaginiRientro.current;
+          const seconda = await riconosciUnaVolta(`${visita.current}:rientro`, lingua, async (richiesta) =>
+            riconosciParte(
+              {
+                schedaParte: parte.schedaParte,
+                immagini,
+                lingua: richiesta.lingua,
+                rientro: { differenzaPng, testo, iou },
+              },
+              { segnale, requestId: richiesta.requestId },
+            ),
           );
           return seconda.scheda;
         },
@@ -259,7 +273,10 @@ export function useRiconoscimentoNuovo(
   const utenteCorrente = useRef(userId);
   const projectManagerCorrente = useRef(projectManager);
   const recordFilesCorrenti = useRef(recordFiles);
+  // The language is read when the recognition is booked: changing it on the page does not book another.
+  const linguaCorrente = useRef(lingua);
   useEffect(() => {
+    linguaCorrente.current = lingua;
     costruisciCorrente.current = costruisci;
     letturaCorrente.current = lettura;
     utenteCorrente.current = userId;
@@ -275,6 +292,8 @@ export function useRiconoscimentoNuovo(
     }
     const controllo = new AbortController();
     flusso.current = controllo;
+    visita.current = `${chiave}#${String(rifacimenti.current)}`;
+    const visitaFlusso = visita.current;
     const { signal } = controllo;
     /* Read at each step: the page may have gone away while the step awaited. */
     const annullato = (): boolean => signal.aborted;
@@ -362,7 +381,12 @@ export function useRiconoscimentoNuovo(
             parte.schedaParte.parte.box,
           );
           immaginiRientro.current = immagini;
-          esito = await riconosciParte({ schedaParte: parte.schedaParte, immagini, lingua }, { segnale: signal });
+          esito = await riconosciUnaVolta(visitaFlusso, linguaCorrente.current, async (richiesta) =>
+            riconosciParte(
+              { schedaParte: parte.schedaParte, immagini, lingua: richiesta.lingua },
+              { segnale: signal, requestId: richiesta.requestId },
+            ),
+          );
         }
       } catch (error) {
         if (annullato()) {
@@ -377,7 +401,10 @@ export function useRiconoscimentoNuovo(
             error instanceof ErroreRiconoscimento
               ? messaggioRiconoscimento(error)
               : 'riconoscimento.errors.unavailable',
-          riprova: !(error instanceof ErroreRiconoscimento && error.codice === 'BILLING_ACCOUNT_RESTRICTED'),
+          riprova: !(
+            error instanceof ErroreRiconoscimento &&
+            (error.codice === 'BILLING_ACCOUNT_RESTRICTED' || error.codice === 'CAD_PILOT_NOT_ALLOWED')
+          ),
         });
         return;
       }
@@ -402,7 +429,7 @@ export function useRiconoscimentoNuovo(
     return () => {
       controllo.abort();
     };
-  }, [chiave, giro, lingua]);
+  }, [chiave, giro]);
 
   const saltaVerifica = useCallback((): void => {
     verifica.current?.abort();
@@ -445,6 +472,7 @@ export function useRiconoscimentoNuovo(
   }, [fase, navigate]);
   const rifaiDaCapo = useCallback((): void => {
     rifai.current = true;
+    rifacimenti.current += 1;
     setGiro((numero) => numero + 1);
   }, []);
   return { fase, scegliFamiglia, riprova, saltaVerifica, apriEsistente, rifaiDaCapo };

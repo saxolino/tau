@@ -100,6 +100,8 @@ export const consegnaMessages = defineMessages({
       files: 'Mancano dei file: attendi che STEP, GLB e foto siano pronti e riprova.',
       failed: 'Non sono riuscito a completare l’operazione. Controlla la connessione e riprova.',
       destination: 'Questo fornitore non può ricevere messaggi ora. Scegline un altro.',
+      project:
+        'Il progetto Sinopia di questo modello non c’è ancora: aspetta che il modello sia salvato su Sinopia e riprova.',
     },
   },
   en: {
@@ -197,6 +199,7 @@ export const consegnaMessages = defineMessages({
       files: 'Some files are missing: wait for STEP, GLB and photo to be ready and try again.',
       failed: 'I couldn’t complete it. Check the connection and try again.',
       destination: 'This supplier can’t receive messages now. Choose another one.',
+      project: 'This model’s Sinopia project isn’t there yet: wait until the model is saved on Sinopia and try again.',
     },
   },
 });

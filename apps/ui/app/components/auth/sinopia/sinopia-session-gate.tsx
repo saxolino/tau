@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import { useHref, useNavigate } from 'react-router';
 import { useSinopiaReturn, useSinopiaSession } from '#hooks/use-sinopia-session.js';
 import { SinopiaAccessRetry } from '#components/auth/sinopia/sinopia-access-retry.js';
-import { SinopiaNotConfigured, SinopiaReserved } from '#components/auth/sinopia/sinopia-reserved.js';
+import { SinopiaNotConfigured, SinopiaRefused, SinopiaReserved } from '#components/auth/sinopia/sinopia-reserved.js';
 import { SinopiaLogin } from '#components/auth/sinopia/sinopia-login.js';
 import { SinopiaSecondFactor } from '#components/auth/sinopia/sinopia-second-factor.js';
 import { sinopiaSession } from '#lib/sinopia-session.js';
@@ -19,8 +19,9 @@ import { isDesktopTarget } from '#lib/build-target.js';
 export const openWithoutSinopiaProject = (): boolean => isDesktopTarget() || import.meta.env.DEV;
 
 /**
- * SinopiaCAD: holds the workspace behind the Sinopia session. Only an account sinopialab.com would let into its app
- * opens it; before that the sign-in screen, the second-factor step or «Riprova» stands in, and while the stored session
+ * SinopiaCAD: holds the workspace behind the Sinopia session. Only an account sinopialab.com would let into its app,
+ * and the pilot list into SinopiaCAD, opens it; before that the sign-in screen (saying why a session ended), the
+ * second-factor step, the reserved pilot, the refusal or «Riprova» stands in, and while the stored session
  * is read or the account checked (the server render and the first client frames too) the caller's placeholder does.
  * Back from Google, the router first goes back to where the person was, so the workspace never renders on the address
  * with the code in it. Without a Sinopia project configured only the desktop build and the dev server open; the web
@@ -80,6 +81,9 @@ export function SinopiaSessionGate({
     }
     case 'reserved': {
       return <SinopiaReserved user={session.user} />;
+    }
+    case 'refused': {
+      return <SinopiaRefused notice={session.notice} />;
     }
   }
 }

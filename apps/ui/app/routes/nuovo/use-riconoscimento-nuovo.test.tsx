@@ -77,6 +77,7 @@ const lettura: LetturaNuovo = {
 };
 
 beforeEach(() => {
+  sessionStorage.clear();
   vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: () => 'blob:x', revokeObjectURL: vi.fn() }));
   hooks.recognize.mockResolvedValue({ scheda: { famiglia: { id: 'fibbia', confidenza: 1, alternative: [] } } });
   hooks.create.mockResolvedValue({ slugs: { workspaceSlug: 'home', projectSlug: 'cornice-fibbia' } });
@@ -157,5 +158,89 @@ describe('«/cad/nuovo» keeps the piece in the Sinopia project it came from', (
     expect(hooks.recognize).toHaveBeenCalledOnce();
     expect(hooks.find).toHaveBeenCalledOnce();
     expect(hooks.create).toHaveBeenCalledWith(expect.objectContaining({ sinopiaProjectId: project }));
+  });
+});
+
+/** The `requestId` the n-th recognition call carried. */
+const requestIdOf = (call: number): unknown =>
+  (hooks.recognize.mock.calls[call] as unknown[] | undefined)?.[1] === undefined
+    ? undefined
+    : ((hooks.recognize.mock.calls[call] as unknown[])[1] as { requestId?: unknown }).requestId;
+
+describe('«/cad/nuovo» books the recognition once per visit', () => {
+  it('sends a request id that a reload of the same visit repeats, so Sinopia replays instead of charging again', async () => {
+    const first = renderHook(() => useRiconoscimentoNuovo(lettura, 'it'));
+    await waitFor(() => {
+      expect(hooks.create).toHaveBeenCalledOnce();
+    });
+    first.unmount();
+    renderHook(() => useRiconoscimentoNuovo(lettura, 'it'));
+    await waitFor(() => {
+      expect(hooks.create).toHaveBeenCalledTimes(2);
+    });
+    expect(hooks.recognize).toHaveBeenCalledTimes(2);
+    expect(requestIdOf(0)).toMatch(/^[\da-f-]{36}$/u);
+    expect(requestIdOf(1)).toBe(requestIdOf(0));
+  });
+
+  it('does not start the recognition again when the interface language changes', async () => {
+    const { rerender } = renderHook(({ lingua }: { lingua: 'it' | 'en' }) => useRiconoscimentoNuovo(lettura, lingua), {
+      initialProps: { lingua: 'it' },
+    });
+    await waitFor(() => {
+      expect(hooks.recognize).toHaveBeenCalledOnce();
+    });
+    rerender({ lingua: 'en' });
+    await waitFor(() => {
+      expect(hooks.create).toHaveBeenCalledOnce();
+    });
+    expect(hooks.recognize).toHaveBeenCalledOnce();
+  });
+
+  it('a reload after a language change repeats the same request, in the language it was booked in', async () => {
+    const first = renderHook(() => useRiconoscimentoNuovo(lettura, 'it'));
+    await waitFor(() => {
+      expect(hooks.create).toHaveBeenCalledOnce();
+    });
+    first.unmount();
+    renderHook(() => useRiconoscimentoNuovo(lettura, 'en'));
+    await waitFor(() => {
+      expect(hooks.recognize).toHaveBeenCalledTimes(2);
+    });
+    expect(requestIdOf(1)).toBe(requestIdOf(0));
+    expect(hooks.recognize.mock.calls[1]?.[0]).toEqual(expect.objectContaining({ lingua: 'it' }));
+  });
+
+  it('«Rifallo da capo» books a new request: it is a new recognition', async () => {
+    const first = renderHook(() => useRiconoscimentoNuovo(lettura, 'it'));
+    await waitFor(() => {
+      expect(hooks.create).toHaveBeenCalledOnce();
+    });
+    first.unmount();
+    // Back on the same address, the part now has its model: rebuilding it is asked for, and paid, again.
+    hooks.find.mockResolvedValue({ modelId, name: 'Cornice fibbia' });
+    const { result } = renderHook(() => useRiconoscimentoNuovo(lettura, 'it'));
+    await waitFor(() => {
+      expect(result.current.fase.fase).toBe('esiste');
+    });
+    act(() => {
+      result.current.rifaiDaCapo();
+    });
+    await waitFor(() => {
+      expect(hooks.recognize).toHaveBeenCalledTimes(2);
+    });
+    expect(requestIdOf(1)).toMatch(/^[\da-f-]{36}$/u);
+    expect(requestIdOf(1)).not.toBe(requestIdOf(0));
+  });
+
+  it('a request id Sinopia no longer accepts (refunded, other body) is replaced once by a new one', async () => {
+    const { ErroreRiconoscimento } = await import('#services/sinopia-recognize.js');
+    hooks.recognize.mockRejectedValueOnce(new ErroreRiconoscimento('AI_REQUEST_CONFLICT', 409, 'già usata'));
+    renderHook(() => useRiconoscimentoNuovo(lettura, 'it'));
+    await waitFor(() => {
+      expect(hooks.create).toHaveBeenCalledOnce();
+    });
+    expect(hooks.recognize).toHaveBeenCalledTimes(2);
+    expect(requestIdOf(1)).not.toBe(requestIdOf(0));
   });
 });

@@ -117,17 +117,46 @@ describe('SinopiaSessionGate', () => {
     expect(screen.queryByText('Workspace')).not.toBeInTheDocument();
   });
 
-  it('should show the reserved page, and no workspace, to an account that is not an administrator', () => {
+  it('should show the reserved pilot, and no workspace, to an account outside the pilot list', () => {
     sinopia.state = { status: 'reserved', user: account };
 
     renderGate();
 
-    expect(screen.getByRole('heading', { level: 1, name: 'SinopiaCAD è in anteprima riservata' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 1, name: 'SinopiaCAD: pilota riservato' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Torna a Sinopia' })).toHaveAttribute(
       'href',
       'https://sinopialab.com/dashboard',
     );
     expect(screen.queryByText('Workspace')).not.toBeInTheDocument();
+  });
+
+  it('should say why an account sinopialab.com keeps out stays out, offer to check again, and not sign it out', async () => {
+    sinopia.state = {
+      status: 'refused',
+      user: account,
+      notice: { code: 'terms', link: { href: 'https://sinopialab.com/auth' } },
+    };
+    const user = userEvent.setup();
+    renderGate();
+
+    expect(screen.getByRole('heading', { level: 1, name: 'Accesso a SinopiaCAD' })).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('Accetta le Condizioni d’uso su sinopialab.com');
+    expect(screen.getByRole('link', { name: 'Vai a sinopialab.com' })).toHaveAttribute(
+      'href',
+      'https://sinopialab.com/auth',
+    );
+    await user.click(screen.getByRole('button', { name: 'Ho fatto: controlla di nuovo' }));
+    expect(session.retryAccess).toHaveBeenCalledOnce();
+    expect(screen.queryByText('Workspace')).not.toBeInTheDocument();
+  });
+
+  it('should say on the sign-in screen that the session ended', () => {
+    sinopia.state = { status: 'signed-out', notice: { code: 'sessionEnded' } };
+
+    renderGate('/w/home/cornice-fibbia');
+
+    expect(screen.getByRole('alert')).toHaveTextContent('La sessione di Sinopia è terminata.');
+    expect(screen.getByLabelText('Email')).toBeInTheDocument();
   });
 
   it('should offer «Riprova» when the access check could not be read', async () => {

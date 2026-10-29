@@ -77,6 +77,11 @@ export type ProjectRevisionsMachineInput = Readonly<{
   /** The checkout that is the project directory itself. */
   liveCheckoutId?: string;
   selectedCheckoutId?: string;
+  /**
+   * Quiet window before each checkout mints an `idle` revision, in milliseconds; `checkoutIdleWindowMilliseconds`
+   * when omitted. The host's policy, passed to every checkout this root spawns (S30).
+   */
+  idleWindow?: number;
 }>;
 
 type Admission = Readonly<{ key: TurnAttemptKey; checkoutId?: string }>;
@@ -93,6 +98,8 @@ type ProjectRevisionsMachineContextFields = Readonly<{
   checkoutStatus: Readonly<Record<string, CheckoutStatusEntry>>;
   liveCheckoutId: string | undefined;
   selectedCheckoutId: string | undefined;
+  /** The host's idle window for the checkouts it spawns; absent for the checkout's own default. */
+  idleWindow?: number | undefined;
   follow: 'chat' | 'pinned';
   followedChatId: string | undefined;
   checkoutRefs: Readonly<Record<string, ActorRefFrom<typeof checkoutMachine>>>;
@@ -785,6 +792,7 @@ const projectRevisionsMachineDefinition = setup({
     checkoutStatus: {},
     liveCheckoutId: input.liveCheckoutId,
     selectedCheckoutId: input.selectedCheckoutId ?? input.liveCheckoutId,
+    ...(input.idleWindow === undefined ? {} : { idleWindow: input.idleWindow }),
     follow: 'chat',
     followedChatId: undefined,
     checkoutRefs: {},
@@ -925,6 +933,7 @@ const projectRevisionsMachineDefinition = setup({
                 ...(record.headRevisionId === undefined ? {} : { headRevisionId: record.headRevisionId }),
                 /* I5's left-hand side, so the first cut after a rehydration can be recognised as a no-op (R3). */
                 ...(record.headTreeId === undefined ? {} : { headTreeId: record.headTreeId }),
+                ...(context.idleWindow === undefined ? {} : { idleWindow: context.idleWindow }),
                 parentRef: self,
               },
             });
