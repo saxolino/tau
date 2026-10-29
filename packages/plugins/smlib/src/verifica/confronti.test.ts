@@ -378,10 +378,10 @@ describe('vista generata girata nel piano', () => {
     );
     const richiesta = richiestaDaVistaGenerata(scheda, girata, 'sopra', { budgetMs: 15_000 })!;
     const sonde = await Promise.all(
-      rolliDaProvare('fibbia', 'sopra').map(async (rollo) => ({
-        rollo,
-        iou: (await verifica(richiestaGirata(richiesta, rollo, true))).iou,
-      })),
+      rolliDaProvare('fibbia', 'sopra').map(async (rollo) => {
+        const sonda = await verifica(richiestaGirata(richiesta, rollo, true));
+        return { rollo, iou: sonda.iou };
+      }),
     );
     const migliore = sonde.toSorted((a, b) => b.iou - a.iou)[0]!;
     expect(Math.abs(migliore.rollo) % 180).toBe(90);
