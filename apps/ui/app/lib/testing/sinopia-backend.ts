@@ -87,6 +87,11 @@ export type SinopiaTestAccount = {
   readonly withoutTerms?: boolean;
   /** Reads that answer 500. */
   readonly failing?: ReadonlyArray<'profile' | 'profession' | 'beta' | 'terms'>;
+  /**
+   * What the `sinopiacad` function answers on `GET /v1/models` (`SINOPIACAD_ALLOWED_USERS`): the account is in the
+   * pilot list (by default), is left out with the new code or the old one, or the function fails.
+   */
+  readonly pilot?: 'allowed' | 'reserved' | 'restricted' | 'failing';
 };
 
 /** The script's answers to Auth. */
@@ -166,6 +171,22 @@ export const scriptSinopiaBackend = (
       }
       case '/rest/v1/user_consents': {
         return failing.includes('terms') ? failure() : Response.json(termsRows);
+      }
+      case '/v1/models': {
+        switch (account.pilot ?? 'allowed') {
+          case 'allowed': {
+            return Response.json([]);
+          }
+          case 'reserved': {
+            return Response.json({ error: { type: 'CAD_PILOT_NOT_ALLOWED', message: 'pilota' } }, { status: 403 });
+          }
+          case 'restricted': {
+            return Response.json({ error: { type: 'BILLING_ACCOUNT_RESTRICTED', message: 'pilota' } }, { status: 403 });
+          }
+          case 'failing': {
+            return failure();
+          }
+        }
       }
       default: {
         return Response.json({ message: 'unexpected' }, { status: 500 });

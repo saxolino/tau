@@ -7,9 +7,12 @@
  * session; on SinopiaCAD's own origins (`cad.sinopialab.com`, previews, local) the session is SinopiaCAD's.
  *
  * A session is not a pass: after every sign-in SinopiaCAD asks Sinopia's database whether sinopialab.com would let the
- * account into its app (`sinopia-access.ts`). An account it would keep out (a Google account that has just been
- * created, a waiting list, Terms not accepted) is signed out on this browser and told where to put it right; an account
- * with a second factor confirms it first; a check that cannot be read offers «Riprova».
+ * account into its app, and Sinopia's function whether the account is in the pilot (`sinopia-access.ts`). An account
+ * either would keep out (a Google account that has just been created, Terms not accepted, outside the pilot list) is
+ * told where it stands and is never signed out: on sinopialab.com the session key is Sinopia's own, and signing out here
+ * would sign the person out of Sinopia's other tabs too. An account with a second factor confirms it first; a check
+ * that cannot be read offers «Riprova». A session that ends while the CAD is open (it expired, or another tab signed
+ * out) says so on the sign-in screen, and the same account signing in again goes back where it was.
  *
  * The admitted session's access token authorises every call to Sinopia's `sinopiacad` function (`TAU_API_URL`): the
  * catalog, dictation and, through the agent-host worker, the model gateway. No token leaves before admission. Tau's
@@ -21,8 +24,8 @@ import type { AuthChangeEvent, AuthError, Session, SupabaseClient } from '@supab
 import { Topic } from '@taucad/events';
 import { ENV } from '#environment.config.js';
 import { isDesktopTarget } from '#lib/build-target.js';
-import { checkSinopiaAccess, sinopiaRefusalNotice } from '#lib/sinopia-access.js';
-import type { SinopiaMessageCode, SinopiaNotice } from '#lib/sinopia-access.js';
+import { checkSinopiaAccess, checkSinopiaPilot, sinopiaRefusalNotice } from '#lib/sinopia-access.js';
+import type { SinopiaMessageCode, SinopiaNotice, SinopiaPilotVerdict } from '#lib/sinopia-access.js';
 import { isSinopiaAuthReturn, rememberSinopiaReturn, takeSinopiaReturn } from '#lib/sinopia-oauth-return.js';
 
 /** Sinopia's Supabase project as the host injects it. */
@@ -36,8 +39,9 @@ export type SinopiaUser = Readonly<{ id: string; email: string | undefined }>;
  * deployment): nothing is gated and no token is sent. `checking` lasts while the stored session is read and while a
  * signed-in account's access is checked. `signed-out` may carry a notice: why the last account was signed out, or why
  * the Google sign-in did not complete. `second-factor` waits for the account's authenticator code; `unverified` means
- * the access check could not be read; `reserved` is a Sinopia account that is not an administrator (SinopiaCAD is a
- * reserved preview): signed in on this browser, but never admitted, so no token leaves. Only `signed-in` opens the workspace.
+ * the access check could not be read; `reserved` is a Sinopia account outside the pilot list (SinopiaCAD is a reserved
+ * preview); `refused` is an account sinopialab.com itself would keep out, with the notice of where to put it right. Both
+ * stay signed in on this browser, but never admitted, so no token leaves. Only `signed-in` opens the workspace.
  */
 export type SinopiaSessionState =
   | Readonly<{ status: 'disabled' }>
@@ -46,6 +50,7 @@ export type SinopiaSessionState =
   | Readonly<{ status: 'second-factor'; user: SinopiaUser }>
   | Readonly<{ status: 'unverified'; user: SinopiaUser }>
   | Readonly<{ status: 'reserved'; user: SinopiaUser }>
+  | Readonly<{ status: 'refused'; user: SinopiaUser; notice: SinopiaNotice }>
   | Readonly<{ status: 'signed-in'; user: SinopiaUser }>;
 
 /** The outcome of a sign-in step, with the code of the sentence for the person when it failed. */
@@ -53,6 +58,9 @@ export type SinopiaSignInResult = Readonly<{ ok: true }> | Readonly<{ ok: false;
 
 /** The one Supabase client factory SinopiaCAD uses; a seam for tests. */
 export type SinopiaClientFactory = (config: SinopiaConfig, storageKey: string) => Promise<SupabaseClient>;
+
+/** Asks the pilot list of Sinopia's function about the account with this token (`checkSinopiaPilot`); a seam for tests. */
+export type SinopiaPilotCheck = (token: string) => Promise<SinopiaPilotVerdict | undefined>;
 
 /** One Sinopia session: its state for the gate, its current token for requests, and the sign-in steps. */
 export type SinopiaSession = {
@@ -71,7 +79,7 @@ export type SinopiaSession = {
   readonly signInWithGoogle: () => Promise<SinopiaSignInResult>;
   /** Confirm the account's second factor with the authenticator's current code. */
   readonly verifySecondFactor: (code: string) => Promise<SinopiaSignInResult>;
-  /** Check the signed-in account's access again after the check could not be read. */
+  /** Check the signed-in account's access again: after the check could not be read, or the account was kept out. */
   readonly retryAccess: () => void;
   /**
    * After the Google round trip, the address to go back to, until the router has gone there (`settleReturn`). The
@@ -186,6 +194,9 @@ const sameState = (left: SinopiaSessionState, right: SinopiaSessionState): boole
   if (left.status === 'signed-out' && right.status === 'signed-out') {
     return left.notice === right.notice;
   }
+  if (left.status === 'refused' && right.status === 'refused' && left.notice.code !== right.notice.code) {
+    return false;
+  }
   if ('user' in left && 'user' in right) {
     return left.status === right.status && left.user.id === right.user.id && left.user.email === right.user.email;
   }
@@ -203,11 +214,13 @@ const userOf = (session: Session): SinopiaUser => ({
  *
  * @param config - Sinopia's project, or `undefined` for a disabled session.
  * @param createClient - The client factory; supabase-js by default.
+ * @param checkPilot - Asks the pilot list of Sinopia's function; `checkSinopiaPilot` by default.
  * @returns The session.
  */
 export const createSinopiaSession = (
   config: SinopiaConfig | undefined,
   createClient: SinopiaClientFactory = createSinopiaSupabaseClient,
+  checkPilot: SinopiaPilotCheck = checkSinopiaPilot,
 ): SinopiaSession => {
   const initialState: SinopiaSessionState = config === undefined ? { status: 'disabled' } : { status: 'checking' };
   let state: SinopiaSessionState = initialState;
@@ -224,6 +237,10 @@ export const createSinopiaSession = (
   let checkingUserId: string | undefined;
   let revision = 0;
   let pendingReturn: string | undefined;
+  /** Set while the person signs out: the end of the session is then asked for, and nothing is said about it. */
+  let isLeaving = false;
+  /** Where an admitted session ended without being asked to (expired, another tab): the same account goes back there. */
+  let endedAt: Readonly<{ userId: string; path: string }> | undefined;
   const stateTopic = new Topic<undefined>({ name: 'SinopiaSession.state' });
   const tokenTopic = new Topic<string | undefined>({
     name: 'SinopiaSession.token',
@@ -291,8 +308,17 @@ export const createSinopiaSession = (
     }
   };
 
+  /** The address the page stands on, as the way back from Google remembers it. */
+  const currentPath = (): string => {
+    const { pathname, search, hash } = globalThis.location;
+    return `${pathname}${search}${hash}`;
+  };
+
   const runCheck = async (supabase: SupabaseClient, user: SinopiaUser, checkRevision: number): Promise<void> => {
-    const access = await checkSinopiaAccess(supabase, user.id);
+    const token = latestSession?.user.id === user.id ? latestSession.access_token : undefined;
+    const access = await checkSinopiaAccess(supabase, user.id, async () =>
+      token === undefined ? 'unknown' : checkPilot(token),
+    );
     if (checkRevision !== revision) {
       return;
     }
@@ -301,6 +327,13 @@ export const createSinopiaSession = (
       case 'allowed': {
         admittedUserId = user.id;
         notice = undefined;
+        /* The same account back after its session ended: the page goes where it was (the model it had open). */
+        const back = endedAt?.userId === user.id ? endedAt.path : undefined;
+        endedAt = undefined;
+        if (back !== undefined && back !== currentPath()) {
+          pendingReturn = back;
+          stateTopic.emit(undefined);
+        }
         if (latestSession?.user.id === user.id) {
           admit(supabase, latestSession);
         }
@@ -319,13 +352,8 @@ export const createSinopiaSession = (
         break;
       }
       case 'refused': {
-        /* The account stays out of SinopiaCAD altogether: no session is left behind on this browser. */
-        notice = sinopiaRefusalNotice(access.reason);
-        await signOutLocally(supabase);
-        /* SIGNED_OUT has normally moved the state on; if the client could not even drop the session, say so anyway. */
-        if (checkRevision === revision) {
-          showSignedOut();
-        }
+        /* The account stays out of SinopiaCAD, but its session stays: it is also sinopialab.com's, in other tabs. */
+        setState({ status: 'refused', user, notice: sinopiaRefusalNotice(access.reason) });
         break;
       }
     }
@@ -345,6 +373,12 @@ export const createSinopiaSession = (
   const apply = (supabase: SupabaseClient, event: AuthChangeEvent, session: Session | undefined): void => {
     latestSession = session;
     if (session === undefined) {
+      /* An admitted session that ends without the person asking: say so, and remember where the page stood. */
+      if (admittedUserId !== undefined && !isLeaving) {
+        notice = { code: 'sessionEnded' };
+        // oxlint-disable-next-line @typescript-eslint/no-unnecessary-condition -- globalThis.window is absent during SSR.
+        endedAt = globalThis.window ? { userId: admittedUserId, path: currentPath() } : undefined;
+      }
       revision += 1;
       checkingUserId = undefined;
       admittedUserId = undefined;
@@ -364,7 +398,10 @@ export const createSinopiaSession = (
     const userId = session.user.id;
     const isAwaitingThisAccount =
       checkingUserId === userId ||
-      ((state.status === 'second-factor' || state.status === 'unverified' || state.status === 'reserved') &&
+      ((state.status === 'second-factor' ||
+        state.status === 'unverified' ||
+        state.status === 'reserved' ||
+        state.status === 'refused') &&
         state.user.id === userId);
     /* A verified second factor changes the answer; a refresh or a repeated sign-in event for the same account does not. */
     if (isAwaitingThisAccount && event !== 'MFA_CHALLENGE_VERIFIED') {
@@ -530,7 +567,7 @@ export const createSinopiaSession = (
     },
     retryAccess: () => {
       const session = latestSession;
-      if (state.status !== 'unverified' || session === undefined) {
+      if ((state.status !== 'unverified' && state.status !== 'refused') || session === undefined) {
         return;
       }
       // async-iife: bootstrap -- the client already exists: the check reports through the state.
@@ -547,7 +584,13 @@ export const createSinopiaSession = (
     },
     signOut: async () => {
       setNotice(undefined);
-      await signOutLocally(await clientOf());
+      endedAt = undefined;
+      isLeaving = true;
+      try {
+        await signOutLocally(await clientOf());
+      } finally {
+        isLeaving = false;
+      }
     },
     dispose: async () => {
       clearTimeout(refreshTimer);

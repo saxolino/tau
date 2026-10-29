@@ -38,9 +38,8 @@ export const authMessages = defineMessages({
       signOut: 'Esci',
     },
     reserved: {
-      title: 'SinopiaCAD è in anteprima riservata',
-      description:
-        'L’account {email} non ha ancora accesso: per ora SinopiaCAD è aperto solo all’amministratore di Sinopia.',
+      title: 'SinopiaCAD: pilota riservato',
+      description: 'L’account {email} non è ancora nel pilota: SinopiaCAD si apre agli account uno alla volta.',
       back: 'Torna a Sinopia',
       signOut: 'Esci',
     },
@@ -50,6 +49,7 @@ export const authMessages = defineMessages({
     },
     goToSinopia: 'Vai a sinopialab.com',
     refused: 'Accesso a SinopiaCAD',
+    checkAgain: 'Ho fatto: controlla di nuovo',
     signOut: 'Esci',
     messages: {
       unreachable: 'Non riesco a raggiungere Sinopia. Controlla la connessione e riprova.',
@@ -68,6 +68,7 @@ export const authMessages = defineMessages({
         'Sei in lista d’attesa su Sinopia. Appena entri nella beta, SinopiaCAD si apre con lo stesso account.',
       profession: 'Scegli la tua professione su sinopialab.com, poi torna qui.',
       terms: 'Accetta le Condizioni d’uso su sinopialab.com, poi torna qui.',
+      sessionEnded: 'La sessione di Sinopia è terminata. Accedi di nuovo per riprendere da dove eri.',
     },
   },
   en: {
@@ -106,9 +107,8 @@ export const authMessages = defineMessages({
       signOut: 'Sign out',
     },
     reserved: {
-      title: 'SinopiaCAD is a reserved preview',
-      description:
-        'The account {email} does not have access yet: for now SinopiaCAD is open only to the Sinopia administrator.',
+      title: 'SinopiaCAD: reserved pilot',
+      description: 'The account {email} is not in the pilot yet: SinopiaCAD opens to accounts one at a time.',
       back: 'Back to Sinopia',
       signOut: 'Sign out',
     },
@@ -118,6 +118,7 @@ export const authMessages = defineMessages({
     },
     goToSinopia: 'Go to sinopialab.com',
     refused: 'SinopiaCAD access',
+    checkAgain: 'Done: check again',
     signOut: 'Sign out',
     messages: {
       unreachable: 'I can’t reach Sinopia. Check your connection and try again.',
@@ -136,6 +137,7 @@ export const authMessages = defineMessages({
         'You’re on the Sinopia waiting list. As soon as you join the beta, SinopiaCAD opens with the same account.',
       profession: 'Choose your profession on sinopialab.com, then come back here.',
       terms: 'Accept the Terms of use on sinopialab.com, then come back here.',
+      sessionEnded: 'Your Sinopia session ended. Sign in again to pick up where you left off.',
     },
   },
 });
