@@ -197,7 +197,7 @@ function SinopiaProjectSaveStatus(): React.JSX.Element {
             {sentence}
           </PaneButton>
         ) : (
-          <span className='max-w-72 truncate' title={sentence}>
+          <span className='max-w-80 truncate' title={sentence}>
             {sentence}
           </span>
         )}
