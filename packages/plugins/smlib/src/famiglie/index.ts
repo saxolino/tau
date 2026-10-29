@@ -33,7 +33,7 @@ export {
   tagliaDaDiametro,
 } from '#famiglie/taglie-anello.js';
 export type { RigaTaglia, SistemaTaglia } from '#famiglie/taglie-anello.js';
-export type { ParametriTacco, VarianteTacco } from '#famiglie/tacco.js';
+export type { ParametriTacco, VarianteTacco } from '#famiglie/tacco-profilo.js';
 export { fondoSemplice } from '#famiglie/fondo-semplice.js';
 export type { ParametriFondo, VarianteFondo } from '#famiglie/fondo-semplice.js';
 export {

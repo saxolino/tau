@@ -216,42 +216,42 @@ Parameters (key — unit — range — default — flags — meaning in Italian)
 `;
 
 exports[`prompt del classificatore > should describe the family tacco with every critical parameter and stay under 6k tokens 1`] = `
-"## Family \`tacco\` (recipe v1)
+"## Family \`tacco\` (recipe v2)
 Variants: stiletto | blocco | rocchetto | cono | kitten
 part_type: heel, top_lift
 Faces of this part (\`vista.faccia\`; main product face: fianco_esterno):
-- fianco_esterno — outer side profile of the heel, the foot-side view of a product photo: toe to the right, top lift on the ground line (shows height, curve of the back, seat slope)
+- fianco_esterno — outer side profile of the heel, the foot-side view of a product photo: toe to the right, top lift on the ground line (shows height, back curve, breast curve, seat slope)
 - fianco_interno — inner (arch) side profile, toe to the left
-- davanti — front of the heel, the face that looks toward the toe (shows width at the seat and at the top lift)
+- davanti — front of the heel, the breast that looks toward the toe (shows width at the seat and at the top lift)
 - dietro — back of the heel (dorso) seen from behind the shoe, the classic heel-from-behind view
 - sopra — the seat from above, toe up (rare)
 - sotto — the top lift (tappo) seen from below, toe up
 View names here: fronte = davanti · tre_quarti = fianco_esterno · lato = fianco_esterno · alto = sopra.
 Parameters (key — unit — range — default — flags — meaning in Italian):
-- tacco.altezza — mm — 15…130 — default 85 — CRITICAL, silhouette — Altezza dal piano d’appoggio al punto posteriore della seduta
-- tacco.spinta — deg — -2…10 — default 3 — silhouette — Inclinazione in avanti dell’asse del tacco
-- seduta.forma — enum — ellisse | rettangolo | scudo — default "ellisse" — Forma della seduta
-- seduta.lunghezza — mm — 30…90 — default 55 — CRITICAL, silhouette — Lunghezza della seduta (verso la punta)
-- seduta.larghezza — mm — 28…75 — default 48 — CRITICAL, silhouette — Larghezza della seduta
-- seduta.raggioAngoli — mm — 0…30 — default 12 — Raggio degli angoli (rettangolo, scudo)
-- seduta.inclinazione — deg — 0…15 — default 6 — Inclinazione della seduta (calzata media), scende verso la punta
+- tacco.altezza — mm — 15…130 — default 85 — CRITICAL, silhouette — Altezza dal piano d’appoggio al punto posteriore della seduta (si misura dietro)
+- tacco.spinta — deg — -2…10 — default 3 — silhouette — Inclinazione in avanti dell’asse dal tappo al centro della seduta
+- seduta.forma — enum — ellisse | rettangolo | scudo — default "scudo" — Pianta della seduta: scudo = dorso tondo, petto dritto
+- seduta.lunghezza — mm — 30…90 — default 55 — CRITICAL, silhouette — Lunghezza della seduta, dal dorso al petto lungo la seduta
+- seduta.larghezza — mm — 28…75 — default 48 — CRITICAL, silhouette — Larghezza della seduta (non si vede di fianco)
+- seduta.raggioAngoli — mm — 0…30 — default 12 — Raggio degli angoli verso il petto (rettangolo, scudo)
+- seduta.inclinazione — deg — 0…35 — default 14 — silhouette — Inclinazione della seduta vista di fianco, scende verso la punta: 5–10° nei tacchi bassi, 15–30° negli alti
 - tappo.forma — enum — ellisse | rettangolo | come_seduta — default "ellisse" — Forma del tappo
 - tappo.lunghezza — mm — 6…70 — default 10 — CRITICAL, silhouette — Lunghezza del tappo
 - tappo.larghezza — mm — 6…70 — default 10 — CRITICAL, silhouette — Larghezza del tappo
 - tappo.altezza — mm — 3…8 — default 5 — Spessore del sopratacco
 - tappo.materiale — enum — tpu | pu — default "tpu" — Materiale del sopratacco
-- vita.quota — frazione — 0.2…0.8 — default 0.55 — silhouette — Quota della vita (0 tappo, 1 seduta)
-- vita.scala — frazione — 0.25…1.2 — default 0.45 — silhouette — Larghezza della vita rispetto alla seduta
-- dorso.bombatura — mm — -10…15 — default 6 — silhouette — Bombatura del dorso (verso −Y)
-- fronte.bombatura — mm — -12…10 — default -4 — silhouette — Bombatura del fronte (verso +Y; negativa = concavo)
+- vita.quota — frazione — 0.2…0.8 — default 0.55 — silhouette — Quota (0 tappo, 1 seduta) dove il fusto si apre verso la seduta; rocchetto: il punto più stretto
+- vita.scala — frazione — 0.2…1.2 — default 0.3 — silhouette — Spessore del fusto a quella quota rispetto alla seduta (stiletto ≈ 0,3)
+- dorso.bombatura — mm — -10…15 — default 0 — silhouette — Dorso di fianco: + più pieno verso dietro, − più incavato
+- fronte.bombatura — mm — -12…10 — default 0 — silhouette — Petto di fianco: − arco più profondo sotto la seduta, + più pieno
 - anima.diametro — mm — 0…8 — default 5 — Perno d’acciaio (0 = assente, altrimenti 3–8)
-- anima.lunghezza — mm — — — default 72 — DERIVED (do not output) — Altezza − tappo − 8 mm
+- anima.lunghezza — mm — — — default 65 — DERIVED (do not output) — Dal tappo (2 mm dentro) a 6 mm sotto la seduta
 - fori.numero — n — 0…4 — default 3 — Fori di fissaggio sulla seduta
 - fori.diametro — mm — 2…4.5 — default 3.2 — Diametro dei fori di fissaggio
 - costruzione.processo — enum — stampaggio_iniezione | cnc | stampa_3d_resina — default "stampaggio_iniezione" — Processo produttivo
 - costruzione.materiale — enum — abs | pa6 | pa_gf30 | pu | legno_faggio | alluminio — default "abs" — Materiale del corpo
 - costruzione.parete — mm — 1.5…4 — default 2.2 — Parete dello svuotamento (ABS)
-- costruzione.sformo — deg — 0.5…3 — default 1.5 — Sformo della cavità
+- costruzione.sformo — deg — 0.5…3 — default 1.5 — Sformo della cavità (estratta perpendicolare alla seduta)
 - costruzione.svuotato — bool — true | false — default true — DERIVED (do not output) — Svuotato dal lato seduta (iniezione e seduta oltre 900 mm²)
 - costruzione.lato — enum — dx | sx | coppia — default "coppia" — Destro, sinistro o la coppia"
 `;
