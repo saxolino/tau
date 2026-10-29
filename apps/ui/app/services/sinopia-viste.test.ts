@@ -85,7 +85,7 @@ describe('client of /v1/views', () => {
       requestId: '44444444-4444-4444-8444-444444444444',
     }).then(
       () => expect.fail('should have thrown'),
-      (motivo: unknown) => motivo,
+      (error: unknown) => error,
     );
     expect(errore).toBeInstanceOf(ErroreVista);
     expect((errore as ErroreVista).codice).toBe(codice);
@@ -189,7 +189,10 @@ describe('the main view of the «Parte isolata» card', () => {
       });
     expect(link(vista.toUpperCase())).toMatchObject({ stato: 'parte', parametri: { vista } });
     expect(link('../altro')).toMatchObject({ stato: 'parte' });
-    expect((link('../altro') as { parametri: object }).parametri).not.toHaveProperty('vista');
+    expect(link('../altro')).toStrictEqual({
+      stato: 'parte',
+      parametri: { progetto, asset: vista, parte: 'heel' },
+    });
   });
 
   it('should reuse a main view of the same part and family', () => {

@@ -67,12 +67,16 @@ export class ErroreVista extends Error {
   /** Secondi dopo cui riprovare (`retry-after` di `REQUEST_IN_PROGRESS`), se la funzione li dice. */
   public readonly riprovaDopo: number | undefined;
 
-  public constructor(codice: CodiceErroreVista, stato: number, messaggio: string, riprovaDopo?: number) {
-    super(messaggio);
+  public constructor(
+    codice: CodiceErroreVista,
+    stato: number,
+    dettaglio: string | Readonly<{ messaggio: string; riprovaDopo?: number }>,
+  ) {
+    super(typeof dettaglio === 'string' ? dettaglio : dettaglio.messaggio);
     this.name = 'ErroreVista';
     this.codice = codice;
     this.stato = stato;
-    this.riprovaDopo = riprovaDopo;
+    this.riprovaDopo = typeof dettaglio === 'string' ? undefined : dettaglio.riprovaDopo;
   }
 }
 
@@ -151,7 +155,10 @@ export function decisioneVista(errore: ErroreVista): DecisioneVista {
 }
 
 /** Il prezzo di una vista, `cad_part_view` in `credit_costs`; `undefined` finché la riga non esiste. */
-export const prezzoVista = async (): Promise<number | undefined> => (await leggiPrezziCad()).cad_part_view;
+export const prezzoVista = async (): Promise<number | undefined> => {
+  const prezzi = await leggiPrezziCad();
+  return prezzi.cad_part_view;
+};
 
 /** Che cosa chiedere alla funzione. */
 export type RichiestaVista = Readonly<{
@@ -242,12 +249,11 @@ export async function generaVista(
       : risposta.status === 404
         ? 'ROUTE_MISSING'
         : 'PROVIDER_UNAVAILABLE';
-    throw new ErroreVista(
-      codice,
-      risposta.status,
-      typeof errore?.message === 'string' ? errore.message : `HTTP ${risposta.status}`,
-      leggiRiprovaDopo(risposta),
-    );
+    const riprovaDopo = leggiRiprovaDopo(risposta);
+    throw new ErroreVista(codice, risposta.status, {
+      messaggio: typeof errore?.message === 'string' ? errore.message : `HTTP ${risposta.status}`,
+      ...(riprovaDopo === undefined ? {} : { riprovaDopo }),
+    });
   }
   const letta = rispostaSchema.safeParse(corpo);
   if (!letta.success || letta.data.ruolo !== richiesta.ruolo) {

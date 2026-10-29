@@ -4,6 +4,7 @@ import type * as ReactRouter from 'react-router';
 import type * as Riconoscimento from '@taucad/smlib/riconoscimento';
 import type * as SinopiaParts from '#services/sinopia-parts.js';
 import type * as SinopiaRecognize from '#services/sinopia-recognize.js';
+import type * as SinopiaViste from '#services/sinopia-viste.js';
 import type { LetturaNuovo } from '#services/sinopia-parts.js';
 
 const owner = '10000000-0000-4000-8000-000000000001';
@@ -17,6 +18,10 @@ const hooks = vi.hoisted(() => ({
   navigate: vi.fn(),
   find: vi.fn(),
   recognize: vi.fn(),
+  prices: vi.fn(),
+  family: vi.fn(),
+  views: vi.fn(),
+  pipeline: vi.fn(),
 }));
 vi.mock('react-router', async (importOriginal) => ({
   ...(await importOriginal<typeof ReactRouter>()),
@@ -36,6 +41,7 @@ vi.mock('#services/sinopia-parts.js', async (importOriginal) => ({
   caricaSchedaParte: async () => ({
     schedaParte: {
       progetto: { id: '1841f9d7-ee9a-4684-a6d0-742ba0e64b52', verticale: 'accessories' },
+      immagine: { larghezzaPx: 100, altezzaPx: 100 },
       parte: { id: 'buckle_frame', etichetta: 'Cornice fibbia', nome: 'Cornice fibbia', box: [0, 0, 10, 10] },
       altreParti: [],
     },
@@ -44,10 +50,24 @@ vi.mock('#services/sinopia-parts.js', async (importOriginal) => ({
     maschera: {},
     mascheraPng: { type: 'image/png', arrayBuffer: async () => new ArrayBuffer(4) },
   }),
+  leggiVistaDelLink: async () => undefined,
 }));
 vi.mock('#services/riconoscimento-immagini.js', () => ({
   preparaImmaginiRiconoscimento: async () => ({}),
   strumentiBrowser: {},
+  mascheraDellaVista: async () => ({ png: Uint8Array.of(9), origine: 'sfondo' }),
+  vistaPerRiconoscimento: async (_immagine: unknown, ruolo: string, faccia: string) => ({
+    ruolo,
+    faccia,
+    mediaType: 'image/png',
+    data: 'AA==',
+  }),
+}));
+vi.mock('#services/sinopia-foto.js', () => ({ leggiPrezziCad: hooks.prices }));
+vi.mock('#services/sinopia-viste.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof SinopiaViste>()),
+  generaVista: hooks.views,
+  scaricaVista: async () => ({ type: 'image/png', arrayBuffer: async () => new ArrayBuffer(2) }),
 }));
 vi.mock('#services/sinopia-recognize.js', async (importOriginal) => ({
   ...(await importOriginal<typeof SinopiaRecognize>()),
@@ -59,12 +79,10 @@ vi.mock('@taucad/smlib/riconoscimento', async (importOriginal) => ({
   domandaFamiglia: () => undefined,
   mappaLibreria: {},
   mappaPartType: {},
-  risolviFamiglia: () => ({ vincolo: 'libera' }),
+  risolviFamiglia: hooks.family,
 }));
 vi.mock('#services/riconoscimento-verifica.js', () => ({ creaVerificatoreBrowser: () => ({ chiudi: vi.fn() }) }));
-vi.mock('#services/riconoscimento-pipeline.js', () => ({
-  eseguiPipelineRiconoscimento: async () => ({ tipo: 'fermata' }),
-}));
+vi.mock('#services/riconoscimento-pipeline.js', () => ({ eseguiPipelineRiconoscimento: hooks.pipeline }));
 vi.mock('#services/riconoscimento-progetto.js', () => ({
   progettoRiconosciuto: () => ({ files: {}, record: {}, piano: {}, nome: 'Cornice fibbia' }),
 }));
@@ -82,14 +100,30 @@ beforeEach(() => {
   hooks.recognize.mockResolvedValue({ scheda: { famiglia: { id: 'fibbia', confidenza: 1, alternative: [] } } });
   hooks.create.mockResolvedValue({ slugs: { workspaceSlug: 'home', projectSlug: 'cornice-fibbia' } });
   hooks.find.mockResolvedValue(undefined);
+  // eslint-disable-next-line @typescript-eslint/naming-convention -- le righe di `credit_costs` di Sinopia.
+  hooks.prices.mockResolvedValue({ cad_recognize: 2, cad_part_view: 2 });
+  hooks.family.mockReturnValue({ vincolo: 'libera' });
+  hooks.pipeline.mockResolvedValue({ tipo: 'fermata' });
 });
+
+type Hook = Readonly<{ result: Readonly<{ current: ReturnType<typeof useRiconoscimentoNuovo> }> }>;
+
+/** Wait for the cost and press «Costruisci». */
+const costruisci = async ({ result }: Hook): Promise<void> => {
+  await waitFor(() => {
+    expect(result.current.fase.fase).toBe('conferma');
+  });
+  act(() => {
+    result.current.costruisci();
+  });
+};
 afterEach(() => {
   vi.clearAllMocks();
 });
 
 describe('«/cad/nuovo» keeps the piece in the Sinopia project it came from', () => {
   it('builds the model INSIDE the origin project, with its image and part, creating no second project', async () => {
-    renderHook(() => useRiconoscimentoNuovo(lettura, 'it'));
+    await costruisci(renderHook(() => useRiconoscimentoNuovo(lettura, 'it')));
     await waitFor(() => {
       expect(hooks.create).toHaveBeenCalledOnce();
     });
@@ -119,6 +153,9 @@ describe('«/cad/nuovo» keeps the piece in the Sinopia project it came from', (
     });
     expect(hooks.recognize).not.toHaveBeenCalled();
     expect(hooks.create).not.toHaveBeenCalled();
+    // Before any spending: not even the prices are read.
+    expect(hooks.prices).not.toHaveBeenCalled();
+    expect(hooks.views).not.toHaveBeenCalled();
     act(() => {
       result.current.apriEsistente();
     });
@@ -145,13 +182,14 @@ describe('«/cad/nuovo» keeps the piece in the Sinopia project it came from', (
 
   it('rebuilds from scratch only on request, in the same project, without asking again', async () => {
     hooks.find.mockResolvedValue({ modelId, name: 'Cornice fibbia' });
-    const { result } = renderHook(() => useRiconoscimentoNuovo(lettura, 'it'));
+    const hook = renderHook(() => useRiconoscimentoNuovo(lettura, 'it'));
     await waitFor(() => {
-      expect(result.current.fase.fase).toBe('esiste');
+      expect(hook.result.current.fase.fase).toBe('esiste');
     });
     act(() => {
-      result.current.rifaiDaCapo();
+      hook.result.current.rifaiDaCapo();
     });
+    await costruisci(hook);
     await waitFor(() => {
       expect(hooks.create).toHaveBeenCalledOnce();
     });
@@ -170,10 +208,12 @@ const requestIdOf = (call: number): unknown =>
 describe('«/cad/nuovo» books the recognition once per visit', () => {
   it('sends a request id that a reload of the same visit repeats, so Sinopia replays instead of charging again', async () => {
     const first = renderHook(() => useRiconoscimentoNuovo(lettura, 'it'));
+    await costruisci(first);
     await waitFor(() => {
       expect(hooks.create).toHaveBeenCalledOnce();
     });
     first.unmount();
+    // The visit was confirmed: the reload goes on without asking for the cost again.
     renderHook(() => useRiconoscimentoNuovo(lettura, 'it'));
     await waitFor(() => {
       expect(hooks.create).toHaveBeenCalledTimes(2);
@@ -184,9 +224,11 @@ describe('«/cad/nuovo» books the recognition once per visit', () => {
   });
 
   it('does not start the recognition again when the interface language changes', async () => {
-    const { rerender } = renderHook(({ lingua }: { lingua: 'it' | 'en' }) => useRiconoscimentoNuovo(lettura, lingua), {
+    const hook = renderHook(({ lingua }: { lingua: 'it' | 'en' }) => useRiconoscimentoNuovo(lettura, lingua), {
       initialProps: { lingua: 'it' },
     });
+    const { rerender } = hook;
+    await costruisci(hook);
     await waitFor(() => {
       expect(hooks.recognize).toHaveBeenCalledOnce();
     });
@@ -199,6 +241,7 @@ describe('«/cad/nuovo» books the recognition once per visit', () => {
 
   it('a reload after a language change repeats the same request, in the language it was booked in', async () => {
     const first = renderHook(() => useRiconoscimentoNuovo(lettura, 'it'));
+    await costruisci(first);
     await waitFor(() => {
       expect(hooks.create).toHaveBeenCalledOnce();
     });
@@ -213,19 +256,21 @@ describe('«/cad/nuovo» books the recognition once per visit', () => {
 
   it('«Rifallo da capo» books a new request: it is a new recognition', async () => {
     const first = renderHook(() => useRiconoscimentoNuovo(lettura, 'it'));
+    await costruisci(first);
     await waitFor(() => {
       expect(hooks.create).toHaveBeenCalledOnce();
     });
     first.unmount();
     // Back on the same address, the part now has its model: rebuilding it is asked for, and paid, again.
     hooks.find.mockResolvedValue({ modelId, name: 'Cornice fibbia' });
-    const { result } = renderHook(() => useRiconoscimentoNuovo(lettura, 'it'));
+    const second = renderHook(() => useRiconoscimentoNuovo(lettura, 'it'));
     await waitFor(() => {
-      expect(result.current.fase.fase).toBe('esiste');
+      expect(second.result.current.fase.fase).toBe('esiste');
     });
     act(() => {
-      result.current.rifaiDaCapo();
+      second.result.current.rifaiDaCapo();
     });
+    await costruisci(second);
     await waitFor(() => {
       expect(hooks.recognize).toHaveBeenCalledTimes(2);
     });
@@ -236,11 +281,185 @@ describe('«/cad/nuovo» books the recognition once per visit', () => {
   it('a request id Sinopia no longer accepts (refunded, other body) is replaced once by a new one', async () => {
     const { ErroreRiconoscimento } = await import('#services/sinopia-recognize.js');
     hooks.recognize.mockRejectedValueOnce(new ErroreRiconoscimento('AI_REQUEST_CONFLICT', 409, 'già usata'));
-    renderHook(() => useRiconoscimentoNuovo(lettura, 'it'));
+    await costruisci(renderHook(() => useRiconoscimentoNuovo(lettura, 'it')));
     await waitFor(() => {
       expect(hooks.create).toHaveBeenCalledOnce();
     });
     expect(hooks.recognize).toHaveBeenCalledTimes(2);
     expect(requestIdOf(1)).not.toBe(requestIdOf(0));
+  });
+});
+
+// ── Viste ortogonali ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+/** A view as `/v1/views` answers it. */
+const vista = (ruolo: 'principale' | 'controllo', requestId: string) => ({
+  versione: 1,
+  ruolo,
+  famiglia: 'fibbia',
+  faccia: ruolo === 'principale' ? 'sopra' : 'fianco_esterno',
+  assetId: ruolo === 'principale' ? '7a000000-0000-4000-8000-000000000001' : '7a000000-0000-4000-8000-000000000002',
+  progettoId: project,
+  percorso: { bucket: 'creator-private', path: `projects/${project}/canvas-gen/${requestId}-isolate-part.png` },
+  mediaType: 'image/png',
+  costo: 2,
+});
+
+/** The request id the n-th view call carried, and its role. */
+const vistaChiamata = (call: number): { ruolo: unknown; requestId: unknown } => {
+  const [richiesta, opzioni] = hooks.views.mock.calls[call] as [{ ruolo: unknown }, { requestId: unknown }];
+  return { ruolo: richiesta.ruolo, requestId: opzioni.requestId };
+};
+
+const nonCombacia = {
+  tipo: 'consegna',
+  scheda: { famiglia: { id: 'fibbia', confidenza: 1, alternative: [] }, parametri: [] },
+  consegna: {},
+  verifica: { stato: 'fatta', iou: 0.95, camera: { azimuth: 0, elevation: 90, rollo: 0, pxPerMm: 3, cx: 0, cy: 0 } },
+  confronti: {
+    esito: 'non_combacia',
+    motivo: 'sorgente',
+    iou: { principale: 0.95, controllo: 0.92, sorgente: 0.71 },
+    parametri: 'principale',
+    risposta: {},
+    sorgente: { iou: 0.71, camera: { azimuth: 0, elevation: 80, rollo: 0, pxPerMm: 3, cx: 0, cy: 0 } },
+  },
+};
+
+describe('«/cad/nuovo» with the generated views', () => {
+  beforeEach(() => {
+    hooks.family.mockReturnValue({ vincolo: 'vincolata', famiglia: 'fibbia', variante: 'rettangolare' });
+    hooks.views.mockImplementation(
+      async (richiesta: { ruolo: 'principale' | 'controllo' }, opzioni: { requestId: string }) =>
+        vista(richiesta.ruolo, opzioni.requestId),
+    );
+  });
+
+  it('shows the cost first, then generates main and control view, then recognises with them', async () => {
+    const hook = renderHook(() => useRiconoscimentoNuovo(lettura, 'it'));
+    await waitFor(() => {
+      expect(hook.result.current.fase.fase).toBe('conferma');
+    });
+    // Nothing paid starts before the click: two views at 2 and the recognition at 2.
+    expect(hook.result.current.fase).toMatchObject({
+      costo: { totale: 6, riconoscimento: 2, viste: 2, prezzoVista: 2, riusata: false },
+    });
+    expect(hooks.views).not.toHaveBeenCalled();
+    expect(hooks.recognize).not.toHaveBeenCalled();
+    act(() => {
+      hook.result.current.costruisci();
+    });
+    await waitFor(() => {
+      expect(hooks.recognize).toHaveBeenCalledOnce();
+    });
+    expect(hooks.views).toHaveBeenCalledTimes(2);
+    expect(vistaChiamata(0).ruolo).toBe('principale');
+    expect(vistaChiamata(1).ruolo).toBe('controllo');
+    expect(hooks.views.mock.calls[1]?.[0]).toMatchObject({ principale: { assetId: vista('principale', 'x').assetId } });
+    expect(hooks.recognize.mock.calls[0]?.[0]).toMatchObject({
+      viste: [
+        { ruolo: 'principale', faccia: 'sopra' },
+        { ruolo: 'controllo', faccia: 'fianco_esterno' },
+      ],
+    });
+    // The check runs on the main view's mask.
+    await waitFor(() => {
+      expect(hooks.pipeline).toHaveBeenCalledOnce();
+    });
+    expect(hooks.pipeline.mock.calls[0]?.[0]).toMatchObject({
+      viste: { principale: { faccia: 'sopra' }, controllo: { faccia: 'fianco_esterno' } },
+    });
+  });
+
+  it('repeats the same view ids after a reload halfway, and pays nothing new', async () => {
+    hooks.recognize.mockImplementationOnce(
+      async () =>
+        new Promise(() => {
+          // Never settles: the page is reloaded while the recognition is running.
+        }),
+    );
+    const first = renderHook(() => useRiconoscimentoNuovo(lettura, 'it'));
+    await costruisci(first);
+    await waitFor(() => {
+      expect(hooks.recognize).toHaveBeenCalledOnce();
+    });
+    first.unmount();
+    renderHook(() => useRiconoscimentoNuovo(lettura, 'it'));
+    await waitFor(() => {
+      expect(hooks.recognize).toHaveBeenCalledTimes(2);
+    });
+    expect(hooks.views).toHaveBeenCalledTimes(4);
+    expect(vistaChiamata(2).requestId).toBe(vistaChiamata(0).requestId);
+    expect(vistaChiamata(3).requestId).toBe(vistaChiamata(1).requestId);
+    expect(requestIdOf(1)).toBe(requestIdOf(0));
+  });
+
+  it('goes on as today, on the photo alone, when the function has no views route', async () => {
+    const { ErroreVista } = await import('#services/sinopia-viste.js');
+    hooks.views.mockRejectedValue(new ErroreVista('ROUTE_MISSING', 404, 'HTTP 404'));
+    await costruisci(renderHook(() => useRiconoscimentoNuovo(lettura, 'it')));
+    await waitFor(() => {
+      expect(hooks.create).toHaveBeenCalledOnce();
+    });
+    expect(hooks.views).toHaveBeenCalledOnce();
+    expect(hooks.recognize.mock.calls[0]?.[0]).not.toHaveProperty('viste');
+    expect(hooks.pipeline.mock.calls[0]?.[0]).not.toHaveProperty('viste');
+  });
+
+  it('says the rebuilt view does not match the photo, with «Rigenera» and «Conferma le misure»', async () => {
+    hooks.pipeline.mockResolvedValue(nonCombacia);
+    const hook = renderHook(() => useRiconoscimentoNuovo(lettura, 'it'));
+    await costruisci(hook);
+    await waitFor(() => {
+      expect(hook.result.current.fase.fase).toBe('non_combacia');
+    });
+    expect(hook.result.current.fase).toMatchObject({ motivo: 'sorgente', iou: 0.71, costoRigenera: 6 });
+    expect(hooks.create).not.toHaveBeenCalled();
+    act(() => {
+      hook.result.current.confermaLeMisure();
+    });
+    await waitFor(() => {
+      expect(hooks.create).toHaveBeenCalledOnce();
+    });
+  });
+
+  it('«Rigenera le viste» opens round 2 with new ids for the views and the recognition', async () => {
+    hooks.pipeline.mockResolvedValue(nonCombacia);
+    const hook = renderHook(() => useRiconoscimentoNuovo(lettura, 'it'));
+    await costruisci(hook);
+    await waitFor(() => {
+      expect(hook.result.current.fase.fase).toBe('non_combacia');
+    });
+    act(() => {
+      hook.result.current.rigeneraViste();
+    });
+    await waitFor(() => {
+      expect(hooks.recognize).toHaveBeenCalledTimes(2);
+    });
+    // No second confirmation: the button said what it costs.
+    expect(hooks.views).toHaveBeenCalledTimes(4);
+    expect(vistaChiamata(2).requestId).not.toBe(vistaChiamata(0).requestId);
+    expect(vistaChiamata(3).requestId).not.toBe(vistaChiamata(1).requestId);
+    expect(requestIdOf(1)).not.toBe(requestIdOf(0));
+    const visita = Object.keys(sessionStorage).find((chiave) => chiave.endsWith(':giro'))!;
+    expect(JSON.parse(sessionStorage.getItem(visita)!)).toStrictEqual({ giro: 1, confermata: true });
+  });
+
+  it('offers «Riprova» and «Continua senza viste» when the view generator is down, and goes on without them', async () => {
+    const { ErroreVista } = await import('#services/sinopia-viste.js');
+    hooks.views.mockRejectedValueOnce(new ErroreVista('PROVIDER_UNAVAILABLE', 503, 'giù'));
+    const hook = renderHook(() => useRiconoscimentoNuovo(lettura, 'it'));
+    await costruisci(hook);
+    await waitFor(() => {
+      expect(hook.result.current.fase).toMatchObject({ fase: 'errore', senzaViste: true, riprova: true });
+    });
+    expect(hooks.recognize).not.toHaveBeenCalled();
+    act(() => {
+      hook.result.current.continuaSenzaViste();
+    });
+    await waitFor(() => {
+      expect(hooks.create).toHaveBeenCalledOnce();
+    });
+    expect(hooks.recognize.mock.calls[0]?.[0]).not.toHaveProperty('viste');
   });
 });

@@ -203,10 +203,9 @@ export async function eseguiPipelineRiconoscimento(ingresso: IngressoPipeline): 
     const consegna = (
       consegnaFatta: Consegna,
       risposta: RispostaVerifica,
-      schedaDiPartenza: SchedaPerVerifica | undefined,
-      rientri: number,
-      confronti?: RisultatoConfronti,
+      origine: Readonly<{ scheda: SchedaPerVerifica | undefined; rientri: number; confronti?: RisultatoConfronti }>,
     ): EsitoPipeline => {
+      const { scheda: schedaDiPartenza, rientri, confronti } = origine;
       const completa = comeScheda(schedaDiPartenza, ingresso.scheda);
       const famiglia = catalogo.find((voce) => voce.id === consegnaFatta.famiglia);
       return {
@@ -224,13 +223,11 @@ export async function eseguiPipelineRiconoscimento(ingresso: IngressoPipeline): 
       const { context } = istantanea;
       if (istantanea.matches('consegnato') && context.consegna && context.rispostaConsegnata) {
         concludi(
-          consegna(
-            context.consegna,
-            context.rispostaConsegnata,
-            context.schedaConsegnata,
-            context.rientri,
-            context.confronti,
-          ),
+          consegna(context.consegna, context.rispostaConsegnata, {
+            scheda: context.schedaConsegnata,
+            rientri: context.rientri,
+            ...(context.confronti ? { confronti: context.confronti } : {}),
+          }),
         );
       } else if (istantanea.matches('pezzoLibero')) {
         concludi({ tipo: 'libero', scheda: comeScheda(context.scheda, ingresso.scheda) });
@@ -242,12 +239,10 @@ export async function eseguiPipelineRiconoscimento(ingresso: IngressoPipeline): 
         const { migliore } = context;
         concludi(
           migliore
-            ? consegna(
-                consegnaVerifica(migliore.scheda, migliore.risposta, 'avviso'),
-                migliore.risposta,
-                migliore.scheda,
-                context.rientri,
-              )
+            ? consegna(consegnaVerifica(migliore.scheda, migliore.risposta, 'avviso'), migliore.risposta, {
+                scheda: migliore.scheda,
+                rientri: context.rientri,
+              })
             : { tipo: 'errore', messaggio: context.errore ?? 'La verifica non è riuscita.' },
         );
       }

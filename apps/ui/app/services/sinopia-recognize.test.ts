@@ -1,9 +1,11 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
+import { base64ToUint8Array } from 'uint8array-extras';
 import { schedaParteDiProva, schedaRiconoscimentoDiProva } from '@taucad/smlib/riconoscimento';
+import type { MisureFoto } from '@taucad/smlib/riconoscimento';
 import { ErroreRiconoscimento, riconosciParte, riconoscimentoRegistrato } from '#services/sinopia-recognize.js';
 import type { VistaPerRiconoscimento } from '#services/sinopia-recognize.js';
-import { mascheraDellaVista, vistaPerRiconoscimento } from '#services/riconoscimento-immagini.js';
+import { mascheraDellaVista, svuotaFori, vistaPerRiconoscimento } from '#services/riconoscimento-immagini.js';
 import type { ImmaginiRiconoscimento } from '#services/riconoscimento-immagini.js';
 
 vi.mock('#environment.config.js', () => ({
@@ -149,13 +151,13 @@ describe('recognition with the generated views (contract v3)', () => {
     mediaType: 'image/webp',
     data: 'UklGRg==',
   };
-  const misure = {
+  const misure: MisureFoto = {
     proporzioni: {
-      rapporti: [{ chiave: 'altezza_su_lunghezza' as const, valore: 0.2 }],
+      rapporti: [{ chiave: 'altezza_su_lunghezza', valore: 0.2 }],
       affidabilita: 0.8,
       parti: 3,
     },
-    visibilita: { stato: 'intera' as const, motivi: [] },
+    visibilita: { stato: 'intera', motivi: [] },
   };
   const leggiCorpo = (risposta: unknown) => {
     const corpi: Array<Record<string, unknown>> = [];
@@ -225,7 +227,7 @@ describe('recognition with the generated views (contract v3)', () => {
     const byte = Uint8Array.from({ length: 300 }, (_valore, indice) => (indice * 37) % 256);
     const vista = await vistaPerRiconoscimento(new Blob([byte], { type: 'image/png' }), 'principale', 'sopra');
     expect(vista.mediaType).toBe('image/png');
-    expect(Uint8Array.from(atob(vista.data), (carattere) => carattere.codePointAt(0)!)).toStrictEqual(byte);
+    expect(base64ToUint8Array(vista.data)).toStrictEqual(byte);
   });
 });
 
@@ -260,6 +262,24 @@ describe('mask of a generated view', () => {
     expect(maschera?.png).toStrictEqual(Uint8Array.of(0x89, 0x50));
     expect(accese).toBe(16 * 24);
     expect(segmenta).not.toHaveBeenCalled();
+  });
+
+  it('should open the hole of a buckle frame that shows the same plain background', () => {
+    // A 20 × 20 frame (x, y 10–29) on white with a 10 × 10 opening (x, y 15–24) of the same white.
+    const rgba = new Uint8ClampedArray(40 * 40 * 4).fill(255);
+    const dati = new Uint8Array(40 * 40);
+    for (let y = 10; y < 30; y++) {
+      for (let x = 10; x < 30; x++) {
+        dati[y * 40 + x] = 1;
+        if (!(x >= 15 && x < 25 && y >= 15 && y < 25)) {
+          rgba.set([120, 90, 40, 255], (y * 40 + x) * 4);
+        }
+      }
+    }
+    const maschera = svuotaFori({ larghezza: 40, altezza: 40, dati }, rgba);
+    expect(maschera.dati[20 * 40 + 20]).toBe(0);
+    expect(maschera.dati[12 * 40 + 12]).toBe(1);
+    expect(maschera.dati.reduce((somma, valore) => somma + valore, 0)).toBe(400 - 100);
   });
 
   it('should fall back on SAM when the background is not plain', async () => {

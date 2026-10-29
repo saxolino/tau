@@ -111,7 +111,7 @@ const viste: VisteVerifica = {
 
 const risultato = (esito: RisultatoConfronti['esito'], pezzo: RispostaVerifica): RisultatoConfronti => ({
   esito,
-  ...(esito === 'non_combacia' ? { motivo: 'sorgente' as const } : {}),
+  ...(esito === 'non_combacia' ? { motivo: 'sorgente' } : {}),
   iou: { principale: pezzo.iou, controllo: 0.93, sorgente: esito === 'non_combacia' ? 0.7 : 0.9 },
   parametri: 'principale',
   risposta: pezzo,
@@ -285,7 +285,9 @@ describe('riconoscimentoMachine', () => {
       viste,
       confronta: async (_ingresso, signal) => {
         segnale = signal;
-        return new Promise<RisultatoConfronti>(() => undefined);
+        return new Promise<RisultatoConfronti>(() => {
+          // Never settles: the comparison is still running when «annulla» arrives.
+        });
       },
     });
     actor.send({ type: 'avvia' });

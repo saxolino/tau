@@ -47,17 +47,17 @@ const vuoto: RiferimentiLetti = { riferimenti: [] };
 /** Le famiglie dei pezzi piatti: la faccia `sopra` è la faccia a vista («di fronte»), il fianco è il bordo («di taglio»). */
 const pezziPiatti: ReadonlySet<string> = new Set(['fibbia', 'placca', 'pendente', 'borchia', 'occhiello']);
 
-/** Le parole di ogni faccia nella didascalia di una vista generata. */
-const parolaFaccia: Readonly<Record<string, PlainMessageKey>> = {
-  fianco_esterno: 'riferimento.faces.fianco',
-  fianco_interno: 'riferimento.faces.fiancoInterno',
-  dietro: 'riferimento.faces.dietro',
-  davanti: 'riferimento.faces.davanti',
-  sopra: 'riferimento.faces.sopra',
-  sotto: 'riferimento.faces.sotto',
-  asse_dito: 'riferimento.faces.fronte',
-  tre_quarti_pietra: 'riferimento.faces.treQuarti',
-};
+/** Le parole di ogni faccia (id del contratto) nella didascalia di una vista generata. */
+const parolaFaccia: ReadonlyMap<string, PlainMessageKey> = new Map([
+  ['fianco_esterno', 'riferimento.faces.fianco'],
+  ['fianco_interno', 'riferimento.faces.fiancoInterno'],
+  ['dietro', 'riferimento.faces.dietro'],
+  ['davanti', 'riferimento.faces.davanti'],
+  ['sopra', 'riferimento.faces.sopra'],
+  ['sotto', 'riferimento.faces.sotto'],
+  ['asse_dito', 'riferimento.faces.fronte'],
+  ['tre_quarti_pietra', 'riferimento.faces.treQuarti'],
+]);
 
 /**
  * La didascalia di una vista generata: il ruolo e da dove guarda («Vista principale · di fianco»).
@@ -76,7 +76,7 @@ function testoVista(t: (chiave: PlainMessageKey) => string, vista: NonNullable<R
         ? 'riferimento.faces.taglio'
         : vista.faccia === undefined
           ? undefined
-          : parolaFaccia[vista.faccia];
+          : parolaFaccia.get(vista.faccia);
   return chiave ? `${ruolo} · ${t(chiave)}` : ruolo;
 }
 const nessuno: ReadonlySet<string> = new Set();

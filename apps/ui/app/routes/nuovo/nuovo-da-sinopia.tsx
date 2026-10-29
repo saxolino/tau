@@ -8,11 +8,14 @@ import { Spinner } from '#components/ui/spinner.js';
 import { RecognitionCard } from '#components/riconoscimento/recognition-card.js';
 import { useTranslation } from '#i18n/translate.js';
 import { useRiconoscimentoNuovo } from '#routes/nuovo/use-riconoscimento-nuovo.js';
-import type { ParteVista } from '#routes/nuovo/use-riconoscimento-nuovo.js';
+import type { CostoCostruzione, ParteVista, VistaMostrata } from '#routes/nuovo/use-riconoscimento-nuovo.js';
 import { leggiParametriNuovo } from '#services/sinopia-parts.js';
 
 /** The part's picture with its mask as a titanium watermark, and what Sinopia says about it. */
-function FotoParte({ parte }: Readonly<{ parte: ParteVista }>): React.JSX.Element {
+function FotoParte({
+  parte,
+  viste,
+}: Readonly<{ parte: ParteVista; viste?: readonly VistaMostrata[] }>): React.JSX.Element {
   const { t } = useTranslation();
   const { schedaParte } = parte;
   const altre = schedaParte.altreParti.map((altra) => altra.etichetta).slice(0, 6);
@@ -56,7 +59,70 @@ function FotoParte({ parte }: Readonly<{ parte: ParteVista }>): React.JSX.Elemen
           <p className='text-xs text-muted-foreground'>{t('riconoscimento.otherParts', { parts: altre.join(', ') })}</p>
         ) : null}
       </figcaption>
+      {viste && viste.length > 0 ? <VisteGenerate viste={viste} /> : null}
     </figure>
+  );
+}
+
+/** Le viste generate dalla foto, sotto la foto: la principale e il controllo, con il loro ruolo. */
+function VisteGenerate({ viste }: Readonly<{ viste: readonly VistaMostrata[] }>): React.JSX.Element {
+  const { t } = useTranslation();
+  return (
+    <div className='grid grid-cols-2 gap-3' data-slot='viste-generate'>
+      {viste.map((vista) => {
+        const didascalia =
+          vista.ruolo === 'principale'
+            ? t('riconoscimento.generatedViews.mainCaption')
+            : t('riconoscimento.generatedViews.controlCaption');
+        return (
+          <figure key={vista.ruolo} className='min-w-0 space-y-1'>
+            <div className='overflow-hidden rounded-lg border border-border bg-muted'>
+              <img src={vista.url} alt={didascalia} className='block aspect-square h-auto w-full object-contain' />
+            </div>
+            <figcaption className='text-xs text-muted-foreground'>{didascalia}</figcaption>
+          </figure>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Che cosa costa costruire il pezzo, e il pulsante che lo fa partire: niente parte prima del clic. */
+function ConfermaCosto({
+  costo,
+  onCostruisci,
+}: Readonly<{ costo: CostoCostruzione; onCostruisci: () => void }>): React.JSX.Element {
+  const { t } = useTranslation();
+  return (
+    <div className='space-y-3 rounded-lg border border-border bg-background px-3 py-3' data-slot='conferma-costo'>
+      <p className='text-sm leading-5 font-medium'>{t('riconoscimento.start.title')}</p>
+      <p className='text-sm leading-5 text-muted-foreground'>
+        {costo.viste === 0
+          ? t('riconoscimento.start.bodyRecognition')
+          : costo.riusata
+            ? t('riconoscimento.start.bodyReused')
+            : t('riconoscimento.start.bodyViews')}
+      </p>
+      {costo.viste > 0 ? (
+        <p className='font-mono text-[10px] leading-4 tracking-[0.12em] text-muted-foreground uppercase'>
+          {t('riconoscimento.start.breakdown', {
+            recognition: String(costo.riconoscimento),
+            views: String(costo.viste),
+            view: String(costo.prezzoVista),
+          })}
+        </p>
+      ) : null}
+      <div className='flex flex-wrap gap-2'>
+        <Button size='sm' onClick={onCostruisci}>
+          {costo.totale === 1
+            ? t('riconoscimento.start.buttonOne')
+            : t('riconoscimento.start.button', { credits: String(costo.totale) })}
+        </Button>
+        <Button size='sm' variant='outline' asChild>
+          <Link to='/'>{t('riconoscimento.backHome')}</Link>
+        </Button>
+      </div>
+    </div>
   );
 }
 
@@ -84,10 +150,18 @@ export function NuovoDaSinopia(): React.JSX.Element {
     () => leggiParametriNuovo(new URLSearchParams(query), { prove: import.meta.env.DEV }),
     [query],
   );
-  const { fase, scegliFamiglia, riprova, saltaVerifica, apriEsistente, rifaiDaCapo } = useRiconoscimentoNuovo(
-    lettura,
-    language === 'en' ? 'en' : 'it',
-  );
+  const {
+    fase,
+    costruisci,
+    scegliFamiglia,
+    riprova,
+    continuaSenzaViste,
+    rigeneraViste,
+    confermaLeMisure,
+    saltaVerifica,
+    apriEsistente,
+    rifaiDaCapo,
+  } = useRiconoscimentoNuovo(lettura, language === 'en' ? 'en' : 'it');
   const staVerificando = fase.fase === 'verifico';
   // Esc stops the check (and with it the worker): the piece is then built from the recognition alone.
   useEffect(() => {
@@ -108,15 +182,18 @@ export function NuovoDaSinopia(): React.JSX.Element {
   const catalogo = useMemo(() => catalogoFamiglie(), []);
   const parte = 'parte' in fase ? fase.parte : undefined;
   const esito = 'esito' in fase ? fase.esito : undefined;
+  const viste = 'viste' in fase ? fase.viste : undefined;
   const famiglia = esito
     ? catalogo.find(
         (voce) =>
           voce.id ===
-          ((fase.fase === 'costruisco' || fase.fase === 'verifico') && fase.famiglia
+          ((fase.fase === 'costruisco' || fase.fase === 'verifico' || fase.fase === 'non_combacia') && fase.famiglia
             ? fase.famiglia
             : esito.scheda.famiglia.id),
       )
     : undefined;
+  const formatoIou = (iou: number): string =>
+    iou.toLocaleString(language === 'en' ? 'en-US' : 'it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   return (
     <div
       className='mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-8 md:px-6 lg:px-8'
@@ -129,12 +206,24 @@ export function NuovoDaSinopia(): React.JSX.Element {
       </div>
       <div className='grid items-start gap-6 md:grid-cols-[minmax(0,1fr)_22rem]'>
         {parte ? (
-          <FotoParte parte={parte} />
+          <FotoParte parte={parte} {...(viste ? { viste } : {})} />
         ) : (
           <div className='aspect-square w-full rounded-lg border border-border bg-muted' />
         )}
         <div className='space-y-3' aria-live='polite'>
           {fase.fase === 'leggo' ? <Passo testo={t('riconoscimento.reading')} /> : null}
+          {fase.fase === 'conferma' ? <ConfermaCosto costo={fase.costo} onCostruisci={costruisci} /> : null}
+          {fase.fase === 'viste' ? (
+            <Passo
+              testo={
+                fase.passo === 'principale'
+                  ? t('riconoscimento.generatedViews.main')
+                  : fase.passo === 'controllo'
+                    ? t('riconoscimento.generatedViews.control')
+                    : t('riconoscimento.generatedViews.preparing')
+              }
+            />
+          ) : null}
           {fase.fase === 'riconosco' ? <Passo testo={t('riconoscimento.recognizing')} /> : null}
           {fase.fase === 'esiste' ? (
             <div role='status' className='space-y-3 rounded-lg border border-border bg-background px-3 py-3'>
@@ -152,10 +241,36 @@ export function NuovoDaSinopia(): React.JSX.Element {
               </div>
             </div>
           ) : null}
+          {fase.fase === 'non_combacia' ? (
+            <div
+              role='status'
+              className='space-y-3 rounded-lg border border-border bg-background px-3 py-3'
+              data-slot='non-combacia'
+            >
+              <p className='text-sm leading-5 font-medium'>{t('riconoscimento.mismatch.title')}</p>
+              <p className='text-sm leading-5 text-muted-foreground'>
+                {fase.motivo === 'viste_incoerenti'
+                  ? t('riconoscimento.mismatch.bodyViews', { iou: formatoIou(fase.iou) })
+                  : t('riconoscimento.mismatch.bodyPhoto', { iou: formatoIou(fase.iou) })}
+              </p>
+              <div className='flex flex-wrap gap-2'>
+                <Button size='sm' onClick={rigeneraViste}>
+                  {t('riconoscimento.mismatch.regenerate', { credits: String(fase.costoRigenera) })}
+                </Button>
+                <Button size='sm' variant='outline' onClick={confermaLeMisure}>
+                  {t('riconoscimento.mismatch.confirm')}
+                </Button>
+              </div>
+              <p className='text-xs leading-relaxed text-muted-foreground'>
+                {t('riconoscimento.mismatch.confirmHint')}
+              </p>
+            </div>
+          ) : null}
           {esito &&
           (fase.fase === 'verifico' ||
             fase.fase === 'costruisco' ||
             fase.fase === 'scegli_famiglia' ||
+            fase.fase === 'non_combacia' ||
             fase.fase === 'fermo') ? (
             <RecognitionCard
               scheda={esito.scheda}
@@ -206,6 +321,11 @@ export function NuovoDaSinopia(): React.JSX.Element {
                 {fase.fase === 'errore' && fase.riprova ? (
                   <Button size='sm' onClick={riprova}>
                     {t('riconoscimento.retry')}
+                  </Button>
+                ) : null}
+                {fase.fase === 'errore' && fase.senzaViste ? (
+                  <Button size='sm' variant='outline' onClick={continuaSenzaViste}>
+                    {t('riconoscimento.generatedViews.continueWithout')}
                   </Button>
                 ) : null}
                 <Button size='sm' variant='outline' asChild>

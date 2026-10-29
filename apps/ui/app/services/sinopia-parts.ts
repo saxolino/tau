@@ -44,7 +44,7 @@ export type ParametriPezzo = Readonly<{
 export type LetturaNuovo =
   | Readonly<{ stato: 'parte'; parametri: ParametriNuovo }>
   | Readonly<{ stato: 'pezzo'; parametri: ParametriPezzo }>
-  | Readonly<{ stato: 'prova'; famigliaIncerta: boolean }>
+  | Readonly<{ stato: 'prova'; famigliaIncerta: boolean; vistaDiversa?: boolean }>
   | Readonly<{ stato: 'incompleto' }>;
 
 /**
@@ -85,6 +85,10 @@ export function leggiParametriNuovo(parametri: URLSearchParams, opzioni: Readonl
   const prova = opzioni.prove ? parametri.get(searchParameterName.recognitionTrial) : undefined;
   if (prova === 'fibbia' || prova === 'fibbia-incerta') {
     return { stato: 'prova', famigliaIncerta: prova === 'fibbia-incerta' };
+  }
+  // Le viste di prova con la principale che inventa una luce più lunga: mostra «non corrisponde» senza chiamate.
+  if (prova === 'fibbia-diversa') {
+    return { stato: 'prova', famigliaIncerta: false, vistaDiversa: true };
   }
   const progetto = parametri.get(searchParameterName.sinopiaProject) ?? '';
   const asset = parametri.get(searchParameterName.sinopiaAsset) ?? '';
