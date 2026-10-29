@@ -19,6 +19,8 @@ export {
   ruoliVista,
 } from '#riconoscimento/contesto.js';
 export type { ContestoRiconoscimento } from '#riconoscimento/contesto.js';
+export { misureDallaFoto, soglieProporzioni, visibilitaParte } from '#riconoscimento/proporzioni.js';
+export type { IngressoProporzioni, MisureFoto, Riquadro1000 } from '#riconoscimento/proporzioni.js';
 export { visteOrtogonali, visteOrtogonaliDi } from '#famiglie/viste-ortogonali.js';
 export type { IdFaccia, VisteOrtogonali, VisteOrtogonaliFamiglia } from '#famiglie/viste.js';
 export { schedaParteSchema, verticali, fontiTipo, tipiScala } from '#riconoscimento/scheda-parte.js';
