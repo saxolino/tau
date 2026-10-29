@@ -491,16 +491,21 @@ export function useRiconoscimentoNuovo(
             return scheda;
           }
           const immagini = immaginiRientro.current;
-          const seconda = await riconosciUnaVolta(`${visita.current}:rientro`, lingua, async (richiesta) =>
-            riconosciParte(
-              {
-                schedaParte: parte.schedaParte,
-                immagini,
-                lingua: richiesta.lingua,
-                rientro: { differenzaPng, testo, iou },
-              },
-              { segnale, requestId: richiesta.requestId },
-            ),
+          // The second round belongs to the round of views: after «Rigenera» it is a new request.
+          const giroViste = statoVisita.leggi(visita.current).giro;
+          const seconda = await riconosciUnaVolta(
+            `${visita.current}:${String(giroViste)}:rientro`,
+            lingua,
+            async (richiesta) =>
+              riconosciParte(
+                {
+                  schedaParte: parte.schedaParte,
+                  immagini,
+                  lingua: richiesta.lingua,
+                  rientro: { differenzaPng, testo, iou },
+                },
+                { segnale, requestId: richiesta.requestId },
+              ),
           );
           return seconda.scheda;
         },
@@ -1041,10 +1046,7 @@ async function ottieniViste(
       );
     } else {
       const generata = await vistaUnaVolta(chiaveVista(visita, giro, 'principale'), async (requestId) =>
-        generaVista(
-          { ruolo: 'principale', famiglia, schedaParte: parte.schedaParte },
-          { requestId, segnale, progettoCad: parte.schedaParte.progetto.id },
-        ),
+        generaVista({ ruolo: 'principale', famiglia, schedaParte: parte.schedaParte }, { requestId, segnale }),
       );
       principale = generata;
       pronte.push(
@@ -1069,7 +1071,7 @@ async function ottieniViste(
           schedaParte: parte.schedaParte,
           principale: { assetId: principale.assetId },
         },
-        { requestId, segnale, progettoCad: parte.schedaParte.progetto.id },
+        { requestId, segnale },
       ),
     );
     ingresso.passo('preparo', pronte);
