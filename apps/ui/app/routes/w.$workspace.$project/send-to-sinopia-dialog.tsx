@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { useSelector } from '@xstate/react';
 import { randomUuid } from '@taucad/utils/id';
 import { Button } from '@taucad/ui/components/button';
 import { Checkbox } from '@taucad/ui/components/checkbox';
@@ -23,10 +24,10 @@ import {
 import type {
   SinopiaSendFiles,
   SinopiaSendFormat,
+  SinopiaSendModel,
   SinopiaSendReceipt,
   PendingSinopiaDelivery,
 } from '#services/sinopia-send.js';
-import { getSinopiaCadModel } from '#services/sinopia-cad.js';
 import type { SinopiaCadLink } from '#services/sinopia-cad.js';
 import type { PlainMessageKey } from '#i18n/translate.js';
 import type { SinopiaCadLinking } from '#hooks/use-sinopia-cad-sync.js';
@@ -37,6 +38,18 @@ const baseFormats: SinopiaSendFormat[] = ['step', 'glb', 'photo'];
 /** SMLib models also send the PDF sheet (E3a). */
 const deliveryFormats: SinopiaSendFormat[] = [...baseFormats, 'pdf'];
 const isAborted = (signal: AbortSignal): boolean => signal.aborted;
+/** How many times a send prepares its files again because another send took the number its PDF sheet names. */
+const versionAttempts = 3;
+
+/** The model as its first send registers it on Sinopia (it may have no row yet): the project's name and engine. */
+function useSendModel(): SinopiaSendModel {
+  const { projectRef, geometryUnits, mainEntryPath } = useProject();
+  const name = useSelector(projectRef, (snapshot) => snapshot.context.project?.name ?? '');
+  const kernel = useSelector(geometryUnits.get(mainEntryPath), (snapshot) => snapshot?.context.activeKernelId);
+  const engine =
+    kernel === 'smlib' || kernel === 'picovoxel' || kernel === 'replicad' || kernel === 'manifold' ? kernel : undefined;
+  return useMemo(() => ({ name, engine }), [engine, name]);
+}
 
 /** The unlinked model's way in: the same project creation the save status starts when the model opens. */
 type Linking = Readonly<{ name: string; state: SinopiaCadLinking | undefined; start: () => void }>;
@@ -193,22 +206,17 @@ function SendForm({
   const { projectId: localProjectId } = useProject();
   const { recordFiles } = useFileManager();
   const { prepareSinopia, deliveryPieces, deliveryAvailable } = useProjectExport();
+  const sendModel = useSendModel();
   const formats = deliveryAvailable ? deliveryFormats : baseFormats;
   // One project per model: versions go to the linked project («cambia» moves the model, it does not send elsewhere).
-  const destinationId = pending?.projectId ?? link.projectId;
+  // A pending send started before another device moved the model follows it there too (it is looked for in both).
+  const destinationId = link.projectId;
   const [isChanging, setIsChanging] = useState(false);
   const [moveTarget, setMoveTarget] = useState<string>();
   const [isMoving, setIsMoving] = useState(false);
   const [hasMoveFailed, setHasMoveFailed] = useState(false);
   const moveModel = useMoveSinopiaCadModel();
   const [selected, setSelected] = useState<SinopiaSendFormat[]>(pending?.selected ?? formats);
-  // The model's own preview stands in for the photo when the photo is not sent (E3a: every version has a thumbnail).
-  const remoteModel = useQuery({
-    queryKey: ['sinopia-send-model', link.userId, link.modelId],
-    queryFn: async () => (await getSinopiaCadModel(link)) ?? null,
-    retry: false,
-    staleTime: 0,
-  });
   const [note, setNote] = useState(pending?.note ?? '');
   const [hasPending, setHasPending] = useState(pending !== undefined);
   const [isSending, setIsSending] = useState(false);
@@ -250,7 +258,13 @@ function SendForm({
     retry: false,
     staleTime: 0,
   });
-  const destination = projects.data?.find((project) => project.id === destinationId);
+  // The project the CAD made for this model is born on Sinopia with its first save or send: until then it is not in
+  // the list, and the model's name is its name.
+  const destination =
+    projects.data?.find((project) => project.id === destinationId) ??
+    (projects.isSuccess && link.projectCreatedByCad === true && sendModel.name.trim() !== ''
+      ? { id: destinationId, name: sendModel.name.trim() }
+      : undefined);
   const isFrozen = isSending || receipt !== undefined || hasPending || isMoving;
   const move = async (): Promise<void> => {
     if (moveTarget === undefined || isFrozen) {
@@ -282,20 +296,34 @@ function SendForm({
       let sent = receipt;
       if (!sent && hasPending) {
         sent = await sinopiaSender.receipt({ link, projectId: destinationId, assetId: deliveryId.current, signal });
+        // Started before another device moved the model: it may have landed in the project the model left.
+        if (!sent && pending !== undefined && pending.projectId !== destinationId) {
+          sent = await sinopiaSender.receipt({
+            link,
+            projectId: pending.projectId,
+            assetId: deliveryId.current,
+            signal,
+          });
+        }
         (mountLifetime.current?.signal ?? signal).throwIfAborted();
         if (sent) {
           setReceipt(sent);
         }
       }
-      if (!sent) {
-        const files = await lifetimeSource.current(
-          signal,
-          version.data === undefined ? undefined : `v${String(version.data)}`,
-        );
+      // A pending intent written for the project the model left is written again for this one before sending.
+      let isPendingWritten = hasPending && (pending === undefined || pending.projectId === destinationId);
+      for (let attempt = 1; !sent; attempt++) {
+        // The number is read again here, not when the dialog opened: the PDF sheet names the version it becomes.
+        // oxlint-disable-next-line no-await-in-loop -- Each attempt prepares the sheet for the number it reads.
+        const number = await sinopiaSender.nextVersion(link, destinationId, signal);
+        signal.throwIfAborted();
+        // oxlint-disable-next-line no-await-in-loop -- The files are prepared again only for a number taken meanwhile.
+        const files = await lifetimeSource.current(signal, `v${String(number)}`);
         signal.throwIfAborted();
         setPrepared(files);
-        if (!hasPending) {
+        if (!isPendingWritten) {
           selectedSinopiaFiles(files, selected);
+          // oxlint-disable-next-line no-await-in-loop -- Written once, before the first remote mutation.
           await writePendingSinopiaDelivery(recordFiles, localProjectId, {
             deliveryId: deliveryId.current,
             modelId: link.modelId,
@@ -305,25 +333,36 @@ function SendForm({
             note,
           });
           signal.throwIfAborted();
+          isPendingWritten = true;
           setHasPending(true);
         }
-        sent = await sinopiaSender.send({
-          link,
-          projectId: destinationId,
-          selected,
-          prepared: files,
-          note,
-          signal,
-          deliveryId: deliveryId.current,
-          pieces: deliveryPieces.map((piece) => ({
-            nome: piece.nome,
-            ...(piece.materiale ? { materiale: { chiave: piece.materiale.chiave, nome: piece.materiale.nome } } : {}),
-            ...(piece.processo ? { processo: piece.processo } : {}),
-            ...(piece.pesoGrammi === undefined ? {} : { pesoGrammi: piece.pesoGrammi }),
-            ...(piece.volumeMm3 === undefined ? {} : { volumeMm3: piece.volumeMm3 }),
-          })),
-          ...(remoteModel.data?.thumbnail_path ? { fallbackThumbnailPath: remoteModel.data.thumbnail_path } : {}),
-        });
+        try {
+          // oxlint-disable-next-line no-await-in-loop -- A number taken meanwhile sends again with the sheet prepared for the next.
+          sent = await sinopiaSender.send({
+            link,
+            projectId: destinationId,
+            selected,
+            prepared: files,
+            note,
+            signal,
+            deliveryId: deliveryId.current,
+            model: sendModel,
+            // Only the PDF sheet names the number: without it a number taken meanwhile is simply the next one.
+            ...(selected.includes('pdf') ? { versionNumber: number } : {}),
+            pieces: deliveryPieces.map((piece) => ({
+              nome: piece.nome,
+              ...(piece.materiale ? { materiale: { chiave: piece.materiale.chiave, nome: piece.materiale.nome } } : {}),
+              ...(piece.processo ? { processo: piece.processo } : {}),
+              ...(piece.pesoGrammi === undefined ? {} : { pesoGrammi: piece.pesoGrammi }),
+              ...(piece.volumeMm3 === undefined ? {} : { volumeMm3: piece.volumeMm3 }),
+            })),
+          });
+        } catch (sendError) {
+          if (sendError instanceof SinopiaSendError && sendError.problem === 'version' && attempt < versionAttempts) {
+            continue;
+          }
+          throw sendError;
+        }
         // The version already exists on Sinopia: a changed source must not hide it, only a closed dialog may.
         (mountLifetime.current?.signal ?? signal).throwIfAborted();
         setReceipt(sent);
@@ -369,7 +408,14 @@ function SendForm({
       // A source change aborts the preparation, never the registration; only a closed dialog stays silent.
       if (mounted ? !isAborted(mounted) : !isAborted(signal)) {
         const failure = error instanceof SinopiaSendError ? error : new SinopiaSendError('failed');
-        if (failure.problem === 'migration' || failure.problem === 'destination' || failure.problem === 'files') {
+        // These stop before any version exists on Sinopia: the intent can go, the next «Invia» starts afresh.
+        if (
+          failure.problem === 'migration' ||
+          failure.problem === 'destination' ||
+          failure.problem === 'files' ||
+          failure.problem === 'model' ||
+          failure.problem === 'version'
+        ) {
           try {
             await recordFiles.unlink(sinopiaPendingPath(localProjectId, deliveryId.current));
             setHasPending(false);

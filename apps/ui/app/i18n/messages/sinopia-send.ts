@@ -43,6 +43,9 @@ export const sinopiaSendMessages = defineMessages({
       files:
         'Non riesco a preparare tutti i formati scelti. Correggi il modello oppure deseleziona il formato non disponibile e riprova.',
       failed: 'Non riesco a inviare questa versione. Controlla la connessione e riprova.',
+      model:
+        'Non riesco a registrare il modello su Sinopia, quindi la versione non parte. Controlla la connessione e riprova.',
+      version: 'Un altro invio ha appena preso questo numero di versione. Riprova: la tavola avrà il numero giusto.',
     },
   },
   en: {
@@ -85,6 +88,8 @@ export const sinopiaSendMessages = defineMessages({
       destination: 'The project is unavailable. Choose another project and try again.',
       files: 'I can’t prepare all selected formats. Fix the model or deselect the unavailable format and try again.',
       failed: 'I can’t send this version. Check your connection and try again.',
+      model: 'I can’t register the model on Sinopia, so the version isn’t sent. Check your connection and try again.',
+      version: 'Another send has just taken this version number. Try again: the sheet will carry the right number.',
     },
   },
 });
