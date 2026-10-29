@@ -52,6 +52,11 @@ import type { ViewCameraSeed } from '@taucad/viewer/services/graphics-camera-reg
 import { ViewerIssues } from '#routes/w.$workspace.$project/chat-stack-trace.js';
 import { ChatViewerStatus } from '#routes/w.$workspace.$project/chat-viewer-status.js';
 import { ViewerAgentLayer } from '#routes/w.$workspace.$project/viewer-cantiere.js';
+import {
+  useRiferimentoVisore,
+  ViewerReferencePanel,
+  ViewerReferenceToggle,
+} from '#routes/w.$workspace.$project/viewer-reference.js';
 import { ChatViewerControls } from '#routes/w.$workspace.$project/chat-viewer-controls.js';
 import { ViewerKernelSettings } from '#routes/w.$workspace.$project/chat-viewer-kernel-settings.js';
 import { ViewerProjectionPicker } from '#routes/w.$workspace.$project/chat-viewer-projection-picker.js';
@@ -714,6 +719,8 @@ const ViewerContent = memo(function ({
   const enableSurfaces = useGraphicsSelector((state) => state.context.enableSurfaces);
   const enableLines = useGraphicsSelector((state) => state.context.enableLines);
   const enableGizmo = useGraphicsSelector((state) => state.context.enableGizmo);
+  // The image the model was built from, one click away in the bar (editor only: a shared view has no project files).
+  const riferimento = useRiferimentoVisore(profile === 'editor');
   const enableGrid = useGraphicsSelector((state) => state.context.enableGrid);
   const enableAxes = useGraphicsSelector((state) => state.context.enableAxes);
   const enableMatcap = useGraphicsSelector((state) => state.context.enableMatcap);
@@ -1251,6 +1258,11 @@ const ViewerContent = memo(function ({
                           {list}
                         </>
                       }
+                      reference={
+                        riferimento.riferimenti.length > 0 ? (
+                          <ViewerReferenceToggle riferimento={riferimento} />
+                        ) : undefined
+                      }
                     />
                   )}
                 </ViewerIssues>
@@ -1300,6 +1312,11 @@ const ViewerContent = memo(function ({
             </div>
           )}
         </ViewerStage>
+        {/* Beside the stage, not in its canvas region: the panel's clicks and keys never reach the canvas (no orbit, no
+            part picked). It is placed in the viewer's own box; the inline tools' panel, when open, keeps that corner. */}
+        {profile === 'editor' && !(isManualEditOpen && !workspace) ? (
+          <ViewerReferencePanel riferimento={riferimento} isBelowGizmo={enableGizmo} />
+        ) : null}
         {profile === 'editor' && kernelId === 'smlib' && workspace && inspectorSlot
           ? createPortal(manualPanel(undefined), inspectorSlot)
           : null}

@@ -18,6 +18,9 @@ import {
 } from '#services/sinopia-references.js';
 import type { SinopiaReferenceSelection } from '#services/sinopia-references.js';
 import { useFileManager } from '#hooks/use-file-manager.js';
+import { createAttachmentStore } from '#db/attachment-store.js';
+import { composerRecordPaths, recordAttachmentsPath } from '#db/composer-record-store.js';
+import { riferimentiDaAllegati } from '#services/riferimenti-progetto.js';
 import { homeProjectCreationLocation } from '#types/project-creation-location.types.js';
 
 /**
@@ -90,8 +93,22 @@ export function useNewProjectSubmit(
           references ?? (await restoreSinopiaReferenceSelection(recordFiles, attachments, attachmentSource));
         const referenceOptions = await prepareSinopiaReferenceSelection(selection, attachments);
         const sinopiaProjectId = referenceOptions.sinopiaProjectId ?? originSinopiaProjectId;
+        /* An uploaded or pasted image is the model's reference too: copied beside the model (`riferimenti/`), it is
+         * versioned and travels with the model to Sinopia, while the chat's attachment stays on this device. */
+        const draftStore = createAttachmentStore(
+          recordFiles,
+          attachmentSource ?? recordAttachmentsPath(composerRecordPaths.newProject),
+        );
+        const uploadedReferences = await riferimentiDaAllegati(
+          attachments,
+          // A copy that cannot be read only leaves the model without that reference; the project is still created.
+          async (attachment) => draftStore.read(attachment).catch(() => undefined),
+          referenceOptions.files,
+        );
+        const files = { ...referenceOptions.files, ...uploadedReferences };
         const created = await projectManager.createProject({
           ...referenceOptions,
+          ...(Object.keys(files).length > 0 ? { files } : {}),
           ...(sinopiaProjectId === undefined ? {} : { sinopiaProjectId }),
           /* The empty starter file only: the chat pins no engine, and the agent chooses one for the job. */
           kernel: sinopiaStarterKernelId,

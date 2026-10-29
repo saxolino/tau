@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, render, screen, within } from '@testing-library/react';
+import { act, cleanup, render, screen, within } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createActor, createAsyncLogic } from 'xstate';
@@ -69,7 +69,12 @@ const showSvg = (actor: GraphicsActor): void => {
 
 const renderBar = (
   actor: GraphicsActor,
-  properties: { shouldEnableCapture?: boolean; leading?: React.ReactNode; aboveControls?: React.ReactNode } = {},
+  properties: {
+    shouldEnableCapture?: boolean;
+    leading?: React.ReactNode;
+    aboveControls?: React.ReactNode;
+    reference?: React.ReactNode;
+  } = {},
 ): void => {
   render(
     <KeyboardProvider>
@@ -155,6 +160,18 @@ describe('ChatViewerControls', () => {
         'Enter fullscreen',
         'Viewer settings',
       ]);
+    });
+
+    it('should put the model reference beside Capture, and keep it without Capture', () => {
+      const reference = <button type='button' aria-label='Riferimento' />;
+      renderBar(startGraphics(), { reference });
+
+      expect(controlNames().slice(-3)).toEqual(['Capture view to chat', 'Riferimento', 'Viewer settings']);
+
+      cleanup();
+      renderBar(startGraphics(), { shouldEnableCapture: false, reference });
+
+      expect(controlNames().slice(-2)).toEqual(['Riferimento', 'Viewer settings']);
     });
 
     it('should offer no Section or Measure toggle, and no rows, for 2D geometry', () => {

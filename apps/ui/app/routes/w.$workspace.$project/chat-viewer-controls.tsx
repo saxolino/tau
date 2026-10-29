@@ -18,6 +18,8 @@ type ChatViewerControlsProps = Readonly<{
   leading?: React.ReactNode;
   /** A row directly above the controls line, below any running tool's row: the open issues list. */
   aboveControls?: React.ReactNode;
+  /** The model's reference toggle, beside Capture: present only when the model was built from an image. */
+  reference?: React.ReactNode;
 }>;
 
 /**
@@ -30,6 +32,7 @@ export function ChatViewerControls({
   kernelSettings,
   leading,
   aboveControls,
+  reference,
 }: ChatViewerControlsProps): React.JSX.Element {
   const cadRef = useCad();
   const operationTimeoutValue = useCadSelector(selectCadOperationTimeout, defaultOperationTimeout);
@@ -41,7 +44,14 @@ export function ChatViewerControls({
   );
   return (
     <ViewerControls
-      capture={shouldEnableCapture ? <AvailableCaptureViewControl captureRendering={captureRendering} /> : undefined}
+      capture={
+        shouldEnableCapture || reference ? (
+          <>
+            {shouldEnableCapture ? <AvailableCaptureViewControl captureRendering={captureRendering} /> : null}
+            {reference}
+          </>
+        ) : undefined
+      }
       kernelSettings={kernelSettings}
       operationTimeout={{
         value: operationTimeoutValue,

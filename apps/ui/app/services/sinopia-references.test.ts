@@ -11,6 +11,7 @@ import {
   listSinopiaReferenceProjects,
   mergeSinopiaReferenceSelections,
   prepareSinopiaReferenceSelection,
+  readSinopiaProjectName,
   rememberSinopiaReferenceOrigin,
   restoreSinopiaReferenceSelection,
   sinopiaImageLocation,
@@ -386,5 +387,35 @@ describe('Sinopia reference intake', () => {
       sinopiaComposerOriginPath(scopeA.attachmentDirectory),
       `${scopeA.attachmentDirectory}/${attachment.hash}.png`,
     ]);
+  });
+
+  it('should read the name of an owned, active project for the reference caption', async () => {
+    data.set('/rest/v1/projects', [{ name: ' Collezione FW26 ' }]);
+
+    await expect(readSinopiaProjectName('project-a')).resolves.toBe('Collezione FW26');
+
+    const query = requests.at(-1)!;
+    expect(query.pathname).toBe('/rest/v1/projects');
+    expect(query.searchParams.get('select')).toBe('name');
+    expect(query.searchParams.get('id')).toBe('eq.project-a');
+    expect(query.searchParams.get('user_id')).toBe('eq.user-a');
+    expect(query.searchParams.get('deleted_at')).toBe('is.null');
+  });
+
+  it('should give no name for a project it cannot read, or when the account changed meanwhile', async () => {
+    await expect(readSinopiaProjectName('foreign')).resolves.toBeUndefined();
+
+    data.set('/rest/v1/projects', [{ name: 'Collezione FW26' }]);
+    let reads = 0;
+    // The admission read after the query sees another account: the name is not shown to it.
+    Object.defineProperty(admission, 'userId', {
+      configurable: true,
+      get: () => (reads++ === 0 ? 'user-a' : 'user-b'),
+    });
+    try {
+      await expect(readSinopiaProjectName('project-a')).resolves.toBeUndefined();
+    } finally {
+      Object.defineProperty(admission, 'userId', { configurable: true, writable: true, value: 'user-a' });
+    }
   });
 });

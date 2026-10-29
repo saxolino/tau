@@ -28,6 +28,7 @@ import { sketchMessages } from '#i18n/messages/sketch.js';
 import { consegnaMessages } from '#i18n/messages/consegna.js';
 import { serieMessages } from '#i18n/messages/serie.js';
 import { cantiereMessages } from '#i18n/messages/cantiere.js';
+import { riferimentoMessages } from '#i18n/messages/riferimento.js';
 
 /**
  * Every area's messages under its own namespace: `t('project.topBar.versions')`. One area per file in
@@ -64,6 +65,7 @@ export const areas = {
   consegna: consegnaMessages,
   serie: serieMessages,
   cantiere: cantiereMessages,
+  riferimento: riferimentoMessages,
 } as const;
 
 /** The Italian catalog, the source of every key. */
