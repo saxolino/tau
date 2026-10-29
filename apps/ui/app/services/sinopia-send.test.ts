@@ -431,6 +431,15 @@ describe('Sinopia delivery', () => {
     expect(test.assets[0]!.metadata).toMatchObject({ thumbnail_path: thumbnail });
   });
 
+  it('should write the content the version was sent from, and only a well-formed one (difetto 31)', async () => {
+    const test = fixture();
+    await test.send(deliveryId, new AbortController().signal, { contentKey: 'e'.repeat(64) });
+    expect(test.assets[0]!.metadata).toMatchObject({ content_key: 'e'.repeat(64) });
+    const malformed = fixture();
+    await malformed.send(deliveryId, new AbortController().signal, { contentKey: 'not a key' });
+    expect(malformed.assets[0]!.metadata).not.toHaveProperty('content_key');
+  });
+
   it('should use the captured photo as the thumbnail of a version whose model has no preview yet', async () => {
     const test = fixture();
     await test.send(deliveryId, new AbortController().signal, { selected: ['step', 'glb'] });

@@ -8,6 +8,7 @@ import { setLanguage } from '#i18n/language.js';
 import { bindTranslate } from '#i18n/translate.js';
 import type { Language } from '#i18n/language.js';
 import type { SinopiaCadLink } from '#services/sinopia-cad.js';
+import { sinopiaCadContentKey } from '#services/sinopia-cad.js';
 import type { SinopiaSendFiles, SinopiaSendReceipt } from '#services/sinopia-send.js';
 import { sinopiaSender, SinopiaSendError } from '#services/sinopia-send.js';
 import { toast } from '#components/ui/sonner.js';
@@ -27,6 +28,14 @@ const hooks = vi.hoisted(() => ({
 }));
 /** The project (its name) and its main geometry unit (its engine), as the send registers the model with them. */
 const project = vi.hoisted(() => ({ value: undefined as unknown }));
+/** The revision owner: the content the version is sent from, once every edit is in a revision. */
+const revisions = vi.hoisted(() => ({ status: { headRevisionId: 'a'.repeat(40), dirty: false, minting: false } }));
+vi.mock('#hooks/use-revision-status.js', () => ({
+  useRevisionClient: () => ({
+    status: () => revisions.status,
+    snapshot: async () => ({ 'main.ts': 'c2hhcGU=', 'tau.json': 'e30=' }),
+  }),
+}));
 vi.mock('#hooks/use-sinopia-cad-sync.js', () => ({ useMoveSinopiaCadModel: () => hooks.move }));
 vi.mock('#hooks/use-project.js', () => ({ useProject: () => project.value }));
 vi.mock('#hooks/use-file-manager.js', () => ({
@@ -76,6 +85,7 @@ function mount(onOpenChange = vi.fn()) {
 const projectActor = createActor(createMachine({ context: { project: { name: 'Collana col ramo' } } })).start();
 const unitActor = createActor(createMachine({ context: { activeKernelId: 'smlib' } })).start();
 beforeEach(() => {
+  revisions.status = { headRevisionId: 'a'.repeat(40), dirty: false, minting: false };
   project.value = {
     projectId: 'local',
     projectRef: projectActor,
@@ -465,6 +475,30 @@ describe('Sinopia delivery recovery', () => {
     expect(sinopiaSender.send).toHaveBeenCalledWith(expect.objectContaining({ projectId }));
   });
 
+  it('should name the content of the version it sends, so the sample photo knows it later (difetto 31)', async () => {
+    const user = userEvent.setup();
+    mount();
+    await user.click(await screen.findByRole('button', { name: /3/u }));
+    await waitFor(() => {
+      expect(sinopiaSender.send).toHaveBeenCalledOnce();
+    });
+    expect(vi.mocked(sinopiaSender.send).mock.calls[0]?.[0].contentKey).toBe(
+      await sinopiaCadContentKey({
+        'main.ts': new TextEncoder().encode('shape'),
+        'tau.json': new TextEncoder().encode('{}'),
+      }),
+    );
+  });
+  it('should send without a content name while edits are not in a revision yet', async () => {
+    revisions.status = { headRevisionId: 'a'.repeat(40), dirty: true, minting: false };
+    const user = userEvent.setup();
+    mount();
+    await user.click(await screen.findByRole('button', { name: /3/u }));
+    await waitFor(() => {
+      expect(sinopiaSender.send).toHaveBeenCalledOnce();
+    });
+    expect(vi.mocked(sinopiaSender.send).mock.calls[0]?.[0]).not.toHaveProperty('contentKey');
+  });
   it('should prevent dismissal while remote delivery is in flight', async () => {
     setLanguage('en');
     const user = userEvent.setup();

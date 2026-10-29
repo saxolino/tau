@@ -60,6 +60,11 @@ type SinopiaSendRequest = {
    * `version`, so the caller prepares again, instead of the sheet saying one number and the version another.
    */
   versionNumber?: number;
+  /**
+   * `sinopiaCadContentKey` of the files the sent model was rendered from, when they are all in a revision: the sample
+   * photo then knows the model on screen is still this version by its content, not by guessing from the shape.
+   */
+  contentKey?: string;
 };
 /** The model as the send registers it: the engine is `undefined` when the CAD cannot tell it. */
 export type SinopiaSendModel = Readonly<{ name: string; engine: SinopiaCadEngine | undefined }>;
@@ -304,6 +309,7 @@ export function createSinopiaSender(
       fallbackThumbnailPath,
       model,
       versionNumber: pinned,
+      contentKey,
     }: SinopiaSendRequest): Promise<SinopiaSendReceipt> {
       if (![link.modelId, projectId, link.userId, deliveryId].every((id) => uuid.safeParse(id).success)) {
         throw new SinopiaSendError('destination');
@@ -437,6 +443,7 @@ export function createSinopiaSender(
               })),
               thumbnail_path: photo ?? preview ?? extraThumbnail?.path ?? null,
               ...(pieces && pieces.length > 0 ? { pezzi: deliveryPieces(pieces) } : {}),
+              ...(contentKey !== undefined && /^[0-9a-f]{64}$/u.test(contentKey) ? { content_key: contentKey } : {}),
               // The image (and part) of the project the model was built from: Sinopia shows it beside the version.
               ...(link.sourceAssetId !== undefined && projectId === link.projectId
                 ? { source_asset_id: link.sourceAssetId, source_part_id: link.sourcePartId ?? null }

@@ -25,7 +25,13 @@ import type { PlainMessageKey } from '#i18n/translate.js';
 import type { cadMachine } from '#machines/cad.machine.js';
 import { chiaveFoto, fotoPronta, statiFoto, ultimePerChiave } from '#lib/foto-campione/galleria.js';
 import type { FotoCampione, StatoFoto } from '#lib/foto-campione/galleria.js';
-import { stessaForma } from '#lib/foto-campione/confronto.js';
+import { stessaForma, stessoContenutoInviato } from '#lib/foto-campione/confronto.js';
+import { motivoFotoSpenta, schermoComeInviata } from '#lib/foto-campione/pulsante.js';
+import { useFileManager } from '#hooks/use-file-manager.js';
+import { useRevisionClient, useRevisionStatus } from '#hooks/use-revision-status.js';
+import { useRevisionCards } from '#hooks/use-revisions.js';
+import { sinopiaCadSnapshotContentKey } from '#services/sinopia-cad.js';
+import { readSinopiaDeliveries } from '#services/sinopia-send.js';
 import { improntaFoto, materialeNormale } from '#lib/foto-campione/impronta.js';
 import type { LivelloFoto, MaterialeFoto } from '#lib/foto-campione/impronta.js';
 import {
@@ -49,7 +55,7 @@ import {
   scaricaFoto,
   versioneInviata,
 } from '#services/sinopia-foto.js';
-import type { CodiceErroreFoto, PrezzoCad } from '#services/sinopia-foto.js';
+import type { CodiceErroreFoto, PrezzoCad, VersioneInviata } from '#services/sinopia-foto.js';
 
 /**
  * «Foto del campione» in the inspector (SinopiaCAD D6): pick a view and a material (the piece's own, by default) and a
@@ -81,6 +87,7 @@ const messaggioErrore: Readonly<Partial<Record<CodiceErroreFoto, PlainMessageKey
   PROVIDER_SPEND_BLOCKED: 'fotoCampione.errors.levelPaused',
   RATE_LIMITED: 'fotoCampione.errors.rateLimited',
   BILLING_ACCOUNT_RESTRICTED: 'fotoCampione.errors.restricted',
+  CAD_PILOT_NOT_ALLOWED: 'fotoCampione.errors.restricted',
   REQUEST_IN_PROGRESS: 'fotoCampione.errors.inProgress',
   AI_REQUEST_CONFLICT: 'fotoCampione.errors.conflict',
 };
@@ -126,6 +133,51 @@ function useMaterialeDelPezzo(): MaterialeFoto {
       ...(finitura ? { finitura: finitura as PieceFinish } : {}),
     });
   }, [scelta]);
+}
+
+/**
+ * Whether the model on screen is the sent version by its content (`stessoContenutoInviato`): the content key of the
+ * screen's revision against the version's, or — for a version sent before it carried one — whether this computer sent
+ * it and has made nothing since.
+ *
+ * @param inviata - The sent version, once read.
+ * @returns `true` when the content says so, `undefined` when the shape must decide.
+ */
+function useContenutoInviato(inviata: VersioneInviata | undefined): true | undefined {
+  const { projectId } = useProject();
+  const { recordFiles } = useFileManager();
+  const revision = useRevisionClient();
+  const status = useRevisionStatus();
+  const pulito = status !== undefined && !status.dirty && !status.minting && status.headRevisionId !== undefined;
+  const testa = pulito ? status.headRevisionId : undefined;
+  const conChiave = inviata?.contentKey !== undefined;
+  const chiave = useQuery({
+    queryKey: ['sinopia', 'chiave-contenuto', projectId, testa],
+    queryFn: async () => sinopiaCadSnapshotContentKey(await revision!.snapshot(testa!)),
+    enabled: conChiave && testa !== undefined && revision !== undefined,
+    staleTime: Infinity,
+  });
+  const consegneQui = useQuery({
+    queryKey: ['sinopia', 'consegne-locali', projectId, inviata?.assetId],
+    queryFn: async () => readSinopiaDeliveries(recordFiles, projectId),
+    enabled: inviata !== undefined && !conChiave,
+  });
+  const carta = useRevisionCards(testa === undefined || conChiave ? [] : [testa]).get(testa ?? '');
+  if (inviata === undefined) {
+    return undefined;
+  }
+  const inviataDaQui = consegneQui.data?.find((consegna) => consegna.id === inviata.assetId)?.createdAt;
+  return stessoContenutoInviato(
+    {
+      ...(inviata.contentKey === undefined ? {} : { contentKey: inviata.contentKey }),
+      ...(inviataDaQui === undefined ? {} : { inviataDaQui }),
+    },
+    {
+      pulito,
+      ...(chiave.data === undefined ? {} : { chiave: chiave.data }),
+      ...(carta === undefined ? {} : { creataAlle: carta.createdAt }),
+    },
+  );
 }
 
 /**
@@ -203,8 +255,12 @@ export function InspectorPhotos(): React.JSX.Element {
   const [improntaCorrente, setImprontaCorrente] = useState<string | undefined>(undefined);
   /** The sent version as the photo sees it: the SHA-256 of its GLB and its mesh. */
   const [inviata, setInviata] = useState<Readonly<{ sha: string; mesh: MeshFoto }> | undefined>(undefined);
-  /** Whether the screen still shows the sent version; `undefined` while it cannot be told. */
-  const [schermoUguale, setSchermoUguale] = useState<boolean | undefined>(undefined);
+  /** Whether the screen still shows the sent version by its shape; `undefined` while it cannot be told. */
+  const [formaUguale, setFormaUguale] = useState<boolean | undefined>(undefined);
+  /* By its content first (difetto 31): a model only opened is the version sent, whatever its tessellation or the
+     engine that made the sent GLB. */
+  const contenutoUguale = useContenutoInviato(isTrial ? undefined : (consegna.data ?? undefined));
+  const schermoUguale = schermoComeInviata(contenutoUguale, formaUguale);
 
   const meshSchermo = useRef<{ modello: string; mesh: MeshFoto } | undefined>(undefined);
   const sagome = useRef(new Map<string, SagomaFoto>());
@@ -255,21 +311,21 @@ export function InspectorPhotos(): React.JSX.Element {
   // Is the model on screen still the sent version? Compared by shape (sizes, silhouette and depth at 256²).
   useEffect(() => {
     if (isTrial) {
-      setSchermoUguale(true);
+      setFormaUguale(true);
       return;
     }
     if (inviata === undefined || modello === undefined || contenuto === undefined) {
-      setSchermoUguale(undefined);
+      setFormaUguale(undefined);
       return;
     }
     try {
       if (meshSchermo.current?.modello !== modello) {
         meshSchermo.current = { modello, mesh: meshDaGlb(contenuto) };
       }
-      setSchermoUguale(stessaForma(inviata.mesh, meshSchermo.current.mesh).stessa);
+      setFormaUguale(stessaForma(inviata.mesh, meshSchermo.current.mesh).stessa);
     } catch (error) {
       console.error('Failed to compare the model with the sent version:', error);
-      setSchermoUguale(undefined);
+      setFormaUguale(undefined);
     }
   }, [contenuto, inviata, isTrial, modello]);
 
@@ -499,34 +555,28 @@ export function InspectorPhotos(): React.JSX.Element {
   const prezzoInLettura = !isTrial && prezzi.isPending && userId !== undefined;
 
   const versioneInLettura = !isTrial && link !== undefined && (consegna.isPending || glbInviato.isPending);
-  const motivo: PlainMessageKey | undefined =
-    !isTrial && userId === undefined
-      ? 'fotoCampione.signedOut'
-      : !isTrial && link === undefined
-        ? 'fotoCampione.unlinked'
-        : !isTrial && consegna.isError
-          ? 'fotoCampione.versionUnreadable'
-          : !isTrial && consegna.data === null
-            ? 'fotoCampione.notDelivered'
-            : versioneInLettura
-              ? 'fotoCampione.versionLoading'
-              : !isTrial && glbInviato.isError
-                ? 'fotoCampione.versionUnreadable'
-                : modello === undefined
-                  ? isBuilding
-                    ? 'fotoCampione.modelBuilding'
-                    : 'fotoCampione.noModel'
-                  : inviata === undefined
-                    ? 'fotoCampione.versionLoading'
-                    : schermoUguale === false
-                      ? 'fotoCampione.changedSinceDelivery'
-                      : prezzoInLettura
-                        ? 'fotoCampione.priceLoading'
-                        : costo === undefined
-                          ? 'fotoCampione.priceMissing'
-                          : pronta
-                            ? 'fotoCampione.alreadyReady'
-                            : undefined;
+  const motivo = motivoFotoSpenta({
+    isTrial,
+    isSignedIn: userId !== undefined,
+    isLinked: link !== undefined,
+    versione:
+      !isTrial && consegna.isError
+        ? 'illeggibile'
+        : !isTrial && consegna.data === null
+          ? 'nessuna'
+          : versioneInLettura
+            ? 'in-lettura'
+            : !isTrial && glbInviato.isError
+              ? 'illeggibile'
+              : 'pronta',
+    isBuilding,
+    hasModel: modello !== undefined,
+    hasSentMesh: inviata !== undefined,
+    schermoUguale,
+    isPriceLoading: prezzoInLettura,
+    hasPrice: costo !== undefined,
+    isReady: pronta !== undefined,
+  });
   const isDisabled = motivo !== undefined || inCorso;
 
   const definito = findPieceMaterial(materiale.id);

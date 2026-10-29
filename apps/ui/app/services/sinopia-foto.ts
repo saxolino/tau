@@ -21,6 +21,7 @@ import type { SinopiaCadLink } from '#services/sinopia-cad.js';
 export type CodiceErroreFoto =
   | 'UNAUTHENTICATED'
   | 'BILLING_ACCOUNT_RESTRICTED'
+  | 'CAD_PILOT_NOT_ALLOWED'
   | 'RATE_LIMITED'
   | 'INVALID_REQUEST'
   | 'CAD_MODEL_NOT_FOUND'
@@ -39,6 +40,7 @@ export type CodiceErroreFoto =
 const codici = new Set<CodiceErroreFoto>([
   'UNAUTHENTICATED',
   'BILLING_ACCOUNT_RESTRICTED',
+  'CAD_PILOT_NOT_ALLOWED',
   'RATE_LIMITED',
   'INVALID_REQUEST',
   'CAD_MODEL_NOT_FOUND',
@@ -307,15 +309,25 @@ export type VersioneInviata = Readonly<{
   versionNumber: number;
   assetId: string;
   glb: Readonly<{ bucket: string; path: string }>;
+  /** The content the version was sent from (`metadata.content_key`, `sinopiaCadContentKey`); older versions have none. */
+  contentKey?: string;
+  /** When it was sent (`created_at`, ms). */
+  createdAt?: number;
 }>;
 
+/** `sinopiaCadContentKey`: 64 lowercase hex digits. */
+const chiaveContenuto = z.string().regex(/^[0-9a-f]{64}$/u);
 /* eslint-disable @typescript-eslint/naming-convention -- These validation objects describe Supabase wire column names verbatim. */
 const consegnaSchema = z.object({
   id: z.uuid(),
   version_number: z.number().int().positive(),
   storage_bucket: z.string().nullable(),
+  created_at: z.string().optional(),
   metadata: z
-    .object({ files: z.array(z.object({ format: z.string(), storage_path: z.string() }).loose()).optional() })
+    .object({
+      files: z.array(z.object({ format: z.string(), storage_path: z.string() }).loose()).optional(),
+      content_key: z.unknown().optional(),
+    })
     .loose(),
 });
 /* eslint-enable @typescript-eslint/naming-convention -- Domain names stay camelCase. */
@@ -335,7 +347,7 @@ export async function versioneInviata(
   const { client } = await getClient();
   const { data, error } = await client
     .from('assets')
-    .select('id,version_number,storage_bucket,metadata')
+    .select('id,version_number,storage_bucket,metadata,created_at')
     .eq('user_id', link.userId)
     .eq('project_id', link.projectId)
     .eq('type', 'cad_model')
@@ -350,10 +362,16 @@ export async function versioneInviata(
     const letta = consegnaSchema.safeParse(riga);
     const glb = letta.success ? letta.data.metadata.files?.find((file) => file.format === 'glb') : undefined;
     if (letta.success && glb) {
+      const createdAt = letta.data.created_at === undefined ? Number.NaN : Date.parse(letta.data.created_at);
       return {
         versionNumber: letta.data.version_number,
         assetId: letta.data.id,
         glb: { bucket: letta.data.storage_bucket ?? 'creator-private', path: glb.storage_path },
+        // A malformed key says nothing: the version is still usable, compared by its shape.
+        ...(chiaveContenuto.safeParse(letta.data.metadata.content_key).success
+          ? { contentKey: String(letta.data.metadata.content_key) }
+          : {}),
+        ...(Number.isFinite(createdAt) ? { createdAt } : {}),
       };
     }
   }

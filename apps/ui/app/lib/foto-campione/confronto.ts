@@ -110,3 +110,35 @@ export function stessaForma(
     misure,
   };
 }
+
+/**
+ * Whether the model on screen is the version sent to Sinopia by its CONTENT, before any shape is compared (29 ott,
+ * difetto 31). The shape comparison guesses: two tessellations, or a GLB made by an earlier engine, can differ although
+ * nothing was changed — and the photo was refused for a model only opened. The content does not guess:
+ *
+ * - a version sent with its content key (`metadata.content_key`) is the screen when the screen's revision has that key;
+ * - an older version sent from THIS computer (its delivery record is here) is the screen when the screen's revision is
+ *   not newer than the send: nothing was made on this computer since.
+ *
+ * Only for a checkout with every edit in a revision; otherwise, and whenever the content says nothing, `undefined`:
+ * the shape decides (a changed measure, a model sent from elsewhere). A different key is not «changed» by itself
+ * either (a material or a note change the files, not the shape).
+ *
+ * @param inviata - The sent version: its content key, and when it was sent if this computer sent it.
+ * @param qui - The screen's revision: whether every edit is in it, its content key and when it was made.
+ * @returns `true` when the content says it is the same version, `undefined` when the shape must decide.
+ */
+export function stessoContenutoInviato(
+  inviata: Readonly<{ contentKey?: string; inviataDaQui?: number }>,
+  qui: Readonly<{ pulito: boolean; chiave?: string; creataAlle?: number }>,
+): true | undefined {
+  if (!qui.pulito) {
+    return undefined;
+  }
+  if (inviata.contentKey !== undefined) {
+    return qui.chiave === inviata.contentKey ? true : undefined;
+  }
+  return inviata.inviataDaQui !== undefined && qui.creataAlle !== undefined && qui.creataAlle <= inviata.inviataDaQui
+    ? true
+    : undefined;
+}

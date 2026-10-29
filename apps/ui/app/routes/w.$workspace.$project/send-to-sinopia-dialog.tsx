@@ -8,6 +8,9 @@ import { Input } from '@taucad/ui/components/input';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@taucad/ui/components/dialog';
 import { isNotFound } from '#db/attachment-store.js';
 import { useProject } from '#hooks/use-project.js';
+import { useRevisionClient } from '#hooks/use-revision-status.js';
+import type { RevisionClient } from '#hooks/use-revision-status.js';
+import { sinopiaCadSnapshotContentKey } from '#services/sinopia-cad.js';
 import { useFileManager } from '#hooks/use-file-manager.js';
 import { useProjectExport } from '#hooks/use-project-export.js';
 import { useTranslation } from '#i18n/translate.js';
@@ -62,6 +65,23 @@ type Props = {
 };
 
 /** One explicit handoff, with a destination owned by the admitted account and actual prepared formats. */
+
+/**
+ * The content key (`sinopiaCadContentKey`) of the model being sent, when every edit is in a revision: the version then
+ * says which content it is, so the sample photo can tell the model on screen is still it. A model with edits not yet in
+ * a revision has no name for its content, and the version goes without one.
+ */
+async function sentContentKey(revision: RevisionClient | undefined): Promise<string | undefined> {
+  const status = revision?.status();
+  if (revision === undefined || status?.headRevisionId === undefined || status.dirty || status.minting) {
+    return undefined;
+  }
+  try {
+    return await sinopiaCadSnapshotContentKey(await revision.snapshot(status.headRevisionId));
+  } catch {
+    return undefined;
+  }
+}
 export function SendToSinopiaDialog({ isOpen, onOpenChange, link, linking }: Props): React.JSX.Element | undefined {
   if (!isOpen) {
     return undefined;
@@ -207,6 +227,7 @@ function SendForm({
   const { recordFiles } = useFileManager();
   const { prepareSinopia, deliveryPieces, deliveryAvailable } = useProjectExport();
   const sendModel = useSendModel();
+  const revision = useRevisionClient();
   const formats = deliveryAvailable ? deliveryFormats : baseFormats;
   // One project per model: versions go to the linked project («cambia» moves the model, it does not send elsewhere).
   // A pending send started before another device moved the model follows it there too (it is looked for in both).
@@ -336,6 +357,8 @@ function SendForm({
           isPendingWritten = true;
           setHasPending(true);
         }
+        // oxlint-disable-next-line no-await-in-loop -- What was rendered for these files, named once they are prepared.
+        const contentKey = await sentContentKey(revision);
         try {
           // oxlint-disable-next-line no-await-in-loop -- A number taken meanwhile sends again with the sheet prepared for the next.
           sent = await sinopiaSender.send({
@@ -347,6 +370,7 @@ function SendForm({
             signal,
             deliveryId: deliveryId.current,
             model: sendModel,
+            ...(contentKey === undefined ? {} : { contentKey }),
             // Only the PDF sheet names the number: without it a number taken meanwhile is simply the next one.
             ...(selected.includes('pdf') ? { versionNumber: number } : {}),
             pieces: deliveryPieces.map((piece) => ({
