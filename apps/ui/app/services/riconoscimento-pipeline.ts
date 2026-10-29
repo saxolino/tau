@@ -1,10 +1,16 @@
 import { createActor, createAsyncLogic } from 'xstate';
 import { catalogoFamiglie, schedaConsegnata, schedaRiconoscimentoSchema } from '@taucad/smlib/riconoscimento';
 import type { SchedaRiconoscimento } from '@taucad/smlib/riconoscimento';
-import { chiaviDelControllo, consegnaVerifica, richiestaDiConfronto, risultatoConfronti } from '@taucad/smlib/verifica';
+import {
+  chiaviDelControllo,
+  consegnaVerifica,
+  richiestaDiConfronto,
+  richiestaGirata,
+  risultatoConfronti,
+  rolliDaProvare,
+} from '@taucad/smlib/verifica';
 import type {
   Consegna,
-  RichiestaVerifica,
   RispostaVerifica,
   RisultatoConfronti,
   SchedaPerVerifica,
@@ -15,6 +21,7 @@ import type {
   IngressoConfronta,
   IngressoRiconosci,
   IngressoRientro,
+  IngressoVerifica,
   VisteVerifica,
 } from '#machines/riconoscimento.machine.js';
 import type { RecordRiconoscimento } from '#services/riconoscimento-record.js';
@@ -96,6 +103,35 @@ export const verificaDaConsegna = (consegna: Consegna, risposta: RispostaVerific
   rientri,
 });
 
+/**
+ * Una verifica su una vista generata che parte dal rollo che la spiega meglio: con più rolli, prima una sonda per
+ * ciascuno (solo la fase A: una costruzione e proiezioni), poi la verifica piena dal migliore.
+ *
+ * @param verificatore - Il worker della verifica.
+ * @param ingresso - La richiesta e i rolli da sondare.
+ * @param signal - Il segnale dell'attore.
+ * @returns La verifica piena.
+ */
+export async function verificaConRolli(
+  verificatore: Verificatore,
+  ingresso: IngressoVerifica,
+  signal: AbortSignal,
+): Promise<RispostaVerifica> {
+  const rolli = ingresso.rolli ?? [0];
+  if (rolli.length <= 1) {
+    return verificatore.verifica(ingresso.richiesta, { signal });
+  }
+  let migliore = { rollo: rolli[0]!, iou: -1 };
+  for (const rollo of rolli) {
+    // oxlint-disable-next-line no-await-in-loop -- one worker: the probes run one after the other anyway.
+    const sonda = await verificatore.verifica(richiestaGirata(ingresso.richiesta, rollo, true), { signal });
+    if (sonda.iou > migliore.iou) {
+      migliore = { rollo, iou: sonda.iou };
+    }
+  }
+  return verificatore.verifica(richiestaGirata(ingresso.richiesta, migliore.rollo, false), { signal });
+}
+
 /** Millisecondi: il tempo massimo del confronto con il controllo (un giro di fase B sui parametri non visti). */
 const tempoControllo = 15_000;
 
@@ -124,7 +160,16 @@ export async function confrontaViste(
         tempoMassimo: tempoControllo,
       })
     : undefined;
-  const controllo = richiestaControllo ? await verificatore.verifica(richiestaControllo, { signal }) : undefined;
+  const controllo = richiestaControllo
+    ? await verificaConRolli(
+        verificatore,
+        {
+          richiesta: richiestaControllo,
+          rolli: rolliDaProvare(principale.famiglia, viste.controllo!.faccia),
+        },
+        signal,
+      )
+    : undefined;
   const sullaFoto = async (pezzo: RispostaVerifica): Promise<RispostaVerifica | undefined> => {
     const richiesta = richiestaDiConfronto(pezzo, maschera, { tipo: 'sorgente', scheda });
     return richiesta ? verificatore.verifica(richiesta, { signal }) : undefined;
@@ -157,8 +202,8 @@ export async function eseguiPipelineRiconoscimento(ingresso: IngressoPipeline): 
       riconosci: createAsyncLogic<SchedaPerVerifica, IngressoRiconosci>({
         run: async () => ingresso.scheda as SchedaPerVerifica,
       }),
-      verifica: createAsyncLogic<RispostaVerifica, { richiesta: RichiestaVerifica }>({
-        run: async ({ input, signal }) => ingresso.verificatore.verifica(input.richiesta, { signal }),
+      verifica: createAsyncLogic<RispostaVerifica, IngressoVerifica>({
+        run: async ({ input, signal }) => verificaConRolli(ingresso.verificatore, input, signal),
       }),
       confronta: createAsyncLogic<RisultatoConfronti, IngressoConfronta>({
         run: async ({ input, signal }) => confrontaViste(ingresso.verificatore, input, signal),

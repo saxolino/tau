@@ -5,6 +5,7 @@ import {
   esitoDaIou,
   richiestaDaScheda,
   richiestaDaVistaGenerata,
+  rolliDaProvare,
   TESTO_RIENTRO,
 } from '@taucad/smlib/verifica';
 import type {
@@ -65,6 +66,12 @@ export type IngressoConfronta = {
   /** La maschera della foto. */
   maschera: Uint8Array<ArrayBuffer>;
 };
+
+/**
+ * Ingresso dell'attore `verifica`: la richiesta e, sulla vista generata, i rolli di partenza da sondare (un pezzo
+ * piatto può arrivare girato nel piano).
+ */
+export type IngressoVerifica = { richiesta: RichiestaVerifica; rolli?: readonly number[] };
 
 /** Ingresso dell'attore `riconosci` (D2). */
 export type IngressoRiconosci = Pick<RiconoscimentoInput, 'progettoId' | 'parteId' | 'maschera'>;
@@ -143,7 +150,7 @@ export const riconoscimentoMachine = setup({
   },
   actors: {
     riconosci: createAsyncLogic<SchedaPerVerifica, IngressoRiconosci>({ run: nonFornito('riconosci') }),
-    verifica: createAsyncLogic<RispostaVerifica, { richiesta: RichiestaVerifica }>({ run: nonFornito('verifica') }),
+    verifica: createAsyncLogic<RispostaVerifica, IngressoVerifica>({ run: nonFornito('verifica') }),
     rientro: createAsyncLogic<SchedaPerVerifica, IngressoRientro>({ run: nonFornito('rientro') }),
     confronta: createAsyncLogic<RisultatoConfronti, IngressoConfronta>({ run: nonFornito('confronta') }),
   },
@@ -193,7 +200,12 @@ export const riconoscimentoMachine = setup({
     verificando: {
       invoke: {
         src: 'verifica',
-        input: ({ context }) => ({ richiesta: richiestaVerifica(context).richiesta }),
+        input: ({ context }): IngressoVerifica => {
+          const { richiesta, sullaVista } = richiestaVerifica(context);
+          return sullaVista && context.viste
+            ? { richiesta, rolli: rolliDaProvare(context.scheda!.famiglia.id, context.viste.principale.faccia) }
+            : { richiesta };
+        },
         onDone: ({ context, event }) => {
           const risposta = event.output;
           const migliore =

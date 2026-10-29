@@ -133,6 +133,55 @@ export function richiestaDaVistaGenerata(
   };
 }
 
+/** Le famiglie dei pezzi piatti: il generatore può consegnarli girati nel piano dell'immagine. */
+const famigliePiatte: ReadonlySet<string> = new Set(['fibbia', 'placca', 'pendente', 'borchia', 'occhiello']);
+
+/**
+ * I rolli di partenza (gradi) da sondare su una vista generata. Un pezzo piatto (e l'anello lungo il dito) può arrivare
+ * girato di 90° o 180° nel piano: la frase del generatore non fissa il verso del cinturino, e la fibbia della famiglia
+ * vista da `sopra` ha il cinturino verticale. Con la camera fissa l'ottimizzatore gira il rollo di ±15° al più, quindi
+ * scambierebbe larghezza e altezza invece di girare il pezzo. Tacco, fondo e puntale hanno il verso nella frase
+ * («punta a destra»): un solo rollo.
+ * @param famiglia - La famiglia costruita.
+ * @param faccia - La faccia della vista.
+ * @returns I rolli da provare, il primo è quello della faccia.
+ * @public
+ */
+export function rolliDaProvare(famiglia: string, faccia: string): number[] {
+  return famigliePiatte.has(famiglia) || (famiglia === 'anello' && faccia === 'asse_dito') ? [0, 90, 180, 270] : [0];
+}
+
+/** Millisecondi: il tempo massimo di una sonda del rollo (solo la fase A, una costruzione e proiezioni). */
+const tempoSonda = 6000;
+
+/**
+ * La richiesta girata nel piano di `rollo` gradi; con `sonda` solo la fase A (nessun parametro, nessuna sensibilità),
+ * per confrontare i rolli di partenza a basso costo prima della verifica piena.
+ * @param richiesta - La richiesta sulla vista generata.
+ * @param rollo - Gradi da aggiungere al rollo di partenza.
+ * @param sonda - Solo la fase A.
+ * @returns La richiesta girata.
+ * @public
+ */
+export function richiestaGirata(richiesta: RichiestaVerifica, rollo: number, sonda: boolean): RichiestaVerifica {
+  return {
+    ...richiesta,
+    vista: { ...richiesta.vista, rollo: richiesta.vista.rollo + rollo },
+    ...(sonda
+      ? {
+          opzioni: {
+            ...richiesta.opzioni,
+            giriParametri: 0,
+            valutazioni: { parametri: 0, congiunta: 0 },
+            sensibilita: false,
+            // oxlint-disable-next-line tau-lint/no-time-unit-suffix -- il nome dell'opzione esistente dell'ottimizzatore.
+            budgetMs: tempoSonda,
+          },
+        }
+      : {}),
+  };
+}
+
 /**
  * Che cosa si confronta: la vista di controllo (dalla sua faccia; `liberi` = i parametri che la principale non vede,
  * che il controllo misura) o la foto originale (a parametri fermi).

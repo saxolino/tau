@@ -15,7 +15,9 @@ import {
   misureDaConfermare,
   richiestaDaVistaGenerata,
   richiestaDiConfronto,
+  richiestaGirata,
   risultatoConfronti,
+  rolliDaProvare,
   soglieConfronti,
 } from '#verifica/confronti.js';
 import { parametriSensibili } from '#verifica/ottimizza.js';
@@ -343,5 +345,49 @@ describe.each<CasoProva>([
     expect(risultatoConfronti({ principale: sullaPrincipale, controllo: sulControllo, liberi }, 'parziale').esito).toBe(
       'ipotesi',
     );
+  });
+});
+
+describe('vista generata girata nel piano', () => {
+  it('should probe the four quarter turns only for flat pieces and the ring seen along the finger', () => {
+    expect(rolliDaProvare('fibbia', 'sopra')).toStrictEqual([0, 90, 180, 270]);
+    expect(rolliDaProvare('placca', 'fianco_esterno')).toStrictEqual([0, 90, 180, 270]);
+    expect(rolliDaProvare('anello', 'asse_dito')).toStrictEqual([0, 90, 180, 270]);
+    expect(rolliDaProvare('tacco', 'fianco_esterno')).toStrictEqual([0]);
+    const base = richiestaDaVistaGenerata(schedaTacco, Uint8Array.of(1), 'fianco_esterno', { budgetMs: 9000 })!;
+    const sonda = richiestaGirata(base, 90, true);
+    expect(sonda.vista.rollo).toBe(base.vista.rollo + 90);
+    expect(sonda.opzioni).toMatchObject({
+      giriParametri: 0,
+      valutazioni: { parametri: 0, congiunta: 0 },
+      sensibilita: false,
+    });
+    expect(richiestaGirata(base, 90, false).opzioni).toStrictEqual(base.opzioni);
+  });
+
+  it('should recover the measures of a buckle the generator drew turned by a quarter, starting from the best probe', async () => {
+    const { verifica } = funzioniVerifica(lib);
+    const { caso, scheda } = await prova({
+      id: 'fibbia',
+      variante: 'rettangolare',
+      seme: 201,
+      ancora: 'cinturino.larghezza',
+    });
+    const girata = await pngDi(
+      fotoSintetica(lib, { ...caso, vista: { ...cameraDellaFaccia('fibbia', 'sopra')!, rollo: 90 } }).foto,
+    );
+    const richiesta = richiestaDaVistaGenerata(scheda, girata, 'sopra', { budgetMs: 15_000 })!;
+    const sonde = await Promise.all(
+      rolliDaProvare('fibbia', 'sopra').map(async (rollo) => ({
+        rollo,
+        iou: (await verifica(richiestaGirata(richiesta, rollo, true))).iou,
+      })),
+    );
+    const migliore = sonde.toSorted((a, b) => b.iou - a.iou)[0]!;
+    expect(Math.abs(migliore.rollo) % 180).toBe(90);
+    const piena = await verifica(richiestaGirata(richiesta, migliore.rollo, false));
+    expect(piena.iou).toBeGreaterThan(0.9);
+    const vera = Number(leggiParametro(caso.veri, 'telaio.altezzaInterna'));
+    expect(Math.abs(Number(leggiParametro(piena.parametri, 'telaio.altezzaInterna')) - vera)).toBeLessThan(1.5);
   });
 });

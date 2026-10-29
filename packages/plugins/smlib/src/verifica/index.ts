@@ -64,7 +64,9 @@ export {
   misureDaConfermare,
   richiestaDaVistaGenerata,
   richiestaDiConfronto,
+  richiestaGirata,
   risultatoConfronti,
+  rolliDaProvare,
   soglieConfronti,
 } from '#verifica/confronti.js';
 export type {
