@@ -26,6 +26,8 @@ export type ParametriNuovo = Readonly<{
   partType?: string;
   libreria?: string;
   misura?: Readonly<{ valoreMm: number; cosa: string }>;
+  /** L'asset della card «Parte isolata» (`view=`): una vista principale da riusare se i suoi metadati lo confermano. */
+  vista?: string;
 }>;
 
 /**
@@ -105,6 +107,7 @@ export function leggiParametriNuovo(parametri: URLSearchParams, opzioni: Readonl
   const partType = parametri.get(searchParameterName.sinopiaPartType) ?? undefined;
   const libreria = parametri.get(searchParameterName.sinopiaLibrary) ?? undefined;
   const misura = leggiMisura(parametri.get(searchParameterName.sinopiaMeasure) ?? undefined);
+  const vista = parametri.get(searchParameterName.sinopiaView) ?? '';
   return {
     stato: 'parte',
     parametri: {
@@ -119,6 +122,7 @@ export function leggiParametriNuovo(parametri: URLSearchParams, opzioni: Readonl
       ...(partType && partTypePattern.test(partType) ? { partType } : {}),
       ...(libreria && uuidPattern.test(libreria) ? { libreria: libreria.toLowerCase() } : {}),
       ...(misura ? { misura } : {}),
+      ...(uuidPattern.test(vista) ? { vista: vista.toLowerCase() } : {}),
     },
   };
 }
@@ -603,4 +607,112 @@ export async function caricaSchedaParte(parametri: ParametriNuovo, strumenti: St
       .map((altra) => ({ id: altra.id, etichetta: altra.etichetta, box: altra.box })),
   });
   return { schedaParte, immagine, maschera: maschera.binaria, mascheraPng: maschera.png };
+}
+
+// ─── Vista principale riusata dalla card «Parte isolata» ─────────────────────────────────────────────────────────
+
+/* eslint-disable @typescript-eslint/naming-convention -- Colonne di Supabase così come sono. */
+const assetVistaSchema = z.object({
+  id: z.string(),
+  storage_bucket: z.string().nullable(),
+  storage_path: z.string().nullable(),
+  metadata: z
+    .object({
+      part: z
+        .object({
+          id: z.string(),
+          vista: z
+            .object({
+              versione: z.literal(1),
+              ruolo: z.string(),
+              famiglia: z.string(),
+              faccia: z.string(),
+            })
+            .loose()
+            .optional(),
+        })
+        .loose()
+        .optional(),
+    })
+    .loose()
+    .nullable()
+    .optional(),
+});
+/* eslint-enable @typescript-eslint/naming-convention -- Di nuovo camelCase. */
+
+/** Una vista principale già generata nello Studio, da riusare senza generarla di nuovo. */
+export type VistaRiusata = Readonly<{
+  assetId: string;
+  progettoId: string;
+  faccia: string;
+  percorso: Readonly<{ bucket: 'creator-private'; path: string }>;
+}>;
+
+/**
+ * Se la riga di un asset è una vista principale riusabile per questa parte (§5.4): i metadati dicono
+ * `part.vista = { versione: 1, ruolo: 'principale', famiglia, faccia }`, la parte è la stessa, la famiglia è quella
+ * risolta dal CAD e la faccia è una principale ammessa per lei. Una card «Parte isolata» vecchia (3/4, senza
+ * `part.vista`) non lo è.
+ *
+ * @param riga - La riga di `assets` (id, storage, metadati).
+ * @param attesa - La parte, la famiglia e le facce principali ammesse.
+ * @returns La vista da riusare, o undefined.
+ */
+export function vistaRiusabile(
+  riga: unknown,
+  attesa: Readonly<{ progettoId: string; parteId: string; famiglia: string; facce: readonly string[] }>,
+): VistaRiusata | undefined {
+  const letta = assetVistaSchema.safeParse(riga);
+  if (!letta.success) {
+    return undefined;
+  }
+  const { id, storage_bucket: bucket, storage_path: path, metadata } = letta.data;
+  const parte = metadata?.part;
+  const vista = parte?.vista;
+  if (
+    vista === undefined ||
+    parte?.id !== attesa.parteId ||
+    vista.ruolo !== 'principale' ||
+    vista.famiglia !== attesa.famiglia ||
+    !attesa.facce.includes(vista.faccia) ||
+    bucket !== 'creator-private' ||
+    !path
+  ) {
+    return undefined;
+  }
+  return { assetId: id.toLowerCase(), progettoId: attesa.progettoId, faccia: vista.faccia, percorso: { bucket, path } };
+}
+
+/**
+ * La vista principale del link (`view=`), letta con la sessione condivisa (RLS: solo asset propri, dello stesso
+ * progetto, non cancellati) e controllata con {@link vistaRiusabile}. Qualunque problema vuol dire «non si riusa»: il
+ * CAD genera la sua.
+ *
+ * @param parametri - I parametri del link (progetto, parte, vista).
+ * @param attesa - La famiglia risolta e le sue facce principali ammesse.
+ * @returns La vista da riusare, o undefined.
+ */
+export async function leggiVistaDelLink(
+  parametri: ParametriNuovo,
+  attesa: Readonly<{ famiglia: string; facce: readonly string[] }>,
+): Promise<VistaRiusata | undefined> {
+  if (parametri.vista === undefined) {
+    return undefined;
+  }
+  try {
+    const { client, userId } = await getSinopiaDataClient();
+    const riga = await client
+      .from('assets')
+      .select('id,storage_bucket,storage_path,metadata')
+      .eq('id', parametri.vista)
+      .eq('user_id', userId)
+      .eq('project_id', parametri.progetto)
+      .is('deleted_at', null)
+      .maybeSingle();
+    return riga.error === null
+      ? vistaRiusabile(riga.data, { progettoId: parametri.progetto, parteId: parametri.parte, ...attesa })
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }

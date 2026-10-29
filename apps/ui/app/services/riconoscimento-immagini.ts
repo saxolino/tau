@@ -3,6 +3,8 @@ import type { MascheraBinaria } from '@taucad/smlib/riconoscimento';
 import { readSinopiaConfig } from '#lib/sinopia-session.js';
 import { requireSinopiaUser } from '#lib/sinopia-data-client.js';
 import type { StrumentiParti } from '#services/sinopia-parts.js';
+import { mascheraDaSfondo } from '#services/sinopia-pezzo.js';
+import type { VistaPerRiconoscimento } from '#services/sinopia-recognize.js';
 
 /**
  * The browser half of the recognition's images (canvas): read sizes and masks, encode a mask, and prepare the two
@@ -245,4 +247,56 @@ export async function preparaImmaginiRiconoscimento(
     intera: { mediaType: 'image/jpeg', data: await blobInBase64(await inBlob(intera, 'image/jpeg', 0.9)) },
     fattoreRitaglio: Number(fattore.toFixed(4)),
   };
+}
+
+// ─── Viste generate (contratto v3) ───────────────────────────────────────────────────────────────────────────────
+
+/** Lato a cui si legge il fondo di una vista per scontornarla (come le foto del catalogo). */
+const latoMascheraVista = 1024;
+
+/**
+ * Una vista generata come la riceve il riconoscimento: i suoi byte **così come sono stati scaricati**, in base64, con
+ * il loro tipo. Nessuna ricodifica nel canvas: il corpo della richiesta resta uguale a un ricaricamento, quindi la sua
+ * impronta pure, e Sinopia risponde di nuovo senza un secondo addebito.
+ *
+ * @param vista - Il file della vista.
+ * @param ruolo - Principale o controllo.
+ * @param faccia - La faccia che la vista guarda (dalla risposta di `/v1/views`).
+ * @returns La vista per il corpo v3.
+ */
+export async function vistaPerRiconoscimento(
+  vista: Blob,
+  ruolo: VistaPerRiconoscimento['ruolo'],
+  faccia: VistaPerRiconoscimento['faccia'],
+): Promise<VistaPerRiconoscimento> {
+  return { ruolo, faccia, mediaType: vista.type || 'image/png', data: await blobInBase64(vista) };
+}
+
+/** La maschera di una vista generata, come la verifica la legge (PNG, bianco = parte) e da dove viene. */
+export type MascheraVista = Readonly<{ png: Uint8Array<ArrayBuffer>; origine: 'sfondo' | 'sam' }>;
+
+/**
+ * La maschera di una vista generata: la vista è la parte sola su un fondo uniforme, quindi si scontorna gratis dal
+ * fondo (`mascheraDaSfondo`, come le foto del catalogo); se il fondo non è uniforme, ripiego su SAM di Sinopia.
+ *
+ * @param vista - Il file della vista.
+ * @param strumenti - Pixel, codifica e SAM.
+ * @param query - Le parole della parte, per SAM.
+ * @returns La maschera, o undefined se non se ne ricava una.
+ */
+export async function mascheraDellaVista(
+  vista: Blob,
+  strumenti: Pick<StrumentiParti, 'pixel' | 'codificaMaschera' | 'segmenta'>,
+  query: string,
+): Promise<MascheraVista | undefined> {
+  if (strumenti.pixel) {
+    const pixel = await strumenti.pixel(vista, latoMascheraVista);
+    const maschera = mascheraDaSfondo(pixel.rgba, pixel.larghezza, pixel.altezza);
+    if (maschera) {
+      const png = await strumenti.codificaMaschera(maschera);
+      return { png: new Uint8Array(await png.arrayBuffer()), origine: 'sfondo' };
+    }
+  }
+  const daSam = strumenti.segmenta ? await strumenti.segmenta(vista, query) : undefined;
+  return daSam ? { png: new Uint8Array(await daSam.arrayBuffer()), origine: 'sam' } : undefined;
 }

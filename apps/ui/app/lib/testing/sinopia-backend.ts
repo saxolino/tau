@@ -92,6 +92,57 @@ export type SinopiaTestAccount = {
    * pilot list (by default), is left out with the new code or the old one, or the function fails.
    */
   readonly pilot?: 'allowed' | 'reserved' | 'restricted' | 'failing';
+  /**
+   * Che cosa risponde `POST /v1/views`: `assente` (funzione vecchia, 404, come predefinito), `genera` (una vista finta
+   * della faccia di serie, senza rete né costi) o il `type` d'errore da rispondere.
+   */
+  readonly views?: 'assente' | 'genera' | { readonly errore: string; readonly stato: number };
+};
+
+/** Le facce che la vista finta dichiara, per ruolo (quelle di un tacco: di fianco, controllo da dietro). */
+const facceFinte = { principale: 'fianco_esterno', controllo: 'dietro' } as const;
+
+/**
+ * La risposta finta di `/v1/views` a un corpo: stessa forma della funzione (§5.1), percorso nel progetto della scheda.
+ *
+ * @param body - Il corpo della richiesta.
+ * @returns La risposta 200.
+ */
+export const sinopiaFakeView = (body: unknown): Record<string, unknown> => {
+  const corpo = (body ?? {}) as {
+    requestId?: string;
+    ruolo?: 'principale' | 'controllo';
+    famiglia?: string;
+    schedaParte?: { progetto?: { id?: string } };
+  };
+  const ruolo = corpo.ruolo === 'controllo' ? 'controllo' : 'principale';
+  const progettoId = corpo.schedaParte?.progetto?.id ?? '00000000-0000-4000-8000-000000000000';
+  const requestId = corpo.requestId ?? '00000000-0000-4000-8000-000000000001';
+  return {
+    versione: 1,
+    ruolo,
+    famiglia: corpo.famiglia ?? 'tacco',
+    faccia: facceFinte[ruolo],
+    assetId: ruolo === 'principale' ? '7a000000-0000-4000-8000-000000000001' : '7a000000-0000-4000-8000-000000000002',
+    progettoId,
+    percorso: { bucket: 'creator-private', path: `projects/${progettoId}/canvas-gen/${requestId}-isolate-part.png` },
+    mediaType: 'image/png',
+    aiAct: 'ai-modified',
+    costo: 2,
+    modello: 'finto',
+    millisecondi: 0,
+    replayed: false,
+  };
+};
+
+const viewsAnswer = (views: SinopiaTestAccount['views'], body: unknown): Response => {
+  if (views === undefined || views === 'assente') {
+    return Response.json({ message: 'unexpected' }, { status: 404 });
+  }
+  if (views === 'genera') {
+    return Response.json(sinopiaFakeView(body));
+  }
+  return Response.json({ error: { type: views.errore, message: views.errore } }, { status: views.stato });
 };
 
 /** The script's answers to Auth. */
@@ -192,6 +243,9 @@ export const scriptSinopiaBackend = (
       }
       case '/v1/models': {
         return pilotAnswer(account.pilot ?? 'allowed');
+      }
+      case '/v1/views': {
+        return viewsAnswer(account.views, calls.at(-1)?.body);
       }
       default: {
         return Response.json({ message: 'unexpected' }, { status: 500 });
