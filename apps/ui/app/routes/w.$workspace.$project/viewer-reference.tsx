@@ -64,7 +64,8 @@ export function useRiferimentoVisore(isEnabled: boolean): RiferimentoVisore {
   const [isLarge, setLarge] = useState(false);
   const [urls, setUrls] = useState<Readonly<Record<string, string>>>({});
   const [illeggibili, setIlleggibili] = useState<ReadonlySet<string>>(nessuno);
-  const creati = useRef(new Map<string, string>());
+  // The object URLs belong to one project: a reading still in flight for the previous one must not land in this one.
+  const creati = useRef<{ radice: string; mappa: Map<string, string> }>({ radice, mappa: new Map() });
   const toggleRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -91,12 +92,15 @@ export function useRiferimentoVisore(isEnabled: boolean): RiferimentoVisore {
 
   // Another project in the same viewer: its images are other files.
   useEffect(() => {
-    const mappa = creati.current;
+    const voce = creati.current.radice === radice ? creati.current : { radice, mappa: new Map<string, string>() };
+    creati.current = voce;
     return () => {
-      for (const url of mappa.values()) {
-        URL.revokeObjectURL(url);
+      for (const url of voce.mappa.values()) {
+        if (url) {
+          URL.revokeObjectURL(url);
+        }
       }
-      mappa.clear();
+      voce.mappa.clear();
       setUrls({});
       setIlleggibili(nessuno);
       setLetti(vuoto);
@@ -107,22 +111,26 @@ export function useRiferimentoVisore(isEnabled: boolean): RiferimentoVisore {
 
   const carica = useCallback(
     async (percorso: string, tipo: string): Promise<void> => {
-      if (!recordFiles || creati.current.has(percorso)) {
+      const voce = creati.current;
+      if (!recordFiles || voce.radice !== radice || voce.mappa.has(percorso)) {
         return;
       }
-      creati.current.set(percorso, '');
+      voce.mappa.set(percorso, '');
       try {
         const bytes = await recordFiles.readFile(`${radice}/${percorso}`);
         const url = URL.createObjectURL(new Blob([bytes], { type: tipo }));
-        if (creati.current.get(percorso) !== '') {
+        if (creati.current !== voce || voce.mappa.get(percorso) !== '') {
           URL.revokeObjectURL(url);
           return;
         }
-        creati.current.set(percorso, url);
+        voce.mappa.set(percorso, url);
         setUrls((attuali) => ({ ...attuali, [percorso]: url }));
       } catch (error) {
         console.error('Failed to read a reference image:', error, { percorso });
-        creati.current.delete(percorso);
+        voce.mappa.delete(percorso);
+        if (creati.current !== voce) {
+          return;
+        }
         setIlleggibili((attuali) => new Set([...attuali, percorso]));
       }
     },

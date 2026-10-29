@@ -21,10 +21,16 @@ const stato = vi.hoisted(() => {
     nomeProgetto: vi.fn(async (): Promise<string | undefined> => undefined),
     /** Un visore disegnato fuori da un file manager (un'anteprima). */
     senzaDisco: false,
+    /** Il progetto aperto nel visore. */
+    progetto: 'proj_1',
+    /** Letture di immagini trattenute, per cartella di progetto: simulano un disco lento. */
+    porte: new Map<string, Promise<void>>(),
+    /** Ogni file chiesto al disco, in ordine. */
+    lette: [] as string[],
   };
 });
 
-vi.mock('#hooks/use-project.js', () => ({ useProject: () => ({ projectId: 'proj_1' }) }));
+vi.mock('#hooks/use-project.js', () => ({ useProject: () => ({ projectId: stato.progetto }) }));
 vi.mock('#hooks/use-file-manager.js', () => {
   // One client for the whole session, as the file manager gives it.
   const recordFiles = {
@@ -38,6 +44,12 @@ vi.mock('#hooks/use-file-manager.js', () => {
       ),
     ],
     readFile: async (path: string) => {
+      stato.lette.push(path);
+      for (const [cartella, porta] of stato.porte) {
+        if (path.startsWith(`${cartella}/`) && /\.(?:png|jpe?g|webp)$/.test(path)) {
+          await porta;
+        }
+      }
       const bytes = disco.get(path);
       if (!bytes || rotti.has(path)) {
         throw new Error(`ENOENT: ${path}`);
@@ -77,7 +89,7 @@ const monta = (properties: { readonly isEnabled?: boolean } = {}): ReturnType<ty
   );
 
 /** I file di un progetto creato da «/cad/nuovo», scritti come li scrive il riconoscimento. */
-const progettoDaFoto = (): void => {
+const progettoDaFoto = (cartella = radice): void => {
   const progetto = progettoRiconosciuto({
     scheda: schedaRiconoscimentoDiProva,
     schedaParte: schedaParteDiProva,
@@ -86,7 +98,7 @@ const progettoDaFoto = (): void => {
     lingua: 'it',
   })!;
   for (const [percorso, file] of Object.entries(progetto.files)) {
-    disco.set(`${radice}/${percorso}`, file.content);
+    disco.set(`${cartella}/${percorso}`, file.content);
   }
 };
 
@@ -98,6 +110,9 @@ beforeEach(() => {
   disco.clear();
   rotti.clear();
   stato.senzaDisco = false;
+  stato.progetto = 'proj_1';
+  stato.porte.clear();
+  stato.lette.length = 0;
   stato.sessione = { status: 'disabled' };
   stato.nomeProgetto.mockReset();
   stato.nomeProgetto.mockResolvedValue(undefined);
@@ -267,6 +282,49 @@ describe('the reference in the viewer', () => {
 
     expect(await screen.findByText('Da Sinopia · Collezione FW26')).toBeInTheDocument();
     expect(stato.nomeProgetto).toHaveBeenCalledWith(link.projectId, expect.any(AbortSignal));
+  });
+
+  it("should not show the previous project's picture when another project opens while it is still being read", async () => {
+    // Two projects made from a photo carry the same file names: only the project tells their pictures apart.
+    progettoDaFoto();
+    progettoDaFoto('/projects/proj_2');
+    let liberaPrimo = (): void => undefined;
+    let liberaSecondo = (): void => undefined;
+    stato.porte.set('/projects/proj_1', new Promise<void>((fatto) => (liberaPrimo = fatto)));
+    stato.porte.set('/projects/proj_2', new Promise<void>((fatto) => (liberaSecondo = fatto)));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    // A new element at each render: the same element object would let React skip the new project.
+    const albero = (): React.JSX.Element => (
+      <QueryClientProvider client={client}>
+        <TooltipProvider>
+          <Visore />
+        </TooltipProvider>
+      </QueryClientProvider>
+    );
+    const vista = render(albero());
+    await pulsante();
+
+    stato.progetto = 'proj_2';
+    vista.rerender(albero());
+    // The second project's picture is being read before the first one's arrives.
+    await waitFor(() => {
+      expect(stato.lette.some((letto) => letto.startsWith('/projects/proj_2/') && letto.endsWith('.png'))).toBe(true);
+    });
+    // The first project's picture arrives late, while the second one is still being read.
+    await act(async () => {
+      liberaPrimo();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      liberaSecondo();
+      await Promise.resolve();
+    });
+
+    const toggle = await pulsante();
+    await waitFor(() => {
+      expect(toggle.querySelector('img')).toHaveAttribute('src', 'blob:riferimento-2');
+    });
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:riferimento-1');
   });
 
   it('should say so when the picture cannot be read', async () => {
