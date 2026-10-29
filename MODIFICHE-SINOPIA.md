@@ -1111,3 +1111,58 @@ più al modello, nessun cambio alle istruzioni, nessuna attesa.
 - **Test.** `packages/viewer/src/graphics/three/react/model-assembly.test.ts`, `gltf-mesh.assembly.test.tsx`,
   `apps/ui/app/lib/cantiere.test.ts`, `apps/ui/app/lib/montaggio.test.ts`,
   `apps/ui/app/routes/w.$workspace.$project/viewer-cantiere.test.tsx` (nuovi).
+
+## 29 ottobre 2026 — correzioni dal controllo del 29 ottobre: salvataggio, ingresso, invio, accesso, foto
+
+Il controllo del 29 ottobre ha trovato difetti nel dialogo tra SinopiaCAD e Sinopia. Nessuna nuova funzione: il CAD
+dice la verità sullo stato del salvataggio, non rifà ciò che Sinopia ha già e non lascia righe o progetti a metà.
+
+- **Salvataggio su Sinopia (difetti 2, 6, 7, 8, 10, 11, 12, 28).** `apps/ui/app/services/sinopia-cad-sync.ts`: stato
+  «Modifiche su questo computer, non ancora su Sinopia» finché c'è lavoro solo qui; salvataggio subito a scheda nascosta;
+  la miniatura sale solo se Sinopia non ne ha; con una copia più nuova su Sinopia e nessun lavoro qui la prende da sola;
+  «trova o crea» quando la parte è già un altro modello; errori permanenti (troppo grande, eliminato, altro account) senza
+  ritento e con la loro frase; offline senza nulla da salvare non dice «non riesco a salvare».
+  `apps/ui/app/hooks/use-sinopia-cad-sync.ts`: osserva le modifiche non ancora in revisione, la scheda nascosta, la
+  miniatura solo se mancante, la chiave di contenuto. `apps/ui/app/services/sinopia-cad.ts`: chiave di contenuto
+  (`sinopiaCadContentKey`), nessun nuovo caricamento a contenuto identico, progetto del CAD creato al primo salvataggio
+  vero, riga eliminata o spostata non ricreata, errore `SinopiaCadOriginTakenError` sul 23505 dell'origine.
+  `apps/ui/app/services/sinopia-cad-restore.ts`: restituisce anche la chiave della copia applicata.
+  `apps/ui/app/machines/file-manager.worker.revisions.ts`: revisione dopo 30 s di quiete (`sinopiaCadIdleWindowMilliseconds`).
+  `packages/revisions/src/project-revisions.machine.ts`, `revision-effects.ts`: la finestra d'inattività arriva
+  dall'host a ogni checkout (il valore predefinito del pacchetto resta 5 minuti).
+  `apps/ui/app/routes/w.$workspace.$project/project-save-status.tsx`, `apps/ui/app/i18n/messages/sinopia-sync.ts`:
+  frasi e colori dei nuovi stati.
+- **Ingresso dai link di Sinopia (difetti 1, 5, 9).** `apps/ui/app/routes/_index/sinopia-entry-link.tsx`: un solo
+  consumo dei parametri, letto dall'indirizzo attuale; il modello si apre dopo l'elenco locale; frase vera all'errore.
+  `sinopia-home.tsx`: progetto d'origine solo se è dell'account, con `model` niente pannello immagini.
+  `sinopia-project-strip.tsx`: dice se il progetto del link c'è. `apps/ui/app/hooks/use-open-cloud-project.ts`:
+  rilettura del collegamento a scheda fredda, `sinopiaOpenErrorMessage`. `home-recent-projects.tsx`: «Non ancora
+  salvato». `apps/ui/app/i18n/messages/sinopia-images.ts`.
+- **Invio a Sinopia e «Progetto Sinopia: cambia» (difetti 9, 13, 14, 20, 25, 26, 28).**
+  `apps/ui/app/services/sinopia-send.ts`: registra il modello prima della versione, solo nel progetto del modello,
+  abbassa `is_current` delle precedenti, numero della tavola PDF fisso, miniatura dalla riga letta all'invio o dalla
+  vista catturata, chiave di contenuto nei metadati. `apps/ui/app/routes/w.$workspace.$project/send-to-sinopia-dialog.tsx`:
+  rilegge il numero a «Invia», riprende l'invio in sospeso nel progetto attuale del modello, destinazione del progetto
+  del CAD non ancora nato, chiave di contenuto. `apps/ui/app/i18n/messages/sinopia-send.ts`. `apps/ui/app/services/sinopia-cad.ts`:
+  lo spostamento porta anche le foto del campione e rinumera le versioni in arrivo; copertina e nome non ingoiano errori.
+- **Accesso, sessione, riconoscimento, Libreria (difetti 3, 15–16, 17, 27, 28).**
+  `apps/ui/app/services/sinopia-recognize.ts`, `apps/ui/app/routes/nuovo/use-riconoscimento-nuovo.ts`: una prenotazione
+  del riconoscimento per visita, il cambio lingua non la rifà. `apps/ui/app/lib/sinopia-access.ts`: decide la lista del
+  pilota (`checkSinopiaPilot`, 403 `CAD_PILOT_NOT_ALLOWED`). `apps/ui/app/lib/sinopia-session.ts`: stato `refused` senza
+  uscire da Sinopia, avviso di sessione terminata e ritorno alla pagina. `apps/ui/app/components/auth/sinopia/sinopia-reserved.tsx`,
+  `sinopia-session-gate.tsx`, `apps/ui/app/i18n/messages/auth.ts`, `apps/ui/app/lib/testing/sinopia-backend.ts`.
+  `apps/ui/app/services/sinopia-consegna.ts`, `apps/ui/app/i18n/messages/consegna.ts`: foto dei pezzi in Libreria nel
+  bucket privato `creator-private/components/<uid>/cad/<id>/foto.png`, verticale letto davvero.
+- **Foto del campione (difetto 31).** `apps/ui/app/lib/foto-campione/confronto.ts` (`stessoContenutoInviato`),
+  `apps/ui/app/lib/foto-campione/pulsante.ts` (nuovo, `motivoFotoSpenta`), `apps/ui/app/services/sinopia-foto.ts`,
+  `apps/ui/app/routes/w.$workspace.$project/inspector-photos.tsx`: il contenuto decide prima della forma, così un modello
+  solo aperto non risulta «cambiato dall'ultimo invio».
+- **Test.** `apps/ui/app/services/sinopia-cad-sync.test.ts`, `sinopia-cad.test.ts`, `sinopia-cad-restore.test.ts`,
+  `sinopia-send.test.ts`, `sinopia-foto.test.ts`, `sinopia-consegna.test.ts`,
+  `apps/ui/app/hooks/use-sinopia-cad-sync.test.tsx`, `use-open-cloud-project.test.tsx`,
+  `apps/ui/app/routes/_index/sinopia-entry-link.test.tsx` (nuovo), `sinopia-home.test.tsx`, `sinopia-project-strip.test.tsx`,
+  `home-recent-projects.test.tsx`, `apps/ui/app/routes/nuovo/use-riconoscimento-nuovo.test.tsx`,
+  `apps/ui/app/routes/w.$workspace.$project/send-to-sinopia-dialog.test.tsx`, `apps/ui/app/lib/sinopia-access.test.ts`,
+  `sinopia-session.test.ts`, `apps/ui/app/components/auth/sinopia/sinopia-session-gate.test.tsx`,
+  `sinopia-reserved.test.tsx`, `apps/ui/app/lib/foto-campione/pulsante.test.ts` (nuovo),
+  `packages/revisions/src/project-revisions.machine.test.ts`.
