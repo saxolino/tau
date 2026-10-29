@@ -60,7 +60,9 @@ describe('osservabilità: tacchi da una sola vista (set sintetico)', () => {
   });
 
   it('should still call measured what the side view fixes: the stiletto height, within 2 mm', () => {
-    const { risultato } = eseguiCaso(lib, { famiglia: 'tacco', variante: 'stiletto', seme: 101 });
+    // Ricetta v2 del tacco: nel caso 101 la fase A gira la camera di 19° e il fusto sottile non lo compensa (IoU 0,73);
+    // il caso 103 resta di fianco. Vedi il commento del caso stiletto in `ottimizza.test.ts`.
+    const { risultato } = eseguiCaso(lib, { famiglia: 'tacco', variante: 'stiletto', seme: 103 });
     const altezza = risultato.errori.find((errore) => errore.chiave === 'tacco.altezza')!;
     expect(altezza.osservabile).toBe(true);
     expect(Math.abs(altezza.ottimizzato - altezza.vero)).toBeLessThan(2);

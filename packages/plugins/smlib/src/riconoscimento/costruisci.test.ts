@@ -59,6 +59,45 @@ describe('piano di costruzione di un pezzo riconosciuto', () => {
     expect(piano.ipotesi['cinturino.larghezza']).toContain('Brought back within the recipe limits');
   });
 
+  it('should keep the variant default for a value the photo does not show, with the model’s reason', () => {
+    // A block heel seen from the side: the seat outline and the widths are not visible, the model echoes the base
+    // defaults of the family sheet (an ellipse, the stiletto's 48 mm). The block keeps its own shield seat.
+    const scheda: SchedaRiconoscimento = {
+      ...schedaRiconoscimentoDiProva,
+      famiglia: { id: 'tacco', confidenza: 0.9, alternative: [] },
+      variante: { id: 'blocco', confidenza: 0.9 },
+      parametri: [
+        { chiave: 'tacco.altezza', valore: 67, confidenza: 0.6, fonte: 'proporzione', motivo: 'Altezza al dorso' },
+        {
+          chiave: 'seduta.forma',
+          valore: 'ellisse',
+          confidenza: 0.3,
+          fonte: 'non_visibile',
+          motivo: 'La pianta non si vede di fianco.',
+        },
+        {
+          chiave: 'tappo.larghezza',
+          valore: 10,
+          confidenza: 0.3,
+          fonte: 'non_visibile',
+          motivo: 'Non si vede di fianco.',
+        },
+      ],
+    };
+    const piano = pianoCostruzione(scheda)!;
+    expect(piano.variante).toBe('blocco');
+    expect(piano.parametri).toMatchObject({
+      tacco: { altezza: 67 },
+      seduta: { forma: 'scudo' },
+      tappo: { larghezza: 42 },
+    });
+    expect(attributi(piano.ipotesi['tappo.larghezza'])).toMatchObject({
+      source: 'non_visibile',
+      confidence: 0.3,
+      reason: 'Non si vede di fianco.',
+    });
+  });
+
   it('should build a family the designer chose at the chip from its defaults, and nothing for a free part', () => {
     const scelta = pianoCostruzione(schedaRiconoscimentoDiProva, { famiglia: 'placca' })!;
     expect(scelta.famiglia).toBe('placca');

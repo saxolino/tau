@@ -1196,3 +1196,39 @@ con lo stesso pulsante, con la X o con Esc. Senza immagini il pulsante non c'è.
   `apps/ui/app/routes/w.$workspace.$project/viewer-reference.test.tsx` (nuovi);
   `apps/ui/app/routes/w.$workspace.$project/chat-viewer-controls.test.tsx`,
   `apps/ui/app/components/chat/new-project-chat-composer.test.tsx`, `apps/ui/app/services/sinopia-references.test.ts`.
+
+## 29 ottobre 2026 — tacchi da foto: ricetta v2 del tacco
+
+Visto dal vivo su sinopialab.com/cad: uno stiletto riconosciuto da foto usciva come una «tromba» attorcigliata (seduta
+55 × 48 piana, parete della cavità 0,01 mm, 9 facce in sottosquadro), un tacco a blocco come una colonna dritta.
+
+- **Cause.** (1) La legge della forma: sezioni ellittiche centrate su un asse e scalate uguali davanti e dietro, con la
+  vita a metà altezza larga il 45 % della seduta: dorso e petto si aprivano simmetrici, un imbuto. Un tacco si disegna
+  con due linee di fianco indipendenti (dorso lungo e quasi dritto, petto che si apre ad arco sotto la seduta) più la
+  larghezza vista da dietro. (2) La seduta era un piano, mai concava, inclinata al più di 15° (uno stiletto alto ne ha
+  25–32). (3) Il loft univa sezioni di topologia diversa (ellisse del tappo, scudo o rettangolo della seduta): partenze
+  diverse delle curve, superficie attorcigliata. (4) La cavità era un secondo loft su stazioni diverse da quelle del
+  corpo, estratta lungo Z sotto una seduta inclinata: le due superfici divergevano fino a toccarsi, e le pareti vicino
+  al bordo finivano a cuneo contro la seduta. (5) Nel piano di costruzione un valore «non visibile» (il predefinito della
+  scheda ripetuto dal modello) sovrascriveva quello della variante.
+- **Forma.** `packages/plugins/smlib/src/famiglie/tacco-profilo.ts` (nuovo): la legge pura (dorso, petto, larghezza,
+  pianta a superellisse con dorso tondo e petto dritto per lo scudo, seduta per B e F scavata in lungo e in largo, perno,
+  cavità, profondità dei fori), con test senza kernel `tacco-profilo.test.ts`. `famiglie/tacco.ts` (ricetta v2): loft
+  liscio di sezioni orizzontali, ognuna una spline chiusa per gli stessi 16 punti (niente torsione), stazioni a densità
+  dolce (fitte dove il tacco si apre), seduta tagliata da un solo utensile, cavità di superellissi annidate parallele
+  alla seduta ed estratte lungo la sua normale (parete per erosione con una sfera, sformo per costruzione, colonne come
+  fori delle sezioni), cavità tolta sotto i 10 mm, fori di fissaggio lungo la normale e mai fuori dal fianco, smusso del
+  tappo al posto del raccordo, vita del rocchetto più stretta del tappo. Parametri invariati nelle chiavi; descrizioni,
+  predefiniti (seduta a scudo, inclinazione 14°, vita 0,3, bombature 0) e `seduta.inclinazione` fino a 35° (ora
+  sensibile alla sagoma). Verifiche: sformo della cavità lungo la normale della seduta, perno contro il contorno vero.
+- **Riconoscimento.** `riconoscimento/costruisci.ts`: i valori «non visibili» lasciano il predefinito della variante;
+  l'ipotesi tiene il motivo del modello (test in `costruisci.test.ts`). `riconoscimento.contratto.json` rigenerato
+  (scheda della famiglia tacco v2), impronta in `contratto.test.ts`, istantanea del prompt in
+  `__snapshots__/prompt.test.ts.snap`. **La copia gemella in Sinopia** (`supabase/functions/sinopiacad/riconoscimento/
+contratto.json` e l'impronta in `recognize.test.ts`) va aggiornata con la funzione `sinopiacad`: fino ad allora il
+  riconoscimento usa la scheda v1 (inclinazione tagliata a 15°), e la ricetta v2 legge comunque quei valori.
+- **Altri test.** `famiglie/tacco.test.ts` riscritto (casi dei due progetti visti dal vivo, seduta scavata, simmetria,
+  sformo lungo la normale), `famiglie/modulo.test.ts` (confronto dei volumi su tacchi pieni),
+  `verifica/ottimizza.test.ts` e `verifica/osservabilita.test.ts` (stiletti sintetici 13 e 103: con il fusto sottile la
+  fase A della verifica D3 gira la camera di 10–19° in alcuni casi, vedi i commenti); `famiglie/index.ts` esporta i
+  tipi dal profilo.
