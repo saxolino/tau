@@ -53,6 +53,27 @@ export type {
   ParametroConsegnato,
   SchedaPerVerifica,
 } from '#verifica/pipeline.js';
+export {
+  ancoraDiScala,
+  cameraDellaFaccia,
+  chiaviDelControllo,
+  confermaMisure,
+  confidenzaAncora,
+  esitoConfronti,
+  fontiAncora,
+  misureDaConfermare,
+  richiestaDaVistaGenerata,
+  richiestaDiConfronto,
+  risultatoConfronti,
+  soglieConfronti,
+} from '#verifica/confronti.js';
+export type {
+  Ancora,
+  ConfrontoVista,
+  EsitoConfronti,
+  RisultatoConfronti,
+  VerificheConfronti,
+} from '#verifica/confronti.js';
 export { codificaPng, decodificaPng } from '#verifica/png.js';
 export type { ImmagineRaster } from '#verifica/png.js';
 export {
