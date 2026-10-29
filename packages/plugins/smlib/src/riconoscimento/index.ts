@@ -3,12 +3,24 @@ export type * from '#riconoscimento/condiviso.js';
 export {
   applicaLimiti,
   convalidaStruttura,
+  erroriViste,
   normalizzaUscita,
+  ordineImmagini,
   promptRiconoscimento,
   risolviFamiglia,
   confidenzaCorretto,
   confidenzaNonVisibile,
+  versioneRisposta,
 } from '#riconoscimento/condiviso.js';
+export {
+  chiaviProporzione,
+  contestoRiconoscimentoSchema,
+  motiviVisibilita,
+  ruoliVista,
+} from '#riconoscimento/contesto.js';
+export type { ContestoRiconoscimento } from '#riconoscimento/contesto.js';
+export { visteOrtogonali, visteOrtogonaliDi } from '#famiglie/viste-ortogonali.js';
+export type { IdFaccia, VisteOrtogonali, VisteOrtogonaliFamiglia } from '#famiglie/viste.js';
 export { schedaParteSchema, verticali, fontiTipo, tipiScala } from '#riconoscimento/scheda-parte.js';
 export type { SchedaParte } from '#riconoscimento/scheda-parte.js';
 export {

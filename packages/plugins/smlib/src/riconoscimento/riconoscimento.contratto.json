@@ -1,5 +1,5 @@
 {
-  "versione": 2,
+  "versione": 3,
   "modello": "claude-sonnet-5-5",
   "schemaUscita": {
     "type": "object",
@@ -717,6 +717,150 @@
       "maxItems": 50
     }
   ],
+  "schemaContesto": {
+    "type": "object",
+    "properties": {
+      "versione": {
+        "type": "number",
+        "const": 1
+      },
+      "proporzioni": {
+        "type": "object",
+        "properties": {
+          "rapporti": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "chiave": {
+                  "type": "string",
+                  "enum": [
+                    "altezza_su_lunghezza",
+                    "larghezza_su_lunghezza",
+                    "altezza_su_altezza"
+                  ]
+                },
+                "valore": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "chiave",
+                "valore"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "affidabilita": {
+            "type": "number"
+          },
+          "parti": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rapporti",
+          "affidabilita",
+          "parti"
+        ],
+        "additionalProperties": false
+      },
+      "visibilita": {
+        "type": "object",
+        "properties": {
+          "stato": {
+            "type": "string",
+            "enum": [
+              "intera",
+              "parziale"
+            ]
+          },
+          "motivi": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "tagliata_bordo",
+                "piccola",
+                "coperta"
+              ]
+            }
+          }
+        },
+        "required": [
+          "stato",
+          "motivi"
+        ],
+        "additionalProperties": false
+      },
+      "viste": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "ruolo": {
+              "type": "string",
+              "enum": [
+                "principale",
+                "controllo"
+              ]
+            },
+            "faccia": {
+              "type": "string",
+              "enum": [
+                "sopra",
+                "sotto",
+                "davanti",
+                "dietro",
+                "fianco_esterno",
+                "fianco_interno",
+                "tre_quarti_pietra",
+                "asse_dito"
+              ]
+            }
+          },
+          "required": [
+            "ruolo",
+            "faccia"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    "required": [
+      "versione"
+    ],
+    "additionalProperties": false
+  },
+  "limitiContesto": [
+    {
+      "percorso": "/proporzioni/rapporti/*/valore",
+      "exclusiveMinimum": 0,
+      "maximum": 5
+    },
+    {
+      "percorso": "/proporzioni/rapporti",
+      "maxItems": 3
+    },
+    {
+      "percorso": "/proporzioni/affidabilita",
+      "minimum": 0,
+      "maximum": 1
+    },
+    {
+      "percorso": "/proporzioni/parti",
+      "minimum": 0,
+      "maximum": 100
+    },
+    {
+      "percorso": "/visibilita/motivi",
+      "maxItems": 3
+    },
+    {
+      "percorso": "/viste",
+      "maxItems": 2
+    }
+  ],
   "famiglie": [
     {
       "id": "anello",
@@ -768,6 +912,12 @@
             "azimuth": 0,
             "elevation": 0
           }
+        },
+        "ortogonali": {
+          "principale": "asse_dito",
+          "controllo": [
+            "fianco_esterno"
+          ]
         }
       },
       "parametri": [
@@ -999,6 +1149,12 @@
             "azimuth": 0,
             "elevation": 0
           }
+        },
+        "ortogonali": {
+          "principale": "sopra",
+          "controllo": [
+            "fianco_esterno"
+          ]
         }
       },
       "parametri": [
@@ -1154,6 +1310,12 @@
             "azimuth": 0,
             "elevation": 0
           }
+        },
+        "ortogonali": {
+          "principale": "sopra",
+          "controllo": [
+            "fianco_esterno"
+          ]
         }
       },
       "parametri": [
@@ -1389,6 +1551,20 @@
             "azimuth": 0,
             "elevation": 0
           }
+        },
+        "ortogonali": {
+          "principale": "sotto",
+          "controllo": [
+            "fianco_esterno"
+          ],
+          "varianti": {
+            "zeppa": {
+              "principale": "fianco_esterno",
+              "controllo": [
+                "sotto"
+              ]
+            }
+          }
         }
       },
       "parametri": [
@@ -1576,6 +1752,12 @@
             "azimuth": 0,
             "elevation": 0
           }
+        },
+        "ortogonali": {
+          "principale": "sopra",
+          "controllo": [
+            "fianco_esterno"
+          ]
         }
       },
       "parametri": [
@@ -1706,6 +1888,12 @@
             "azimuth": 0,
             "elevation": 0
           }
+        },
+        "ortogonali": {
+          "principale": "sopra",
+          "controllo": [
+            "fianco_esterno"
+          ]
         }
       },
       "parametri": [
@@ -1860,6 +2048,12 @@
             "azimuth": 0,
             "elevation": 0
           }
+        },
+        "ortogonali": {
+          "principale": "sopra",
+          "controllo": [
+            "fianco_esterno"
+          ]
         }
       },
       "parametri": [
@@ -2106,6 +2300,12 @@
             "azimuth": 0,
             "elevation": 0
           }
+        },
+        "ortogonali": {
+          "principale": "fianco_esterno",
+          "controllo": [
+            "sopra"
+          ]
         }
       },
       "parametri": [
@@ -2239,6 +2439,13 @@
             "azimuth": 0,
             "elevation": 0
           }
+        },
+        "ortogonali": {
+          "principale": "fianco_esterno",
+          "controllo": [
+            "dietro",
+            "sopra"
+          ]
         }
       },
       "parametri": [

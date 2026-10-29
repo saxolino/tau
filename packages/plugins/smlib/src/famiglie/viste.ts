@@ -57,6 +57,30 @@ export type VisteFamiglia = {
 };
 
 /**
+ * Le viste piatte (ortogonali) che si generano dalla foto per ricostruire un pezzo: la principale, da cui si leggono
+ * profili e rapporti, e le viste di controllo, da cui si leggono spessori e profondità. Le facce sono id di
+ * `viste.facce` della famiglia: la camera la dà la faccia, la generazione la sceglie il server dalla tabella
+ * (`famiglie/viste-ortogonali.ts`, copiata nel contratto come `famiglie[].viste.ortogonali`).
+ * @public
+ */
+export type VisteOrtogonali = {
+  /** La vista principale: piatta e completa, è quella su cui lavora l'ottimizzatore. */
+  principale: IdFaccia;
+  /** Le viste di controllo: la prima è di serie, le altre si generano solo su richiesta (tacco: la seduta dall'alto). */
+  controllo: readonly IdFaccia[];
+};
+
+/**
+ * Le viste ortogonali di una famiglia, con le varianti che si guardano diversamente (il fondo: la suola da sotto,
+ * l'intersuola o zeppa di fianco).
+ * @public
+ */
+export type VisteOrtogonaliFamiglia = VisteOrtogonali & {
+  /** Per variante: quando la parte è quella variante le facce cambiano. */
+  varianti?: Readonly<Record<string, VisteOrtogonali>>;
+};
+
+/**
  * Una faccia con camera data da azimuth ed elevation (rollo 0).
  * @param id - Identificativo della faccia.
  * @param azimuth - Azimuth della camera che la guarda dritta.
