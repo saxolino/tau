@@ -817,6 +817,8 @@ describe('One Sinopia project per piece', () => {
       [/POST .*\/storage\/v1\/object\/list/u, () => json([])],
       [/POST .*\/storage\/v1\/object\/copy/u, () => json({ Key: 'copied' })],
       [/PATCH .*\/rest\/v1\/cad_models/u, () => json([{ id: link.modelId }])],
+      [/GET .*\/rest\/v1\/assets.*type=eq\.ai_render/u, () => json([])],
+      [new RegExp(`GET .*/rest/v1/assets.*project_id=eq\\.${target}`, 'u'), () => json([])],
       [
         /GET .*\/rest\/v1\/assets/u,
         () =>
@@ -917,6 +919,8 @@ describe('One Sinopia project per piece', () => {
           return json([{ id: link.modelId }]);
         },
       ],
+      [/GET .*\/rest\/v1\/assets.*type=eq\.ai_render/u, () => json([])],
+      [new RegExp(`GET .*/rest/v1/assets.*project_id=eq\\.${target}`, 'u'), () => json([])],
       [
         /GET .*\/rest\/v1\/assets/u,
         () =>
@@ -947,6 +951,197 @@ describe('One Sinopia project per piece', () => {
     expect(requests().some((request) => request.method === 'PATCH' && request.url.includes('/cad_models'))).toBe(false);
     expect(requests().some((request) => request.method === 'PATCH' && request.url.includes('/assets'))).toBe(true);
     expect(files.writeFile).toHaveBeenCalledOnce();
+  });
+
+  it('moves the model’s sample photos too, with their files, into the new project', async () => {
+    const files = { writeFile: vi.fn(async () => undefined) };
+    const photo = '00000000-0000-4000-8000-0000000000d4';
+    const version = '00000000-0000-4000-8000-0000000000c3';
+    const from = `projects/${link.projectId}/canvas-gen/req-1-generate-from-sketch.png`;
+    route([
+      [/GET .*\/rest\/v1\/projects/u, () => json({ id: target })],
+      [/GET .*\/rest\/v1\/cad_models/u, () => json({ ...model, project_id: target })],
+      [/POST .*\/storage\/v1\/object\/list/u, () => json([])],
+      [/POST .*\/storage\/v1\/object\/copy/u, () => json({ Key: 'copied' })],
+      [
+        /GET .*\/rest\/v1\/assets.*type=eq\.ai_render/u,
+        () =>
+          json([
+            {
+              id: photo,
+              storage_bucket: 'creator-private',
+              storage_path: from,
+              public_url: `https://sinopia.example.test/storage/v1/object/public/assets/${from}`,
+              metadata: { cad_model_id: link.modelId, source: 'sinopiacad', cad_asset_id: version, version_number: 1 },
+            },
+          ]),
+      ],
+      [
+        new RegExp(`GET .*/rest/v1/assets.*project_id=eq\\.${target}`, 'u'),
+        () => json([{ id: version, version_number: 1 }]),
+      ],
+      [/GET .*\/rest\/v1\/assets/u, () => json([])],
+      [/PATCH .*\/rest\/v1\/assets/u, () => noContent()],
+      [/PATCH .*\/rest\/v1\/projects/u, () => noContent()],
+    ]);
+    await moveSinopiaCadModel({ link, targetProjectId: target, files, localProjectId: 'p' });
+    const to = `projects/${target}/canvas-gen/req-1-generate-from-sketch.png`;
+    expect(
+      requests()
+        .filter((request) => request.url.includes('/object/copy'))
+        .map((request) => request.body),
+    ).toContainEqual(expect.objectContaining({ sourceKey: from, destinationKey: to }));
+    const moved = requests().find(
+      (request) => request.method === 'PATCH' && decodeURIComponent(request.url).includes(`id=eq.${photo}`),
+    );
+    expect(moved?.body).toMatchObject({
+      project_id: target,
+      storage_path: to,
+      metadata: { cad_model_id: link.modelId, cad_asset_id: version, version_number: 1 },
+    });
+    expect(z.object({ public_url: z.string() }).loose().parse(moved?.body).public_url).toContain(to);
+    // Compare-and-swap on the old project, like the versions.
+    expect(decodeURIComponent(moved?.url ?? '')).toContain(`project_id=eq.${link.projectId}`);
+    expect(files.writeFile).toHaveBeenCalledOnce();
+  });
+
+  it('renumbers the versions after the ones the target project already has, before they arrive (A → B → A)', async () => {
+    const files = { writeFile: vi.fn(async () => undefined) };
+    const from = `projects/${link.projectId}/cad/${link.modelId}`;
+    const versions = ['00000000-0000-4000-8000-0000000000c1', '00000000-0000-4000-8000-0000000000c2'];
+    const photo = '00000000-0000-4000-8000-0000000000d4';
+    /** The version numbers of this model in the target, as the server holds them (the unique index's view). */
+    const inTarget = new Map<string, number>([['00000000-0000-4000-8000-0000000000e9', 1]]);
+    route([
+      [/GET .*\/rest\/v1\/projects/u, () => json({ id: target })],
+      [/GET .*\/rest\/v1\/cad_models/u, () => json({ ...model, project_id: target })],
+      [/POST .*\/storage\/v1\/object\/list/u, () => json([])],
+      [/POST .*\/storage\/v1\/object\/copy/u, () => json({ Key: 'copied' })],
+      [
+        /GET .*\/rest\/v1\/assets.*type=eq\.ai_render/u,
+        () =>
+          json([
+            {
+              id: photo,
+              storage_bucket: 'creator-private',
+              storage_path: `projects/${target}/canvas-gen/x.png`,
+              public_url: null,
+              metadata: {
+                cad_model_id: link.modelId,
+                source: 'sinopiacad',
+                cad_asset_id: versions[1],
+                version_number: 2,
+              },
+            },
+          ]),
+      ],
+      [
+        new RegExp(`GET .*/rest/v1/assets.*project_id=eq\\.${target}`, 'u'),
+        () => json([...inTarget].map(([id, number]) => ({ id, version_number: number }))),
+      ],
+      [
+        /GET .*\/rest\/v1\/assets/u,
+        () =>
+          json(
+            versions.map((id, index) => ({
+              id,
+              version_number: index + 1,
+              storage_path: `${from}/v${String(index + 1)}/x/model.glb`,
+              metadata: { cad_model_id: link.modelId },
+            })),
+          ),
+      ],
+      [/PATCH .*\/rest\/v1\/assets/u, () => noContent()],
+      [/PATCH .*\/rest\/v1\/projects/u, () => noContent()],
+    ]);
+    const base = transport.fetch.getMockImplementation()!;
+    transport.fetch.mockImplementation(async (url, init) => {
+      const href = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+      if ((init?.method ?? 'GET') === 'PATCH' && href.includes('/rest/v1/assets')) {
+        const id = new URL(href).searchParams.get('id')?.slice(3) ?? '';
+        const body = JSON.parse(typeof init?.body === 'string' ? init.body : '{}') as {
+          project_id?: string;
+          version_number?: number;
+        };
+        if (body.project_id === target && versions.includes(id)) {
+          const number = body.version_number ?? versions.indexOf(id) + 1;
+          if ([...inTarget].some(([other, taken]) => other !== id && taken === number)) {
+            return json({ code: '23505', message: 'assets_cad_model_version_idx' }, 409);
+          }
+          inTarget.set(id, number);
+        }
+      }
+      return base(url, init);
+    });
+    await moveSinopiaCadModel({ link, targetProjectId: target, files, localProjectId: 'p' });
+    // The old v1 and v2 arrive as v2 and v3, in their order, after the target's own v1.
+    expect(Object.fromEntries(inTarget)).toEqual({
+      '00000000-0000-4000-8000-0000000000e9': 1,
+      [versions[0]!]: 2,
+      [versions[1]!]: 3,
+    });
+    // The photo of the old v2 now names v3, the number of the version it shows.
+    const photoPatch = requests().find(
+      (request) => request.method === 'PATCH' && decodeURIComponent(request.url).includes(`id=eq.${photo}`),
+    );
+    expect(photoPatch?.body).toMatchObject({ metadata: { cad_asset_id: versions[1], version_number: 3 } });
+    expect(files.writeFile).toHaveBeenCalledOnce();
+  });
+
+  it('says in the console when a cover or a project name could not be written, and stays cosmetic', async () => {
+    const diagnostic = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      transport.fetch
+        .mockResolvedValueOnce(json({ ...model, head_revision_id: first }))
+        .mockResolvedValueOnce(json({ Key: 'image' }))
+        .mockResolvedValueOnce(json([{ id: model.id }]))
+        .mockResolvedValueOnce(json({ message: 'denied' }, 403));
+      const result = await patchSinopiaCadThumbnail({
+        link: { ...link, baseRevisionId: first },
+        revisionId: first,
+        thumbnail: new Uint8Array([1]),
+        isCurrent: () => true,
+      });
+      expect(result.kind).toBe('saved');
+      expect(diagnostic).toHaveBeenCalledWith(expect.stringContaining('cover'), expect.anything());
+      diagnostic.mockClear();
+      transport.fetch.mockReset();
+      transport.fetch
+        .mockResolvedValueOnce(json(model))
+        .mockResolvedValueOnce(json({ Key: 'zip' }))
+        .mockResolvedValueOnce(json([{ id: model.id }]))
+        .mockResolvedValueOnce(json({ message: 'denied' }, 403));
+      const saved = await saveSinopiaCadRevision({
+        link: { ...link, projectCreatedByCad: true },
+        revisionId: first,
+        engine: 'smlib',
+        name: 'Fibbia 30 mm',
+        snapshot: new Blob(['zip']),
+      });
+      expect(saved.kind).toBe('saved');
+      expect(diagnostic).toHaveBeenCalledWith(expect.stringContaining('name'), expect.anything());
+    } finally {
+      diagnostic.mockRestore();
+    }
+  });
+
+  it('says in the console when the old project keeps a cover of the moved model', async () => {
+    const diagnostic = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const files = { writeFile: vi.fn(async () => undefined) };
+      route([
+        [/GET .*\/rest\/v1\/projects/u, () => json({ id: target })],
+        [/GET .*\/rest\/v1\/cad_models/u, () => json({ ...model, project_id: target })],
+        [/POST .*\/storage\/v1\/object\/list/u, () => json([])],
+        [/GET .*\/rest\/v1\/assets/u, () => json([])],
+        [/PATCH .*\/rest\/v1\/projects/u, () => json({ message: 'denied' }, 403)],
+      ]);
+      const moved = await moveSinopiaCadModel({ link, targetProjectId: target, files, localProjectId: 'p' });
+      expect(moved.projectId).toBe(target);
+      expect(diagnostic).toHaveBeenCalledWith(expect.stringContaining('cover'), expect.anything());
+    } finally {
+      diagnostic.mockRestore();
+    }
   });
 
   it('repairs a local link whose model now lives in another project, and leaves a current one alone', async () => {

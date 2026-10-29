@@ -799,7 +799,7 @@ async function adoptCadPreviewAsCover(
 ): Promise<void> {
   try {
     const cover = client.storage.from('assets').getPublicUrl(path).data.publicUrl;
-    await client
+    const { error } = await client
       .from('projects')
       // eslint-disable-next-line @typescript-eslint/naming-convention -- Supabase project wire column.
       .update({ thumbnail_url: cover })
@@ -807,8 +807,12 @@ async function adoptCadPreviewAsCover(
       .eq('user_id', link.userId)
       .is('deleted_at', null)
       .or('thumbnail_url.is.null,thumbnail_url.like.*/cad/*');
-  } catch {
+    if (error !== null) {
+      console.error('[sinopia] the project cover could not be set', error);
+    }
+  } catch (error) {
     // The cover is cosmetic; the preview stays on the CAD model either way.
+    console.error('[sinopia] the project cover could not be set', error);
   }
 }
 
@@ -827,15 +831,19 @@ async function adoptModelNameForProject(
     return;
   }
   try {
-    await client
+    const { error } = await client
       .from('projects')
       .update({ name: projectNameOrDefault(name) })
       .eq('id', link.projectId)
       .eq('user_id', link.userId)
       .is('deleted_at', null)
       .eq('name', defaultProjectName);
-  } catch {
+    if (error !== null) {
+      console.error('[sinopia] the project name could not follow the model', error);
+    }
+  } catch (error) {
     // The project keeps its default name; the model is saved either way.
+    console.error('[sinopia] the project name could not follow the model', error);
   }
 }
 
@@ -1018,12 +1026,22 @@ async function listModelObjects(
   return found;
 }
 
+/* eslint-disable @typescript-eslint/naming-convention -- Supabase asset wire columns. */
 const moveRowSchema = z.object({
   id: z.uuid(),
-  // eslint-disable-next-line @typescript-eslint/naming-convention -- Supabase asset wire columns.
   storage_path: z.string().nullable(),
   metadata: z.record(z.string(), z.unknown()).nullable(),
+  version_number: z.number().int().nullable().optional(),
 });
+const photoRowSchema = z.object({
+  id: z.uuid(),
+  storage_bucket: z.string().nullable(),
+  storage_path: z.string().nullable(),
+  public_url: z.string().nullable(),
+  metadata: z.record(z.string(), z.unknown()).nullable(),
+});
+const numberRowSchema = z.object({ id: z.uuid(), version_number: z.number().int().nullable() });
+/* eslint-enable @typescript-eslint/naming-convention -- Back to camelCase. */
 
 /** Swap the old model folder for the new one in a stored path; any other value stays as it is. */
 function movedPath(value: unknown, from: string, to: string): unknown {
@@ -1145,6 +1163,7 @@ export async function moveSinopiaCadModel(input: {
       await moveModelRow(move);
     }
     await moveSentVersions(move);
+    await moveSamplePhotos(move);
     await moveCovers(move);
   }
   await requireSinopiaUser(link.userId);
@@ -1219,12 +1238,42 @@ async function moveModelRow(paths: MoveContext): Promise<void> {
   }
 }
 
-/** Each version sent from the old project follows, with its paths; any failure stops the move (it can run again). */
+/** The numbers (by asset id) this model's sent versions have in one project: the unique index's view of it. */
+async function versionNumbersIn(paths: MoveContext, projectId: string): Promise<Map<string, number>> {
+  const { client, link } = paths;
+  const { data, error } = await client
+    .from('assets')
+    .select('id,version_number')
+    .eq('user_id', link.userId)
+    .eq('project_id', projectId)
+    .eq('type', 'cad_model')
+    // eslint-disable-next-line @typescript-eslint/naming-convention -- Persisted Supabase JSON field.
+    .contains('metadata', { cad_model_id: link.modelId });
+  if (error !== null) {
+    throw error;
+  }
+  const numbers = new Map<string, number>();
+  for (const row of z.array(numberRowSchema).parse(data)) {
+    if (row.version_number !== null) {
+      numbers.set(row.id, row.version_number);
+    }
+  }
+  return numbers;
+}
+
+/**
+ * Each version sent from the old project follows, with its paths; any failure stops the move (it can run again).
+ *
+ * A number is unique per project and model (`assets_cad_model_version_idx`). When the target already holds versions of
+ * this model that share a number with the arriving ones (A → B → A, or another device that sent into the old project),
+ * the arriving versions are renumbered after the target's highest, in their order, in the same update that moves each
+ * one: no row ever lands on a number already taken, and a stopped move resumes from the numbers then present.
+ */
 async function moveSentVersions(paths: MoveContext): Promise<void> {
   const { client, link } = paths;
   const versions = await client
     .from('assets')
-    .select('id,storage_path,metadata')
+    .select('id,storage_path,metadata,version_number')
     .eq('user_id', link.userId)
     .eq('project_id', link.projectId)
     .eq('type', 'cad_model')
@@ -1233,7 +1282,32 @@ async function moveSentVersions(paths: MoveContext): Promise<void> {
   if (versions.error !== null) {
     throw versions.error;
   }
-  for (const version of z.array(moveRowSchema).parse(versions.data)) {
+  const arriving = z
+    .array(moveRowSchema)
+    .parse(versions.data)
+    .toSorted(
+      (left, right) =>
+        (left.version_number ?? Number.MAX_SAFE_INTEGER) - (right.version_number ?? Number.MAX_SAFE_INTEGER),
+    );
+  if (arriving.length === 0) {
+    return;
+  }
+  const inTarget = await versionNumbersIn(paths, paths.target);
+  const taken = new Set(inTarget.values());
+  const renumbered = new Map<string, number>();
+  if (
+    arriving.some(
+      (version) =>
+        version.version_number !== null && version.version_number !== undefined && taken.has(version.version_number),
+    )
+  ) {
+    let next = Math.max(0, ...taken);
+    for (const version of arriving) {
+      next += 1;
+      renumbered.set(version.id, next);
+    }
+  }
+  for (const version of arriving) {
     const metadata = version.metadata ?? {};
     const listed: unknown = metadata['files'];
     const files = Array.isArray(listed)
@@ -1248,8 +1322,10 @@ async function moveSentVersions(paths: MoveContext): Promise<void> {
         )
       : listed;
     /* eslint-disable @typescript-eslint/naming-convention -- Supabase asset wire columns and persisted metadata keys. */
+    const number = renumbered.get(version.id);
     const values = {
       project_id: paths.target,
+      ...(number === undefined ? {} : { version_number: number }),
       storage_path: movedPath(version.storage_path, paths.from, paths.to),
       metadata: {
         ...metadata,
@@ -1276,21 +1352,92 @@ async function moveSentVersions(paths: MoveContext): Promise<void> {
 }
 
 /**
+ * The model's sample photos (`assets` `ai_render` the photo route made from its sent versions) follow it, so the new
+ * project's Riepilogo, Shooting and the inspector find them. Each photo's file is COPIED into the new project's folder
+ * (nothing is deleted; a copy already there is fine), then its row moves in one update guarded on the old project, with
+ * the number its version has now (renumbered by the move, maybe). Any failure stops the move before the local link.
+ */
+async function moveSamplePhotos(paths: MoveContext): Promise<void> {
+  const { client, link, target } = paths;
+  const photos = await client
+    .from('assets')
+    .select('id,storage_bucket,storage_path,public_url,metadata')
+    .eq('user_id', link.userId)
+    .eq('project_id', link.projectId)
+    .eq('type', 'ai_render')
+    // eslint-disable-next-line @typescript-eslint/naming-convention -- Persisted Supabase JSON fields.
+    .contains('metadata', { cad_model_id: link.modelId, source: 'sinopiacad' });
+  if (photos.error !== null) {
+    throw photos.error;
+  }
+  const rows = z.array(photoRowSchema).parse(photos.data);
+  if (rows.length === 0) {
+    return;
+  }
+  const numbers = await versionNumbersIn(paths, target);
+  const from = `projects/${link.projectId}/`;
+  const to = `projects/${target}/`;
+  for (const photo of rows) {
+    const path = movedPath(photo.storage_path, from, to) as string | null;
+    if (path !== null && path !== photo.storage_path && photo.storage_path !== null) {
+      // oxlint-disable-next-line no-await-in-loop -- Recheck the account before every write.
+      await requireSinopiaUser(link.userId);
+      // oxlint-disable-next-line no-await-in-loop -- One copy at a time: a retry finds the earlier copies already there.
+      const copied = await client.storage
+        .from(photo.storage_bucket ?? 'creator-private')
+        .copy(photo.storage_path, path);
+      if (copied.error !== null && !/exist/iu.test(copied.error.message)) {
+        throw copied.error;
+      }
+    }
+    const metadata = photo.metadata ?? {};
+    const version: unknown = metadata['cad_asset_id'];
+    const number = typeof version === 'string' ? numbers.get(version) : undefined;
+    /* eslint-disable @typescript-eslint/naming-convention -- Supabase asset wire columns and persisted metadata keys. */
+    const values = {
+      project_id: target,
+      storage_path: path,
+      ...(photo.public_url === null || path === null || path === photo.storage_path
+        ? {}
+        : { public_url: client.storage.from('assets').getPublicUrl(path).data.publicUrl }),
+      metadata: { ...metadata, ...(number === undefined ? {} : { version_number: number }) },
+    };
+    /* eslint-enable @typescript-eslint/naming-convention -- Back to camelCase. */
+    // oxlint-disable-next-line no-await-in-loop -- Recheck the account before every write.
+    await requireSinopiaUser(link.userId);
+    // oxlint-disable-next-line no-await-in-loop -- One photo at a time; a failure stops before the link is written.
+    const moved = await client
+      .from('assets')
+      .update(values)
+      .eq('id', photo.id)
+      .eq('user_id', link.userId)
+      .eq('project_id', link.projectId);
+    if (moved.error !== null) {
+      throw moved.error;
+    }
+  }
+}
+
+/**
  * The covers follow the model: the old project forgets a cover that was this model's preview (it would point at a
  * folder of another project), the new one takes the preview only where it has no cover of its own. Cosmetic.
  */
 async function moveCovers(paths: MoveContext): Promise<void> {
   const { client, link, remote } = paths;
   try {
-    await client
+    const { error } = await client
       .from('projects')
       // eslint-disable-next-line @typescript-eslint/naming-convention -- Supabase project wire column.
       .update({ thumbnail_url: null })
       .eq('id', link.projectId)
       .eq('user_id', link.userId)
       .like('thumbnail_url', `%/cad/${link.modelId}/%`);
-  } catch {
-    // A stale cover only shows the old preview; the move itself is complete.
+    if (error !== null) {
+      console.error('[sinopia] the old project keeps the moved model’s cover', error);
+    }
+  } catch (error) {
+    // A stale cover only shows the old preview (its files stay); the move itself is complete.
+    console.error('[sinopia] the old project keeps the moved model’s cover', error);
   }
   const thumbnail = movedPath(remote.thumbnail_path, paths.from, paths.to);
   if (typeof thumbnail === 'string' && thumbnail.startsWith(paths.to)) {
