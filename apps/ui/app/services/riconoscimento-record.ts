@@ -22,6 +22,25 @@ export const percorsoRiconoscimento = '.tau/workbench/riconoscimento.json';
 export const percorsoMaschera = (idParte: string): string =>
   `riferimenti/${idParte.replaceAll(/[^\w-]/gu, '_') || 'parte'}.maschera.png`;
 
+/** Le estensioni delle immagini delle viste, per tipo. */
+const estensioniVista: Readonly<Record<string, string>> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/webp': 'webp',
+};
+
+/**
+ * Dove il progetto tiene una vista generata (`riferimenti/<parte>.vista-principale.<ext>`, `….vista-controllo.<ext>`),
+ * accanto alla foto: il pannello «Riferimento» la mostra con il suo ruolo.
+ *
+ * @param idParte - L'id della parte della scheda.
+ * @param ruolo - Principale o controllo.
+ * @param tipo - Il tipo dell'immagine.
+ * @returns Il percorso, relativo alla radice del progetto.
+ */
+export const percorsoVista = (idParte: string, ruolo: 'principale' | 'controllo', tipo: string): string =>
+  percorsoMaschera(idParte).replace(/\.maschera\.png$/u, `.vista-${ruolo}.${estensioniVista[tipo] ?? 'png'}`);
+
 /** The record version this build writes. */
 export const versioneRecord = 1;
 
@@ -51,6 +70,31 @@ const verificaSchema = z.discriminatedUnion('stato', [
   }),
 ]);
 
+/** Una vista generata usata dal riconoscimento: ruolo, faccia, asset di Sinopia, file del progetto e IoU della verifica. */
+const vistaRecordSchema = z.object({
+  ruolo: z.enum(['principale', 'controllo']),
+  faccia: z.string(),
+  assetId: z.string(),
+  /** Il file in `riferimenti/`. */
+  file: z.string(),
+  /** L'IoU della verifica su questa vista (la principale) o del suo confronto (il controllo). */
+  iou: z.number().optional(),
+  /** La principale riusata dalla card «Parte isolata» dello Studio (`view=`), non generata qui. */
+  riusata: z.boolean().optional(),
+});
+
+/** Il verdetto dei confronti sulle tre immagini (principale, controllo, foto). */
+const confrontiSchema = z.object({
+  esito: z.enum(['combacia', 'non_combacia', 'ipotesi']),
+  motivo: z.enum(['viste_incoerenti', 'sorgente']).optional(),
+  controllo: z.number().optional(),
+  sorgente: z.number().optional(),
+  /** Da quale insieme di parametri nasce il pezzo: la sola principale, o la principale con le misure del controllo. */
+  parametri: z.enum(['principale', 'controllo']),
+  /** «Conferma le misure», o la parte solo in parte visibile: le misure critiche segnate come ipotesi. */
+  ipotesi: z.array(z.string()).optional(),
+});
+
 /** Schema of the record, version 1. */
 export const recordRiconoscimentoSchema = z.object({
   version: z.literal(versioneRecord),
@@ -66,6 +110,9 @@ export const recordRiconoscimentoSchema = z.object({
   /** The `main.ts` written last, so a regeneration never overwrites the designer's or the agent's edits. */
   mainScritto: z.string(),
   verifica: verificaSchema,
+  /** Le viste generate (contratto v3), quando ci sono: un record senza si legge come prima. */
+  viste: z.array(vistaRecordSchema).max(3).optional(),
+  confronti: confrontiSchema.optional(),
   cronologia: z
     .array(z.object({ quando: z.string(), iou: z.number().nullable(), parametri: z.record(z.string(), valoreSchema) }))
     .max(50),

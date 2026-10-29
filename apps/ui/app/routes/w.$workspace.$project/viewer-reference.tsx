@@ -10,6 +10,7 @@ import { useProject } from '#hooks/use-project.js';
 import { useSinopiaSession } from '#hooks/use-sinopia-session.js';
 import { useCadViewport } from '#hooks/use-cad-viewport.js';
 import { useTranslation } from '#i18n/translate.js';
+import type { PlainMessageKey } from '#i18n/translate.js';
 import { leggiRiferimentiProgetto } from '#services/riferimenti-progetto.js';
 import type { RiferimentiLetti, RiferimentoProgetto } from '#services/riferimenti-progetto.js';
 import { readSinopiaProjectName } from '#services/sinopia-references.js';
@@ -42,6 +43,42 @@ export type RiferimentoVisore = Readonly<{
 }>;
 
 const vuoto: RiferimentiLetti = { riferimenti: [] };
+
+/** Le famiglie dei pezzi piatti: la faccia `sopra` è la faccia a vista («di fronte»), il fianco è il bordo («di taglio»). */
+const pezziPiatti: ReadonlySet<string> = new Set(['fibbia', 'placca', 'pendente', 'borchia', 'occhiello']);
+
+/** Le parole di ogni faccia nella didascalia di una vista generata. */
+const parolaFaccia: Readonly<Record<string, PlainMessageKey>> = {
+  fianco_esterno: 'riferimento.faces.fianco',
+  fianco_interno: 'riferimento.faces.fiancoInterno',
+  dietro: 'riferimento.faces.dietro',
+  davanti: 'riferimento.faces.davanti',
+  sopra: 'riferimento.faces.sopra',
+  sotto: 'riferimento.faces.sotto',
+  asse_dito: 'riferimento.faces.fronte',
+  tre_quarti_pietra: 'riferimento.faces.treQuarti',
+};
+
+/**
+ * La didascalia di una vista generata: il ruolo e da dove guarda («Vista principale · di fianco»).
+ *
+ * @param t - La traduzione.
+ * @param vista - Ruolo, faccia e famiglia della vista.
+ * @returns Il testo.
+ */
+function testoVista(t: (chiave: PlainMessageKey) => string, vista: NonNullable<RiferimentoProgetto['vista']>): string {
+  const ruolo = t(vista.ruolo === 'principale' ? 'riferimento.views.principale' : 'riferimento.views.controllo');
+  const piatto = vista.famiglia !== undefined && pezziPiatti.has(vista.famiglia);
+  const chiave =
+    piatto && vista.faccia === 'sopra'
+      ? 'riferimento.faces.fronte'
+      : piatto && vista.faccia === 'fianco_esterno'
+        ? 'riferimento.faces.taglio'
+        : vista.faccia === undefined
+          ? undefined
+          : parolaFaccia[vista.faccia];
+  return chiave ? `${ruolo} · ${t(chiave)}` : ruolo;
+}
 const nessuno: ReadonlySet<string> = new Set();
 
 /**
@@ -324,7 +361,7 @@ export function ViewerReferencePanel({
   const maschera = corrente.maschera ? urls[corrente.maschera] : undefined;
   const illeggibile = illeggibili.has(corrente.percorso);
   const totale = riferimenti.length;
-  const origine = t(`riferimento.origins.${corrente.origine}`);
+  const origine = corrente.vista ? testoVista(t, corrente.vista) : t(`riferimento.origins.${corrente.origine}`);
   const didascalia = corrente.dettaglio ? `${origine} · ${corrente.dettaglio}` : origine;
   const rapporto = rapporti[corrente.percorso] ?? 4 / 3;
   const vai = (passo: number): void => {

@@ -36,8 +36,14 @@ const estensioniPerTipo: Readonly<Record<string, string>> = {
   'image/gif': 'gif',
 };
 
-/** Da dove viene un riferimento: la foto riconosciuta, un'immagine di Sinopia, un'immagine caricata o incollata. */
-export type OrigineRiferimento = 'foto' | 'sinopia' | 'caricata';
+/**
+ * Da dove viene un riferimento: la foto riconosciuta, una vista generata dalla foto (principale o controllo),
+ * un'immagine di Sinopia, un'immagine caricata o incollata.
+ */
+export type OrigineRiferimento = 'foto' | 'vista' | 'sinopia' | 'caricata';
+
+/** Il ruolo di una vista generata. */
+export type RuoloVistaRiferimento = 'principale' | 'controllo';
 
 /** Un'immagine di riferimento del progetto. */
 export type RiferimentoProgetto = Readonly<{
@@ -50,6 +56,8 @@ export type RiferimentoProgetto = Readonly<{
   dettaglio?: string;
   /** La maschera della parte riconosciuta, quando c'è: mette in evidenza ciò che è diventato il modello. */
   maschera?: string;
+  /** Per una vista generata: il suo ruolo, la faccia che guarda e la famiglia costruita (dal record, quando c'è). */
+  vista?: Readonly<{ ruolo: RuoloVistaRiferimento; faccia?: string; famiglia?: string }>;
 }>;
 
 /** I riferimenti del progetto e il progetto Sinopia a cui appartiene il modello, se è collegato. */
@@ -66,18 +74,33 @@ export type ContestoRiferimenti = Readonly<{
   parte?: Readonly<{ id: string; etichetta: string }>;
   /** I nomi dei pezzi della Libreria scelti da Sinopia, per nome del file. */
   nomi?: Readonly<Record<string, string>>;
+  /** Le facce delle viste generate, per nome del file (dal record del riconoscimento). */
+  facceViste?: Readonly<Record<string, string>>;
+  /** La famiglia costruita (dal record): dice se «dall'alto» è la faccia a vista di un pezzo piatto. */
+  famiglia?: string;
 }>;
 
 const estensione = (nome: string): string => nome.slice(nome.lastIndexOf('.') + 1).toLowerCase();
 const base = (nome: string): string => nome.slice(0, nome.lastIndexOf('.'));
 const suffissoMaschera = '.maschera.png';
-/** La foto riconosciuta prima, poi le immagini scelte da Sinopia, poi quelle caricate. */
-const ordine: Readonly<Record<OrigineRiferimento, number>> = { foto: 0, sinopia: 1, caricata: 2 };
+/** Il nome di una vista generata: `<parte>.vista-principale.<ext>` o `<parte>.vista-controllo.<ext>`. */
+const nomeVista = /\.vista-(principale|controllo)\.\w+$/u;
+/** La foto riconosciuta prima, poi la vista principale e quella di controllo, poi Sinopia, poi le immagini caricate. */
+const posizione = (riferimento: RiferimentoProgetto): number =>
+  riferimento.origine === 'foto'
+    ? 0
+    : riferimento.origine === 'vista'
+      ? riferimento.vista?.ruolo === 'principale'
+        ? 1
+        : 2
+      : riferimento.origine === 'sinopia'
+        ? 3
+        : 4;
 
 /**
  * I riferimenti da guardare fra i file di `riferimenti/`: le immagini, senza maschere né `misure.json`. Prima la foto
- * riconosciuta, poi le immagini di Sinopia, poi quelle caricate; a pari origine in ordine di nome, così l'ordine non
- * dipende dal disco.
+ * riconosciuta, poi le viste generate (principale, controllo), poi le immagini di Sinopia, poi quelle caricate; a pari
+ * origine in ordine di nome, così l'ordine non dipende dal disco.
  *
  * @param nomi - I nomi dei file della cartella.
  * @param contesto - La parte riconosciuta e i nomi della Libreria, quando ci sono.
@@ -98,6 +121,20 @@ export function riferimentiDaFile(nomi: readonly string[], contesto: ContestoRif
       const haMaschera = presenti.has(maschera);
       const percorso = `${cartellaRiferimenti}/${nome}`;
       const tipo = tipiPerEstensione[estensione(nome)]!;
+      const ruolo = nomeVista.exec(nome)?.[1] as RuoloVistaRiferimento | undefined;
+      if (ruolo !== undefined) {
+        const faccia = contesto.facceViste?.[nome];
+        return {
+          percorso,
+          tipo,
+          origine: 'vista',
+          vista: {
+            ruolo,
+            ...(faccia ? { faccia } : {}),
+            ...(contesto.famiglia ? { famiglia: contesto.famiglia } : {}),
+          },
+        };
+      }
       if (haMaschera || (baseFoto !== undefined && base(nome) === baseFoto)) {
         const dettaglio = baseFoto !== undefined && base(nome) === baseFoto ? contesto.parte?.etichetta.trim() : '';
         return {
@@ -116,7 +153,7 @@ export function riferimentiDaFile(nomi: readonly string[], contesto: ContestoRif
         ...(nomeLibreria ? { dettaglio: nomeLibreria } : {}),
       };
     });
-  return riferimenti.toSorted((primo, secondo) => ordine[primo.origine] - ordine[secondo.origine]);
+  return riferimenti.toSorted((primo, secondo) => posizione(primo) - posizione(secondo));
 }
 
 /** Ciò che la lettura chiede al disco del progetto. */
@@ -178,10 +215,18 @@ export async function leggiRiferimentiProgetto(files: FileRiferimenti, radice: s
   } catch {
     progettoSinopia = undefined;
   }
+  const facceViste =
+    lettura.stato === 'ok' && lettura.record.viste
+      ? Object.fromEntries(
+          lettura.record.viste.map((vista) => [vista.file.slice(cartellaRiferimenti.length + 1), vista.faccia]),
+        )
+      : undefined;
   return {
     riferimenti: riferimentiDaFile(nomi, {
       ...(parte ? { parte } : {}),
       ...(nomiLibreria ? { nomi: nomiLibreria } : {}),
+      ...(facceViste ? { facceViste } : {}),
+      ...(lettura.stato === 'ok' ? { famiglia: lettura.record.famiglia.id } : {}),
     }),
     ...(progettoSinopia ? { progettoSinopia } : {}),
   };

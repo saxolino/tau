@@ -58,6 +58,47 @@ describe('recognised piece project', () => {
     expect(percorsoRiconoscimento).toBe('.tau/workbench/riconoscimento.json');
   });
 
+  it('should keep the generated views in riferimenti/ with their role, and in the record with the comparisons', () => {
+    const { files, record } = progettoRiconosciuto({
+      scheda: schedaRiconoscimentoDiProva,
+      schedaParte: schedaParteDiProva,
+      immagine: { bytes: new Uint8Array([1, 2, 3]), tipo: 'image/jpeg' },
+      lingua: 'it',
+      viste: [
+        {
+          ruolo: 'principale',
+          faccia: 'sopra',
+          assetId: 'a1',
+          bytes: new Uint8Array([9]),
+          tipo: 'image/png',
+          iou: 0.95,
+          riusata: true,
+        },
+        { ruolo: 'controllo', faccia: 'fianco_esterno', assetId: 'a2', bytes: new Uint8Array([8]), tipo: 'image/webp' },
+      ],
+      confronti: { esito: 'combacia', controllo: 0.93, sorgente: 0.9, parametri: 'controllo' },
+    })!;
+    expect(files['riferimenti/fibbia.vista-principale.png']!.content).toStrictEqual(new Uint8Array([9]));
+    expect(files['riferimenti/fibbia.vista-controllo.webp']!.content).toStrictEqual(new Uint8Array([8]));
+    expect(record.viste).toStrictEqual([
+      {
+        ruolo: 'principale',
+        faccia: 'sopra',
+        assetId: 'a1',
+        file: 'riferimenti/fibbia.vista-principale.png',
+        iou: 0.95,
+        riusata: true,
+      },
+      { ruolo: 'controllo', faccia: 'fianco_esterno', assetId: 'a2', file: 'riferimenti/fibbia.vista-controllo.webp' },
+    ]);
+    const letto = leggiRecordRiconoscimento(serializzaRecordRiconoscimento(record));
+    expect(letto).toMatchObject({ stato: 'ok', record: { version: 1, confronti: { esito: 'combacia' } } });
+    // A record of before the views is still read, without them.
+    const { viste: _viste, confronti: _confronti, ...vecchio } = record;
+    expect(leggiRecordRiconoscimento(JSON.stringify(vecchio))).toMatchObject({ stato: 'ok' });
+    expect(Object.keys(progetto().files).some((nome) => nome.includes('.vista-'))).toBe(false);
+  });
+
   it('should build the family the designer chose, and nothing for a free piece', () => {
     const scelta = progettoRiconosciuto({ ...progettoIngresso(), famigliaScelta: 'placca' })!;
     expect(scelta.record.famiglia).toStrictEqual({ id: 'placca', variante: 'rettangolo', scelta: true });
