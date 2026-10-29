@@ -251,6 +251,7 @@ export function createSinopiaCadSync(initialLink: SinopiaCadLink, port: SinopiaC
       return;
     }
     running = true;
+    const seen = observation;
     const local = observation.revisionId;
     try {
       const unchanged =
@@ -258,8 +259,8 @@ export function createSinopiaCadSync(initialLink: SinopiaCadLink, port: SinopiaC
       if (!active()) {
         return;
       }
-      if (observation.revisionId !== local || observation.unsaved === true) {
-        // Edited while this was checked: decide again on the new state.
+      if (observation !== seen) {
+        // The checkout moved while this was checked: decide again on the new state.
         return;
       }
       diverged = undefined;

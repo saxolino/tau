@@ -159,7 +159,8 @@ export type SinopiaCadSource = Readonly<{ assetId: string; partId?: string }>;
  * after the piece, so a model that never saves anything leaves no empty project in the dashboard.
  */
 export async function createSinopiaCadLink(
-  name: string,
+  /** The piece's name: the project takes it at the first save (`ensureSinopiaCadModel`), not here. */
+  _name: string,
   originProjectId?: string,
   named?: Readonly<{ projectId: string; modelId: string }>,
 ): Promise<SinopiaCadLink> {
