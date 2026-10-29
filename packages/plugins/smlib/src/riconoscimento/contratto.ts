@@ -1,6 +1,8 @@
 import type { DefinizioneParametro, FamigliaQualsiasi } from '#famiglie/famiglia.js';
 import { famiglie } from '#famiglie/registro.js';
+import { visteOrtogonali } from '#famiglie/viste-ortogonali.js';
 import type { ContrattoRiconoscimento, FamigliaCatalogo, ParametroCatalogo } from '#riconoscimento/condiviso.js';
+import { contestoRiconoscimentoSchema } from '#riconoscimento/contesto.js';
 import { mappaLibreria, mappaPartType } from '#riconoscimento/famiglia-da-part-type.js';
 import { schedaParteSchema } from '#riconoscimento/scheda-parte.js';
 import { schedaRiconoscimentoSchema, schemaPerApi } from '#riconoscimento/schema.js';
@@ -15,8 +17,12 @@ import { schedaRiconoscimentoSchema, schemaPerApi } from '#riconoscimento/schema
 /** Il modello del classificatore (specifica §2.3): Claude Sonnet 5.5 con uscita strutturata. @public */
 export const modelloRiconoscimento = 'claude-sonnet-5-5';
 
-/** Versione del contratto: sale quando la forma di ingresso o di uscita cambia. @public */
-export const versioneContratto = 2;
+/**
+ * Versione del contratto: sale quando la forma di ingresso o di uscita cambia. La 3 aggiunge all'ingresso il `contesto`
+ * e le viste generate (`immagini.principale`, `immagini.controllo`); l'uscita resta quella della 2.
+ * @public
+ */
+export const versioneContratto = 3;
 
 const parametroCatalogo = (definizione: DefinizioneParametro): ParametroCatalogo => ({
   chiave: definizione.chiave,
@@ -47,6 +53,7 @@ export const famigliaCatalogo = (famiglia: FamigliaQualsiasi): FamigliaCatalogo 
     principale: famiglia.viste.principale,
     facce: famiglia.viste.facce.map((faccia) => ({ id: faccia.id, descrizione: faccia.descrizione })),
     nomi: famiglia.viste.nomi,
+    ...(Object.hasOwn(visteOrtogonali, famiglia.id) ? { ortogonali: visteOrtogonali[famiglia.id] } : {}),
   },
   parametri: famiglia.parametri
     .filter((definizione) => !definizione.fuoriRiconoscimento)
@@ -73,6 +80,7 @@ export function generaContratto(): ContrattoRiconoscimento {
   const tabellaLibreria: ContrattoRiconoscimento['mappaLibreria'] = Object.fromEntries(Object.entries(mappaLibreria));
   const uscita = schemaPerApi(schedaRiconoscimentoSchema);
   const parte = schemaPerApi(schedaParteSchema, { io: 'input', tieniPattern: true });
+  const contesto = schemaPerApi(contestoRiconoscimentoSchema, { io: 'input', tieniPattern: true });
   return {
     versione: versioneContratto,
     modello: modelloRiconoscimento,
@@ -80,6 +88,8 @@ export function generaContratto(): ContrattoRiconoscimento {
     limitiUscita: uscita.limiti,
     schemaParte: parte.schema,
     limitiParte: parte.limiti,
+    schemaContesto: contesto.schema,
+    limitiContesto: contesto.limiti,
     famiglie: catalogoFamiglie(),
     mappaPartType: tabellaPartType,
     mappaLibreria: tabellaLibreria,

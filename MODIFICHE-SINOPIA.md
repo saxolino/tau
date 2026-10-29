@@ -1232,3 +1232,44 @@ contratto.json` e l'impronta in `recognize.test.ts`) va aggiornata con la funzio
   `verifica/ottimizza.test.ts` e `verifica/osservabilita.test.ts` (stiletti sintetici 13 e 103: con il fusto sottile la
   fase A della verifica D3 gira la camera di 10–19° in alcuni casi, vedi i commenti); `famiglie/index.ts` esporta i
   tipi dal profilo.
+
+## 29 ottobre 2026 — viste ortogonali: dalla foto alle viste piatte del pezzo
+
+Il riconoscimento leggeva profili e misure da una sola foto, con la sua prospettiva. Ora `/cad/nuovo` chiede a Sinopia
+(rotta `POST /v1/views` della funzione `sinopiacad`) due viste piatte della parte, generate dalla foto: la principale
+(il tacco di fianco, la suola da sotto, i pezzi piatti di fronte) e quella di controllo (da dietro, di fianco, di
+taglio). Il riconoscimento le riceve con la foto, la verifica lavora sulla principale e confronta il pezzo con il
+controllo e con la foto. Decisioni del proprietario: la pagina non parte da sola («Costruisci · N crediti», 2 crediti a
+vista con `cad_part_view`); le viste si vedono nel pulsante «Riferimento»; vista dall'alto del tacco solo su richiesta
+(non nel primo rilascio); Libreria e fornitori senza viste; l'intersuola si guarda di fianco con il controllo da sotto.
+
+- **Contratto v3** (gemello con Sinopia): `packages/plugins/smlib/src/famiglie/viste.ts` (tipi delle viste
+  ortogonali), `famiglie/viste-ortogonali.ts` (nuovo: la tabella per famiglia, con la zeppa del fondo),
+  `riconoscimento/contesto.ts` (nuovo: lo schema del `contesto` della richiesta), `riconoscimento/condiviso.ts`
+  (`ordineImmagini`, `erroriViste`, `versioneRisposta`, testo dell'utente con viste, proporzioni e visibilità; senza
+  contesto il prompt è quello della v2 byte per byte), `riconoscimento/contratto.ts` (versione 3, `schemaContesto`,
+  `limitiContesto`, `famiglie[].viste.ortogonali`), `riconoscimento/riconoscimento.contratto.json` (rigenerato),
+  `riconoscimento/prompt.ts`, `riconoscimento/index.ts`. Test: `contratto.test.ts` (impronte nuove), `contesto.test.ts`
+  (nuovo), `prompt.test.ts` e `__snapshots__/prompt.test.ts.snap` (istantanea v2 registrata prima del cambio, istantanea
+  v3), `famiglie/viste.test.ts`. **La copia gemella in Sinopia** (`condiviso.ts`, `contratto.json`, impronte in
+  `recognize.test.ts`) va aggiornata con la funzione `sinopiacad`.
+- **Proporzioni e visibilità** gratis dai riquadri dell'analisi salvata e dalla maschera:
+  `riconoscimento/proporzioni.ts` e `proporzioni.test.ts` (nuovi).
+- **Verifica sulle tre immagini**: `verifica/confronti.ts` e `confronti.test.ts` (nuovi; ancora di scala, richieste
+  sulla vista generata e di confronto, verdetto, misure da confermare; soglie tarate su sei casi sintetici, tabella nel
+  test), `verifica/index.ts`. Rispetto al piano: sul controllo si muovono i parametri che la principale non vede, e la
+  foto decide quando la parte è intera (lo stiletto coerente restava a 0,53–0,62 sul controllo).
+- **Interfaccia**: `apps/ui/app/services/sinopia-viste.ts` e `sinopia-viste.test.ts` (nuovi: client di `/v1/views`,
+  codici d'errore, memoria della visita e del giro), `services/sinopia-recognize.ts` (`unaVoltaPerVisita`, corpo v3,
+  risposta versione 3), `services/riconoscimento-immagini.ts` (viste con i byte scaricati, maschere dal fondo con i
+  fori svuotati, ripiego SAM), `services/sinopia-foto.ts` (`cad_part_view`), `services/sinopia-parts.ts` (parametro
+  `view`, riuso della «Parte isolata», `?prova=fibbia-diversa`), `constants/search-parameter.constants.ts`
+  (`sinopiaView`), `lib/testing/sinopia-backend.ts` (rotta finta), `machines/riconoscimento.machine.ts` (stato
+  `confrontando`, attore `confronta`), `services/riconoscimento-pipeline.ts`, `services/riconoscimento-record.ts`
+  (`viste`, `confronti` facoltativi, record sempre `version: 1`), `services/riconoscimento-progetto.ts` (le viste in
+  `riferimenti/`), `services/riferimenti-progetto.ts` (origine `vista`), `routes/w.$workspace.$project/viewer-reference.tsx`
+  (didascalia per ruolo e faccia), `routes/nuovo/use-riconoscimento-nuovo.ts` e `nuovo-da-sinopia.tsx` (conferma del
+  costo, passi delle viste, «non corrisponde» con «Rigenera le viste» e «Conferma le misure», «Continua senza viste»),
+  `routes/nuovo/prova-fibbia.ts` (viste di prova), `i18n/messages/riconoscimento.ts` e `riferimento.ts`,
+  `lib/sinopia-immagine-cad-skill.ts` (l'agente sa delle viste in `riferimenti/`). Test aggiornati o nuovi accanto a
+  ciascuno.

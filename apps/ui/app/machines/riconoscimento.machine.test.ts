@@ -1,9 +1,15 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
 import { createActor, createAsyncLogic, waitFor } from 'xstate';
-import type { RichiestaVerifica, RispostaVerifica, SchedaPerVerifica } from '@taucad/smlib/verifica';
+import { cameraDellaFaccia } from '@taucad/smlib/verifica';
+import type {
+  RichiestaVerifica,
+  RispostaVerifica,
+  RisultatoConfronti,
+  SchedaPerVerifica,
+} from '@taucad/smlib/verifica';
 import { riconoscimentoMachine } from '#machines/riconoscimento.machine.js';
-import type { IngressoRientro } from '#machines/riconoscimento.machine.js';
+import type { IngressoConfronta, IngressoRientro, VisteVerifica } from '#machines/riconoscimento.machine.js';
 
 const scheda = (variante = 'stiletto', famiglia: SchedaPerVerifica['famiglia']['id'] = 'tacco'): SchedaPerVerifica => ({
   famiglia: { id: famiglia, confidenza: 0.8 },
@@ -44,10 +50,16 @@ const risposta = (iou: number, altezza: number): RispostaVerifica =>
 /** A pipeline with fake D2 and D3 actors: the verifications answer in order. */
 const pipeline = (
   verifiche: RispostaVerifica[],
-  opzioni: { prima?: SchedaPerVerifica; dopo?: SchedaPerVerifica } = {},
+  opzioni: {
+    prima?: SchedaPerVerifica;
+    dopo?: SchedaPerVerifica;
+    viste?: VisteVerifica;
+    confronta?: (ingresso: IngressoConfronta, signal: AbortSignal) => Promise<RisultatoConfronti>;
+  } = {},
 ) => {
   const richieste: RichiestaVerifica[] = [];
   const rientri: IngressoRientro[] = [];
+  const confronti: IngressoConfronta[] = [];
   const riconosci = vi.fn(async () => opzioni.prima ?? scheda());
   const machine = riconoscimentoMachine.provide({
     actors: {
@@ -68,14 +80,42 @@ const pipeline = (
           return opzioni.dopo ?? scheda('blocco');
         },
       }),
+      confronta: createAsyncLogic<RisultatoConfronti, IngressoConfronta>({
+        run: async ({ input, signal }) => {
+          confronti.push(input);
+          if (!opzioni.confronta) {
+            throw new Error('confronto non previsto');
+          }
+          return opzioni.confronta(input, signal);
+        },
+      }),
     },
   });
   const actor = createActor(machine, {
-    input: { progettoId: 'p1', parteId: 'tacco-1', maschera: Uint8Array.of(1, 2, 3) },
+    input: {
+      progettoId: 'p1',
+      parteId: 'tacco-1',
+      maschera: Uint8Array.of(1, 2, 3),
+      ...(opzioni.viste ? { viste: opzioni.viste } : {}),
+    },
   });
   actor.start();
-  return { actor, richieste, rientri, riconosci };
+  return { actor, richieste, rientri, riconosci, confronti };
 };
+
+const viste: VisteVerifica = {
+  principale: { png: Uint8Array.of(7), faccia: 'fianco_esterno' },
+  controllo: { png: Uint8Array.of(8), faccia: 'dietro' },
+  visibilita: 'intera',
+};
+
+const risultato = (esito: RisultatoConfronti['esito'], pezzo: RispostaVerifica): RisultatoConfronti => ({
+  esito,
+  ...(esito === 'non_combacia' ? { motivo: 'sorgente' } : {}),
+  iou: { principale: pezzo.iou, controllo: 0.93, sorgente: esito === 'non_combacia' ? 0.7 : 0.9 },
+  parametri: 'principale',
+  risposta: pezzo,
+});
 
 describe('riconoscimentoMachine', () => {
   it('should accept from IoU 0.92 and deliver the silhouette measures', async () => {
@@ -163,6 +203,95 @@ describe('riconoscimentoMachine', () => {
     actor.start();
     actor.send({ type: 'avvia' });
     await waitFor(actor, (snapshot) => snapshot.value === 'verificando' && segnale !== undefined);
+    actor.send({ type: 'annulla' });
+    expect(actor.getSnapshot().value).toBe('annullato');
+    expect(segnale!.aborted).toBe(true);
+  });
+
+  it('should verify on the main view, then compare control and photo before delivering', async () => {
+    const { actor, richieste, confronti } = pipeline([risposta(0.95, 85.2)], {
+      viste,
+      confronta: async ({ principale }) => risultato('combacia', principale),
+    });
+    actor.send({ type: 'avvia' });
+    const fine = await waitFor(actor, (snapshot) => snapshot.status === 'done');
+    expect(fine.value).toBe('consegnato');
+    // The verification looked at the main view from its face, scale free, not at the photo.
+    expect(richieste[0]!.maschera.png).toStrictEqual(Uint8Array.of(7));
+    expect(richieste[0]!.vista).toMatchObject({ ...cameraDellaFaccia('tacco', 'fianco_esterno'), confidenza: 1 });
+    expect(richieste[0]!.scala).toStrictEqual({ pxPerMmFoto: null, fonte: 'stima' });
+    expect(confronti).toHaveLength(1);
+    expect(confronti[0]!.maschera).toStrictEqual(Uint8Array.of(1, 2, 3));
+    expect(confronti[0]!.viste).toBe(viste);
+    expect(fine.context.confronti).toMatchObject({ esito: 'combacia', iou: { sorgente: 0.9 } });
+    expect(fine.context.consegna?.esito).toBe('accettato');
+  });
+
+  it('should deliver the parameters the comparisons chose, and the verdict that they do not match', async () => {
+    const conControllo = { ...risposta(0.95, 91), sensibilita: [] };
+    const { actor } = pipeline([risposta(0.95, 85.2)], {
+      viste,
+      confronta: async () => ({ ...risultato('non_combacia', conControllo), parametri: 'controllo' }),
+    });
+    actor.send({ type: 'avvia' });
+    const fine = await waitFor(actor, (snapshot) => snapshot.status === 'done');
+    expect(fine.context.confronti).toMatchObject({ esito: 'non_combacia', motivo: 'sorgente', parametri: 'controllo' });
+    expect(fine.context.rispostaConsegnata).toBe(conControllo);
+    expect(fine.context.consegna?.parametri[0]!.valore).toBe(91);
+  });
+
+  it('should ask the model again on the main view and compare only the second round', async () => {
+    const { actor, richieste, rientri, confronti } = pipeline([risposta(0.8, 90), risposta(0.94, 84.5)], {
+      viste,
+      confronta: async ({ principale }) => risultato('combacia', principale),
+    });
+    actor.send({ type: 'avvia' });
+    const fine = await waitFor(actor, (snapshot) => snapshot.status === 'done');
+    expect(rientri).toHaveLength(1);
+    expect(richieste.map((richiesta) => richiesta.maschera.png)).toStrictEqual([Uint8Array.of(7), Uint8Array.of(7)]);
+    expect(confronti).toHaveLength(1);
+    expect(confronti[0]!.principale.iou).toBe(0.94);
+    expect(fine.context.confronti?.esito).toBe('combacia');
+  });
+
+  it('should verify on the photo as before when the built family has no face of the main view', async () => {
+    const { actor, richieste, confronti } = pipeline([risposta(0.95, 85.2)], {
+      viste: { ...viste, principale: { png: Uint8Array.of(7), faccia: 'asse_dito' } },
+    });
+    actor.send({ type: 'avvia' });
+    const fine = await waitFor(actor, (snapshot) => snapshot.status === 'done');
+    expect(richieste[0]!.maschera.png).toStrictEqual(Uint8Array.of(1, 2, 3));
+    expect(confronti).toHaveLength(0);
+    expect(fine.context.confronti).toBeUndefined();
+  });
+
+  it('should deliver the main view’s check when the comparisons fail', async () => {
+    const { actor } = pipeline([risposta(0.95, 85.2)], {
+      viste,
+      confronta: async () => {
+        throw new Error('worker caduto');
+      },
+    });
+    actor.send({ type: 'avvia' });
+    const fine = await waitFor(actor, (snapshot) => snapshot.status === 'done');
+    expect(fine.value).toBe('consegnato');
+    expect(fine.context.confronti).toBeUndefined();
+    expect(fine.context.consegna?.iou).toBe(0.95);
+  });
+
+  it('should abort the comparisons when cancelled during them', async () => {
+    let segnale: AbortSignal | undefined;
+    const { actor } = pipeline([risposta(0.95, 85.2)], {
+      viste,
+      confronta: async (_ingresso, signal) => {
+        segnale = signal;
+        return new Promise<RisultatoConfronti>(() => {
+          // Never settles: the comparison is still running when «annulla» arrives.
+        });
+      },
+    });
+    actor.send({ type: 'avvia' });
+    await waitFor(actor, (snapshot) => snapshot.value === 'confrontando' && segnale !== undefined);
     actor.send({ type: 'annulla' });
     expect(actor.getSnapshot().value).toBe('annullato');
     expect(segnale!.aborted).toBe(true);

@@ -1,16 +1,29 @@
 import { createActor, createAsyncLogic } from 'xstate';
 import { catalogoFamiglie, schedaConsegnata, schedaRiconoscimentoSchema } from '@taucad/smlib/riconoscimento';
 import type { SchedaRiconoscimento } from '@taucad/smlib/riconoscimento';
-import { consegnaVerifica } from '@taucad/smlib/verifica';
+import {
+  chiaviDelControllo,
+  consegnaVerifica,
+  richiestaDiConfronto,
+  richiestaGirata,
+  risultatoConfronti,
+  rolliDaProvare,
+} from '@taucad/smlib/verifica';
 import type {
   Consegna,
-  RichiestaVerifica,
   RispostaVerifica,
+  RisultatoConfronti,
   SchedaPerVerifica,
   Verificatore,
 } from '@taucad/smlib/verifica';
 import { riconoscimentoMachine } from '#machines/riconoscimento.machine.js';
-import type { IngressoRiconosci, IngressoRientro } from '#machines/riconoscimento.machine.js';
+import type {
+  IngressoConfronta,
+  IngressoRiconosci,
+  IngressoRientro,
+  IngressoVerifica,
+  VisteVerifica,
+} from '#machines/riconoscimento.machine.js';
 import type { RecordRiconoscimento } from '#services/riconoscimento-record.js';
 
 /**
@@ -27,8 +40,17 @@ export type VerificaFatta = Extract<RecordRiconoscimento['verifica'], { stato: '
 
 /** How the pipeline ended. */
 export type EsitoPipeline =
-  /** The piece matches (or is kept with a warning): the sheet with the optimised parameters, and the check. */
-  | Readonly<{ tipo: 'consegna'; scheda: SchedaRiconoscimento; consegna: Consegna; verifica: VerificaFatta }>
+  /**
+   * The piece matches (or is kept with a warning): the sheet with the optimised parameters, and the check. With the
+   * generated views, `confronti` says whether the reconstruction matches the photo and which measures were used.
+   */
+  | Readonly<{
+      tipo: 'consegna';
+      scheda: SchedaRiconoscimento;
+      consegna: Consegna;
+      verifica: VerificaFatta;
+      confronti?: RisultatoConfronti;
+    }>
   /** The recogniser now says the part is free-form or cannot be modelled (after the second round). */
   | Readonly<{ tipo: 'libero'; scheda: SchedaRiconoscimento }>
   /** Stopped by the designer: nothing was checked. */
@@ -51,6 +73,8 @@ export type IngressoPipeline = Readonly<{
   ) => Promise<SchedaRiconoscimento>;
   /** Keys the designer fixed: the optimiser leaves them alone. */
   bloccati?: readonly string[];
+  /** Le maschere delle viste generate: la verifica lavora sulla principale e confronta controllo e foto. */
+  viste?: VisteVerifica;
   budgetMs?: number;
   lingua: 'it' | 'en';
   segnale: AbortSignal;
@@ -80,6 +104,90 @@ export const verificaDaConsegna = (consegna: Consegna, risposta: RispostaVerific
 });
 
 /**
+ * Una verifica su una vista generata che parte dal rollo che la spiega meglio: con più rolli, prima una sonda per
+ * ciascuno (solo la fase A: una costruzione e proiezioni), poi la verifica piena dal migliore.
+ *
+ * @param verificatore - Il worker della verifica.
+ * @param ingresso - La richiesta e i rolli da sondare.
+ * @param signal - Il segnale dell'attore.
+ * @returns La verifica piena.
+ */
+export async function verificaConRolli(
+  verificatore: Verificatore,
+  ingresso: IngressoVerifica,
+  signal: AbortSignal,
+): Promise<RispostaVerifica> {
+  const rolli = ingresso.rolli ?? [0];
+  if (rolli.length <= 1) {
+    return verificatore.verifica(ingresso.richiesta, { signal });
+  }
+  let migliore = { rollo: rolli[0]!, iou: -1 };
+  for (const rollo of rolli) {
+    // oxlint-disable-next-line no-await-in-loop -- one worker: the probes run one after the other anyway.
+    const sonda = await verificatore.verifica(richiestaGirata(ingresso.richiesta, rollo, true), { signal });
+    if (sonda.iou > migliore.iou) {
+      migliore = { rollo, iou: sonda.iou };
+    }
+  }
+  return verificatore.verifica(richiestaGirata(ingresso.richiesta, migliore.rollo, false), { signal });
+}
+
+/** Millisecondi: il tempo massimo del confronto con il controllo (un giro di fase B sui parametri non visti). */
+const tempoControllo = 15_000;
+
+/**
+ * I confronti sulle tre immagini (§2.5): il controllo con i parametri che la principale non vede liberi, poi la foto a
+ * parametri fermi con le misure della principale e, se il controllo ne ha date, con quelle. Tutte con lo stesso
+ * segnale: lasciare `confrontando` ferma il worker.
+ *
+ * @param verificatore - Il worker della verifica.
+ * @param ingresso - La verifica sulla principale, le viste e la maschera della foto.
+ * @param signal - Il segnale dell'attore.
+ * @returns Il risultato dei confronti.
+ */
+export async function confrontaViste(
+  verificatore: Verificatore,
+  ingresso: IngressoConfronta,
+  signal: AbortSignal,
+): Promise<RisultatoConfronti> {
+  const { principale, viste, scheda, maschera } = ingresso;
+  const liberi = chiaviDelControllo(principale);
+  const richiestaControllo = viste.controllo
+    ? richiestaDiConfronto(principale, viste.controllo.png, {
+        tipo: 'controllo',
+        faccia: viste.controllo.faccia,
+        liberi,
+        tempoMassimo: tempoControllo,
+      })
+    : undefined;
+  const controllo = richiestaControllo
+    ? await verificaConRolli(
+        verificatore,
+        {
+          richiesta: richiestaControllo,
+          rolli: rolliDaProvare(principale.famiglia, viste.controllo!.faccia),
+        },
+        signal,
+      )
+    : undefined;
+  const sullaFoto = async (pezzo: RispostaVerifica): Promise<RispostaVerifica | undefined> => {
+    const richiesta = richiestaDiConfronto(pezzo, maschera, { tipo: 'sorgente', scheda });
+    return richiesta ? verificatore.verifica(richiesta, { signal }) : undefined;
+  };
+  const sorgentePrincipale = await sullaFoto(principale);
+  const sorgenteControllo = controllo && liberi.length > 0 ? await sullaFoto(controllo) : undefined;
+  return risultatoConfronti(
+    {
+      principale,
+      ...(controllo ? { controllo, liberi } : {}),
+      ...(sorgentePrincipale ? { sorgentePrincipale } : {}),
+      ...(sorgenteControllo ? { sorgenteControllo } : {}),
+    },
+    viste.visibilita,
+  );
+}
+
+/**
  * Run the pipeline.
  *
  * @param ingresso - The sheet, the mask, the clients and the signal.
@@ -94,8 +202,11 @@ export async function eseguiPipelineRiconoscimento(ingresso: IngressoPipeline): 
       riconosci: createAsyncLogic<SchedaPerVerifica, IngressoRiconosci>({
         run: async () => ingresso.scheda as SchedaPerVerifica,
       }),
-      verifica: createAsyncLogic<RispostaVerifica, { richiesta: RichiestaVerifica }>({
-        run: async ({ input, signal }) => ingresso.verificatore.verifica(input.richiesta, { signal }),
+      verifica: createAsyncLogic<RispostaVerifica, IngressoVerifica>({
+        run: async ({ input, signal }) => verificaConRolli(ingresso.verificatore, input, signal),
+      }),
+      confronta: createAsyncLogic<RisultatoConfronti, IngressoConfronta>({
+        run: async ({ input, signal }) => confrontaViste(ingresso.verificatore, input, signal),
       }),
       rientro: createAsyncLogic<SchedaPerVerifica, IngressoRientro>({
         run: async ({ input }) =>
@@ -115,6 +226,7 @@ export async function eseguiPipelineRiconoscimento(ingresso: IngressoPipeline): 
       maschera: ingresso.maschera,
       ...(ingresso.budgetMs === undefined ? {} : { budgetMs: ingresso.budgetMs }),
       ...(ingresso.bloccati ? { bloccati: ingresso.bloccati } : {}),
+      ...(ingresso.viste ? { viste: ingresso.viste } : {}),
     },
   });
   return new Promise<EsitoPipeline>((resolve) => {
@@ -136,9 +248,9 @@ export async function eseguiPipelineRiconoscimento(ingresso: IngressoPipeline): 
     const consegna = (
       consegnaFatta: Consegna,
       risposta: RispostaVerifica,
-      schedaDiPartenza: SchedaPerVerifica | undefined,
-      rientri: number,
+      origine: Readonly<{ scheda: SchedaPerVerifica | undefined; rientri: number; confronti?: RisultatoConfronti }>,
     ): EsitoPipeline => {
+      const { scheda: schedaDiPartenza, rientri, confronti } = origine;
       const completa = comeScheda(schedaDiPartenza, ingresso.scheda);
       const famiglia = catalogo.find((voce) => voce.id === consegnaFatta.famiglia);
       return {
@@ -149,12 +261,19 @@ export async function eseguiPipelineRiconoscimento(ingresso: IngressoPipeline): 
         }),
         consegna: consegnaFatta,
         verifica: verificaDaConsegna(consegnaFatta, risposta, rientri),
+        ...(confronti ? { confronti } : {}),
       };
     };
     attore.subscribe((istantanea) => {
       const { context } = istantanea;
       if (istantanea.matches('consegnato') && context.consegna && context.rispostaConsegnata) {
-        concludi(consegna(context.consegna, context.rispostaConsegnata, context.schedaConsegnata, context.rientri));
+        concludi(
+          consegna(context.consegna, context.rispostaConsegnata, {
+            scheda: context.schedaConsegnata,
+            rientri: context.rientri,
+            ...(context.confronti ? { confronti: context.confronti } : {}),
+          }),
+        );
       } else if (istantanea.matches('pezzoLibero')) {
         concludi({ tipo: 'libero', scheda: comeScheda(context.scheda, ingresso.scheda) });
       } else if (istantanea.matches('annullato')) {
@@ -165,12 +284,10 @@ export async function eseguiPipelineRiconoscimento(ingresso: IngressoPipeline): 
         const { migliore } = context;
         concludi(
           migliore
-            ? consegna(
-                consegnaVerifica(migliore.scheda, migliore.risposta, 'avviso'),
-                migliore.risposta,
-                migliore.scheda,
-                context.rientri,
-              )
+            ? consegna(consegnaVerifica(migliore.scheda, migliore.risposta, 'avviso'), migliore.risposta, {
+                scheda: migliore.scheda,
+                rientri: context.rientri,
+              })
             : { tipo: 'errore', messaggio: context.errore ?? 'La verifica non è riuscita.' },
         );
       }

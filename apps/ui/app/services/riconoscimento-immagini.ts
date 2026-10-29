@@ -3,6 +3,8 @@ import type { MascheraBinaria } from '@taucad/smlib/riconoscimento';
 import { readSinopiaConfig } from '#lib/sinopia-session.js';
 import { requireSinopiaUser } from '#lib/sinopia-data-client.js';
 import type { StrumentiParti } from '#services/sinopia-parts.js';
+import { mascheraDaSfondo } from '#services/sinopia-pezzo.js';
+import type { VistaPerRiconoscimento } from '#services/sinopia-recognize.js';
 
 /**
  * The browser half of the recognition's images (canvas): read sizes and masks, encode a mask, and prepare the two
@@ -245,4 +247,125 @@ export async function preparaImmaginiRiconoscimento(
     intera: { mediaType: 'image/jpeg', data: await blobInBase64(await inBlob(intera, 'image/jpeg', 0.9)) },
     fattoreRitaglio: Number(fattore.toFixed(4)),
   };
+}
+
+// ─── Viste generate (contratto v3) ───────────────────────────────────────────────────────────────────────────────
+
+/** Lato a cui si legge il fondo di una vista per scontornarla (come le foto del catalogo). */
+const latoMascheraVista = 1024;
+
+/**
+ * Una vista generata come la riceve il riconoscimento: i suoi byte **così come sono stati scaricati**, in base64, con
+ * il loro tipo. Nessuna ricodifica nel canvas: il corpo della richiesta resta uguale a un ricaricamento, quindi la sua
+ * impronta pure, e Sinopia risponde di nuovo senza un secondo addebito.
+ *
+ * @param vista - Il file della vista.
+ * @param ruolo - Principale o controllo.
+ * @param faccia - La faccia che la vista guarda (dalla risposta di `/v1/views`).
+ * @returns La vista per il corpo v3.
+ */
+export async function vistaPerRiconoscimento(
+  vista: Blob,
+  ruolo: VistaPerRiconoscimento['ruolo'],
+  faccia: VistaPerRiconoscimento['faccia'],
+): Promise<VistaPerRiconoscimento> {
+  return { ruolo, faccia, mediaType: vista.type || 'image/png', data: await blobInBase64(vista) };
+}
+
+/** Distanza di colore (al quadrato, RGB) sotto cui un pixel ha il colore del fondo, come in `sinopia-pezzo.ts`. */
+const sogliaFondo = 40 * 40;
+/** Un foro conta se è almeno questa frazione della parte: i riflessi chiari di un metallo restano parte. */
+const quotaForo = 0.005;
+
+/**
+ * Svuota i fori della parte che hanno il colore del fondo: in una vista generata la luce di una fibbia mostra lo stesso
+ * fondo uniforme, ma lo scontorno dal bordo la riempie. Il colore del fondo è la media dei pixel di bordo fuori dalla
+ * maschera; un foro è una regione connessa di quel colore dentro la maschera, abbastanza grande.
+ *
+ * @param maschera - La maschera dallo sfondo (modificata qui).
+ * @param rgba - I pixel della vista.
+ * @returns La stessa maschera, con i fori.
+ */
+export function svuotaFori(maschera: MascheraBinaria, rgba: ArrayLike<number>): MascheraBinaria {
+  const { larghezza, altezza, dati } = maschera;
+  let [r, g, b, n] = [0, 0, 0, 0];
+  for (let x = 0; x < larghezza; x++) {
+    for (const y of [0, altezza - 1]) {
+      const indice = y * larghezza + x;
+      if (dati[indice] === 0) {
+        [r, g, b, n] = [r + rgba[indice * 4]!, g + rgba[indice * 4 + 1]!, b + rgba[indice * 4 + 2]!, n + 1];
+      }
+    }
+  }
+  if (n === 0) {
+    return maschera;
+  }
+  const fondo = [r / n, g / n, b / n] as const;
+  const comeFondo = (indice: number): boolean =>
+    (rgba[indice * 4]! - fondo[0]) ** 2 +
+      (rgba[indice * 4 + 1]! - fondo[1]) ** 2 +
+      (rgba[indice * 4 + 2]! - fondo[2]) ** 2 <
+    sogliaFondo;
+  const area = dati.reduce((somma, valore) => somma + valore, 0);
+  const visto = new Uint8Array(dati.length);
+  const coda = new Int32Array(dati.length);
+  for (let inizio = 0; inizio < dati.length; inizio++) {
+    if (dati[inizio] !== 1 || visto[inizio] === 1 || !comeFondo(inizio)) {
+      continue;
+    }
+    let [testa, fine] = [0, 0];
+    coda[fine++] = inizio;
+    visto[inizio] = 1;
+    while (testa < fine) {
+      const indice = coda[testa++]!;
+      const x = indice % larghezza;
+      for (const vicino of [
+        indice - larghezza,
+        indice + larghezza,
+        x > 0 ? indice - 1 : -1,
+        x < larghezza - 1 ? indice + 1 : -1,
+      ]) {
+        if (vicino >= 0 && vicino < dati.length && visto[vicino] === 0 && dati[vicino] === 1 && comeFondo(vicino)) {
+          visto[vicino] = 1;
+          coda[fine++] = vicino;
+        }
+      }
+    }
+    if (fine >= quotaForo * area) {
+      for (let posizione = 0; posizione < fine; posizione++) {
+        dati[coda[posizione]!] = 0;
+      }
+    }
+  }
+  return maschera;
+}
+
+/** La maschera di una vista generata, come la verifica la legge (PNG, bianco = parte) e da dove viene. */
+export type MascheraVista = Readonly<{ png: Uint8Array<ArrayBuffer>; origine: 'sfondo' | 'sam' }>;
+
+/**
+ * La maschera di una vista generata: la vista è la parte sola su un fondo uniforme, quindi si scontorna gratis dal
+ * fondo (`mascheraDaSfondo`, come le foto del catalogo); se il fondo non è uniforme, ripiego su SAM di Sinopia.
+ *
+ * @param vista - Il file della vista.
+ * @param strumenti - Pixel, codifica e SAM.
+ * @param query - Le parole della parte, per SAM.
+ * @returns La maschera, o undefined se non se ne ricava una.
+ */
+export async function mascheraDellaVista(
+  vista: Blob,
+  strumenti: Pick<StrumentiParti, 'pixel' | 'codificaMaschera' | 'segmenta'>,
+  query: string,
+): Promise<MascheraVista | undefined> {
+  if (strumenti.pixel) {
+    const pixel = await strumenti.pixel(vista, latoMascheraVista);
+    const piena = mascheraDaSfondo(pixel.rgba, pixel.larghezza, pixel.altezza);
+    const maschera = piena ? svuotaFori(piena, pixel.rgba) : undefined;
+    if (maschera) {
+      const png = await strumenti.codificaMaschera(maschera);
+      return { png: new Uint8Array(await png.arrayBuffer()), origine: 'sfondo' };
+    }
+  }
+  const daSam = strumenti.segmenta ? await strumenti.segmenta(vista, query) : undefined;
+  return daSam ? { png: new Uint8Array(await daSam.arrayBuffer()), origine: 'sam' } : undefined;
 }

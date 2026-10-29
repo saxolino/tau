@@ -40,6 +40,9 @@ export const searchParameterName = {
   // «/cad/nuovo» from a supplier-catalogue card: `supplier_products.id` (no project, no asset, no part).
   sinopiaSupplier: 'supplier',
   sinopiaMeasure: 'measure',
+  // «/cad/nuovo» dalla card «Parte isolata»: l'asset della vista già generata nello Studio, riusata come vista
+  // principale solo se i suoi metadati dicono che lo è (stessa parte, stessa famiglia).
+  sinopiaView: 'view',
   // Development only: a recorded recognition («prova»), no Sinopia read and no paid call.
   recognitionTrial: 'prova',
 

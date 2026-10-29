@@ -261,6 +261,39 @@ describe('the reference in the viewer', () => {
     expect(screen.getByText('Da Sinopia · Sandalo Fiore')).toBeInTheDocument();
   });
 
+  it('should show the generated views after the photo, captioned with their role and face', async () => {
+    const user = userEvent.setup();
+    const progetto = progettoRiconosciuto({
+      scheda: schedaRiconoscimentoDiProva,
+      schedaParte: schedaParteDiProva,
+      immagine: { bytes: new Uint8Array([1, 2, 3]), tipo: 'image/png' },
+      maschera: new Uint8Array([4]),
+      lingua: 'it',
+      viste: [
+        { ruolo: 'controllo', faccia: 'fianco_esterno', assetId: 'a2', bytes: new Uint8Array([6]), tipo: 'image/png' },
+        { ruolo: 'principale', faccia: 'sopra', assetId: 'a1', bytes: new Uint8Array([5]), tipo: 'image/png' },
+      ],
+    })!;
+    for (const [percorso, file] of Object.entries(progetto.files)) {
+      disco.set(`${radice}/${percorso}`, file.content);
+    }
+    disco.set(`${radice}/riferimenti/sinopia-3f2a9c1e.jpg`, new Uint8Array([7]));
+    monta();
+    await user.click(await pulsante());
+
+    expect(screen.getByText('1 / 4')).toBeInTheDocument();
+    expect(screen.getByText('Da foto · Fibbia del cinturino')).toBeInTheDocument();
+    await user.keyboard('{ArrowRight}');
+    // A buckle is a flat piece: its top face is its front, its side is its edge.
+    expect(screen.getByText('Vista principale · di fronte')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Riferimento successivo' }));
+    expect(screen.getByText('Vista di controllo · di taglio')).toBeInTheDocument();
+    await user.keyboard('{ArrowRight}');
+    expect(screen.getByText('Da Sinopia')).toBeInTheDocument();
+    await user.keyboard('{ArrowRight}');
+    expect(screen.getByText('Da foto · Fibbia del cinturino')).toBeInTheDocument();
+  });
+
   it('should name the Sinopia project an image comes from, for its own account only', async () => {
     const user = userEvent.setup();
     const link = {

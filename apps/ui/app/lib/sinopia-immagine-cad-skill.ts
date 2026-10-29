@@ -27,7 +27,7 @@ Se il progetto non ha un motore, sceglilo prima con \`create-model\`; poi attiva
 
 1. **Scomponi.** Elenca i pezzi fisici: metallo (castoni, steli, anelli, cornici, perni), pietre, parti comprate (catene, chiusure, moschettoni) che non si modellano ma si annotano.
 2. **Scala.** Àncorati a una misura standard del mestiere — pietre calibrate (brillante 1–3 mm, marquise 8×4, goccia 6×4), anellini 2–4 mm, spessori del metallo 0,4–1,5 mm — e ricava il resto in proporzione all'immagine.
-3. **Viste nascoste.** Se l'immagine è di fronte, decidi spessori e profili da come si fa davvero quel pezzo in oreficeria. Altre viste o riferimenti vengono prima di ogni ipotesi.
+3. **Viste nascoste.** Se l'immagine è di fronte, decidi spessori e profili da come si fa davvero quel pezzo in oreficeria. Altre viste o riferimenti vengono prima di ogni ipotesi (anche le viste \`*.vista-*\`; vince la foto).
 4. **Costruisci a pezzi.** Un pezzo = un solido valido con un nome italiano chiaro («Castone Marquise», «Rametto Sinistro»). Contorni esatti con archi, linee e spline, mai poligoni a scaletta.
 5. **Controlla e correggi.** Dopo ogni modifica: \`evaluate_model\`, poi \`screenshot\` con \`multi_angle\` (fronte, fianchi, sopra) e confronta con le immagini di riferimento: proporzioni, posizioni, numero di elementi. Al massimo 3 giri, poi consegna e di' che cosa resta diverso.
 6. **Misure modificabili.** Ciò che il designer vorrà cambiare (lunghezze, diametri, spessori, distanze, numero di elementi) va nei parametri, con limiti sensati, così lo cambia dalle Misure senza di te.

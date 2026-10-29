@@ -9,6 +9,10 @@
  * Contiene: la scelta della famiglia dal tipo dichiarato, il prompt del classificatore (sistema + schede delle famiglie
  * + testo dell'utente), la convalida strutturale dell'uscita contro lo schema JSON del contratto, i limiti numerici e
  * di lunghezza che l'uscita strutturata dell'API non può imporre, e la normalizzazione dei parametri sul catalogo.
+ *
+ * Contratto v3: l'ingresso può portare un `contesto` (proporzioni e visibilità misurate dal CAD, ruoli delle viste
+ * generate) e due immagini in più (`immagini.principale`, `immagini.controllo`), numerate da {@link ordineImmagini}.
+ * L'uscita non cambia. Senza contesto né viste il prompt è quello della v2, byte per byte.
  */
 
 /** Uno schema JSON (il sottoinsieme che il contratto usa: tipi, enum, const, oggetti, array, anyOf, pattern). @public */
@@ -53,6 +57,13 @@ export type ParametroCatalogo = {
   descrizione?: string;
 };
 
+/**
+ * Le viste piatte da generare per una famiglia (contratto v3): la principale e i controlli (il primo di serie, gli
+ * altri su richiesta), facce di `viste.facce`. Non entrano nel prompt: le usa chi genera le viste.
+ * @public
+ */
+export type VisteOrtogonaliCatalogo = { principale: string; controllo: readonly string[] };
+
 /** Una famiglia parametrica nel catalogo del contratto. @public */
 export type FamigliaCatalogo = {
   id: string;
@@ -64,6 +75,8 @@ export type FamigliaCatalogo = {
     principale: string;
     facce: ReadonlyArray<{ id: string; descrizione: string }>;
     nomi: Readonly<Record<string, { faccia: string; azimuth: number; elevation: number }>>;
+    /** Le viste da generare (v3); per variante quando una variante si guarda diversamente (la zeppa del fondo). */
+    ortogonali?: VisteOrtogonaliCatalogo & { varianti?: Readonly<Record<string, VisteOrtogonaliCatalogo>> };
   };
   parametri: readonly ParametroCatalogo[];
 };
@@ -83,6 +96,9 @@ export type ContrattoRiconoscimento = {
   limitiUscita: readonly LimiteContratto[];
   schemaParte: SchemaJson;
   limitiParte: readonly LimiteContratto[];
+  /** Lo schema del `contesto` della richiesta (v3) e i suoi limiti: un contesto fuori schema è un 400. */
+  schemaContesto: SchemaJson;
+  limitiContesto: readonly LimiteContratto[];
   famiglie: readonly FamigliaCatalogo[];
   mappaPartType: Readonly<Record<string, DestinoTipo>>;
   mappaLibreria: Readonly<Record<string, DestinoTipo>>;
@@ -148,6 +164,90 @@ export function famiglieDelPrompt(
   return [...contratto.famiglie];
 }
 
+// ─── Contesto e immagini della richiesta (v3) ────────────────────────────────────────────────────────────────────
+
+/** Il ruolo di una vista generata. @public */
+export type RuoloVista = 'principale' | 'controllo';
+
+/**
+ * Il contesto della richiesta (v3), nella forma che il prompt legge: lo schema zod sta nel CAD
+ * (`riconoscimento/contesto.ts`), lo schema JSON nel contratto (`schemaContesto`).
+ * @public
+ */
+export type ContestoRichiesta = {
+  versione: 1;
+  proporzioni?: {
+    rapporti: ReadonlyArray<{
+      chiave: 'altezza_su_lunghezza' | 'larghezza_su_lunghezza' | 'altezza_su_altezza';
+      valore: number;
+    }>;
+    affidabilita: number;
+    parti: number;
+  };
+  visibilita?: { stato: 'intera' | 'parziale'; motivi: ReadonlyArray<'tagliata_bordo' | 'piccola' | 'coperta'> };
+  viste?: ReadonlyArray<{ ruolo: RuoloVista; faccia: string }>;
+};
+
+/** Un'immagine della richiesta, per nome della chiave in `immagini`. @public */
+export type ImmagineDellaRichiesta = 'ritaglio' | 'intera' | 'principale' | 'controllo' | 'differenza';
+
+/**
+ * L'ordine delle immagini nel messaggio, in un posto solo: 1 ritaglio, 2 immagine intera, poi la vista principale, la
+ * vista di controllo e, ultima, la differenza del rientro. Il server ordina così i blocchi, il testo dell'utente le
+ * numera così.
+ * @param presenti - Quali immagini facoltative ci sono.
+ * @returns Le chiavi di `immagini` nell'ordine del messaggio.
+ * @public
+ */
+export function ordineImmagini(
+  presenti: Readonly<{ principale?: boolean; controllo?: boolean; differenza?: boolean }>,
+): ImmagineDellaRichiesta[] {
+  return [
+    'ritaglio',
+    'intera',
+    ...(presenti.principale ? (['principale'] as const) : []),
+    ...(presenti.controllo ? (['controllo'] as const) : []),
+    ...(presenti.differenza ? (['differenza'] as const) : []),
+  ];
+}
+
+/**
+ * Le viste generate e le loro voci nel contesto vanno a coppie: un'immagine senza la sua voce (o una voce senza la sua
+ * immagine, o due voci con lo stesso ruolo) è una richiesta sbagliata (400), perché il testo numererebbe immagini che
+ * non ci sono.
+ * @param presenti - Quali viste sono in `immagini`.
+ * @param contesto - Il contesto della richiesta, se c'è.
+ * @returns Gli errori, vuoto se le viste e le voci combaciano.
+ * @public
+ */
+export function erroriViste(
+  presenti: Readonly<{ principale: boolean; controllo: boolean }>,
+  contesto: Pick<ContestoRichiesta, 'viste'> | undefined,
+): string[] {
+  const voci = contesto?.viste ?? [];
+  const errori: string[] = [];
+  for (const ruolo of ['principale', 'controllo'] as const) {
+    const quante = voci.filter((voce) => voce.ruolo === ruolo).length;
+    if (quante > 1) {
+      errori.push(`/contesto/viste: «${ruolo}» ripetuta`);
+    } else if (presenti[ruolo] && quante === 0) {
+      errori.push(`/immagini/${ruolo}: manca la sua voce in contesto.viste`);
+    } else if (!presenti[ruolo] && quante === 1) {
+      errori.push(`/contesto/viste: «${ruolo}» senza immagine`);
+    }
+  }
+  return errori;
+}
+
+/**
+ * La versione della risposta: 3 solo a una richiesta che dichiara `versioneContratto: 3`, altrimenti 2, così un CAD
+ * vecchio (che accetta 1 o 2) legge una funzione nuova.
+ * @param versioneRichiesta - Il campo `versioneContratto` del corpo, com'è arrivato.
+ * @returns La versione da scrivere nella risposta.
+ * @public
+ */
+export const versioneRisposta = (versioneRichiesta: unknown): 2 | 3 => (versioneRichiesta === 3 ? 3 : 2);
+
 // ─── Prompt ──────────────────────────────────────────────────────────────────────────────────────────────────────
 
 /** La parte da riconoscere, nel minimo che il prompt usa (sottoinsieme della scheda della parte). @public */
@@ -167,7 +267,16 @@ export type ContestoPrompt = {
   lingua: 'it' | 'en';
   /** Rientro dopo la verifica D3: c'è un'immagine differenza (rosso = modello, blu = maschera). */
   rientro?: boolean;
+  /** V3: le viste generate che seguono le due immagini, nell'ordine di {@link ordineImmagini}. */
+  viste?: ContestoRichiesta['viste'];
+  /** V3: le proporzioni misurate sulla foto. */
+  proporzioni?: ContestoRichiesta['proporzioni'];
+  /** V3: se la parte si vede intera. */
+  visibilita?: ContestoRichiesta['visibilita'];
 };
+
+/** Le opzioni del prompt che non stanno nella scheda della parte. @public */
+export type OpzioniPrompt = { lingua: 'it' | 'en'; fattoreRitaglio?: number; rientro?: boolean; contesto?: ContestoRichiesta };
 
 /** Il minimo della scheda della parte da cui nasce il contesto (lo schema completo sta in `scheda-parte.ts`). @public */
 export type SchedaParteMinima = {
@@ -183,15 +292,16 @@ export type SchedaParteMinima = {
  * Il contesto del prompt da una scheda della parte.
  * @param scheda - La scheda della parte.
  * @param vincolo - Esito di {@link risolviFamiglia}.
- * @param opzioni - Lingua dei motivi, fattore del ritaglio, rientro.
+ * @param opzioni - Lingua dei motivi, fattore del ritaglio, rientro e, dalla v3, il contesto della richiesta.
  * @returns Il contesto.
  * @public
  */
 export function contestoDaSchedaParte(
   scheda: SchedaParteMinima,
   vincolo: VincoloFamiglia,
-  opzioni: { lingua: 'it' | 'en'; fattoreRitaglio?: number; rientro?: boolean },
+  opzioni: OpzioniPrompt,
 ): ContestoPrompt {
+  const richiesta = opzioni.contesto;
   return {
     etichetta: scheda.parte.etichetta,
     nome: scheda.parte.nome,
@@ -206,6 +316,11 @@ export function contestoDaSchedaParte(
     ...(opzioni.fattoreRitaglio === undefined ? {} : { fattoreRitaglio: opzioni.fattoreRitaglio }),
     lingua: opzioni.lingua,
     ...(opzioni.rientro ? { rientro: true } : {}),
+    ...(richiesta?.viste === undefined || richiesta.viste.length === 0 ? {} : { viste: richiesta.viste }),
+    ...(richiesta?.proporzioni === undefined || richiesta.proporzioni.rapporti.length === 0
+      ? {}
+      : { proporzioni: richiesta.proporzioni }),
+    ...(richiesta?.visibilita === undefined ? {} : { visibilita: richiesta.visibilita }),
   };
 }
 
@@ -322,13 +437,96 @@ const fonteScala: Record<string, string> = {
   forma: 'forma (the last)',
 };
 
+const nomeRapporto = new Map([
+  ['altezza_su_lunghezza', 'part height / product length'],
+  ['larghezza_su_lunghezza', 'part width / product length'],
+  ['altezza_su_altezza', 'part height / product height'],
+]);
+
+const motivoVisibilita = new Map([
+  ['tagliata_bordo', 'cut by the picture edge'],
+  ['piccola', 'small in the picture'],
+  ['coperta', 'partly covered by another part'],
+]);
+
 /**
- * Il testo dell'utente: la parte, il tipo e il vincolo, la scala nota e come leggere le immagini.
+ * Le immagini del messaggio per un contesto del prompt: le viste che nomina e la differenza del rientro.
+ * @param contesto - Il contesto del prompt.
+ * @returns L'ordine di {@link ordineImmagini}.
+ */
+const ordineDelContesto = (contesto: ContestoPrompt): ImmagineDellaRichiesta[] =>
+  ordineImmagini({
+    principale: (contesto.viste ?? []).some((vista) => vista.ruolo === 'principale'),
+    controllo: (contesto.viste ?? []).some((vista) => vista.ruolo === 'controllo'),
+    differenza: contesto.rientro === true,
+  });
+
+/**
+ * Le righe v3 sulle viste generate: che cosa mostra ciascuna e come pesarle contro la foto. Vuote senza viste.
+ * @param viste - Le viste, in qualunque ordine (si numerano con `numeroDi`).
+ * @param numeroDi - Il numero dell'immagine di un ruolo nel messaggio.
+ * @returns Le righe.
+ */
+const righeVisteGenerate = (
+  viste: ContestoPrompt['viste'],
+  numeroDi: (ruolo: RuoloVista) => number,
+): string[] => {
+  if (viste === undefined || viste.length === 0) {
+    return [];
+  }
+  const ordinate = [...viste].sort((a, b) => numeroDi(a.ruolo) - numeroDi(b.ruolo));
+  const principale = viste.some((vista) => vista.ruolo === 'principale');
+  const controllo = viste.some((vista) => vista.ruolo === 'controllo');
+  return [
+    ...ordinate.map(
+      (vista) =>
+        `Picture ${numeroDi(vista.ruolo)}: the ${vista.ruolo === 'principale' ? 'MAIN' : 'CONTROL'} VIEW — a flat orthographic picture of the part alone, GENERATED from picture 1 by an image model, looking straight at the face \`${vista.faccia}\`.`,
+    ),
+    principale && controllo
+      ? 'Read profiles and ratios from the main view, thicknesses and depths from the control view.'
+      : principale
+        ? 'Read profiles and ratios from the main view.'
+        : 'Read thicknesses and depths from the control view.',
+    'Picture 1 (the photo) decides what exists and the materials: where a generated view contradicts the photo, the photo wins and your confidence goes down.',
+    '`vista.*` always describes picture 1 (the photo), never a generated view.',
+  ];
+};
+
+/**
+ * Le righe v3 sulle proporzioni e sulla visibilità misurate dal CAD. Vuote senza contesto.
+ * @param contesto - Il contesto del prompt.
+ * @returns Le righe.
+ */
+const righeMisureFoto = (contesto: ContestoPrompt): string[] => {
+  const righe: string[] = [];
+  const { proporzioni, visibilita } = contesto;
+  if (proporzioni !== undefined) {
+    righe.push(
+      `Proportions measured on the photo, without perspective correction (reliability ${numero(proporzioni.affidabilita)}; the product is the union of ${proporzioni.parti} part boxes): ${proporzioni.rapporti
+        .map((rapporto) => `${nomeRapporto.get(rapporto.chiave) ?? rapporto.chiave} = ${numero(rapporto.valore)}`)
+        .join('; ')}. Use them only where nothing better is readable, with \`fonte: "proporzione"\`; a low reliability means a perspective or a partial framing.`,
+    );
+  }
+  if (visibilita?.stato === 'parziale') {
+    righe.push(
+      `The part is only partly visible in the photo (${visibilita.motivi.map((motivo) => motivoVisibilita.get(motivo) ?? motivo).join(', ') || 'partial'}): what cannot be seen stays a hypothesis, with a low confidence.`,
+    );
+  } else if (visibilita?.stato === 'intera') {
+    righe.push('The part is whole in the photo.');
+  }
+  return righe;
+};
+
+/**
+ * Il testo dell'utente: la parte, il tipo e il vincolo, la scala nota e come leggere le immagini. Dalla v3 anche le
+ * viste generate, le proporzioni e la visibilità, solo se ci sono: senza, il testo è quello della v2.
  * @param contesto - Il contesto della richiesta.
  * @returns Il testo (dopo le immagini nel messaggio).
  * @public
  */
 export function testoUtente(contesto: ContestoPrompt): string {
+  const ordine = ordineDelContesto(contesto);
+  const numeroDi = (immagine: ImmagineDellaRichiesta): number => ordine.indexOf(immagine) + 1;
   const parte = [
     `Part to recognise: «${contesto.etichetta}» (name: ${contesto.nome}`,
     contesto.materiale ? `; material: ${contesto.materiale}` : '',
@@ -364,8 +562,10 @@ export function testoUtente(contesto: ContestoPrompt): string {
     scala,
     maschera,
     `Picture 1: the part cropped (its box + 15 %), long side 1024 px, the mask outline drawn in red.${contesto.fattoreRitaglio === undefined ? '' : ` Scale factor of the crop: ${numero(contesto.fattoreRitaglio)} crop px per original px.`} Picture 2: the whole picture reduced to 512 px, the part's box highlighted.`,
+    ...righeVisteGenerate(contesto.viste, numeroDi),
+    ...righeMisureFoto(contesto),
     contesto.rientro
-      ? 'Picture 3: the silhouette of the model built from your previous answer (red) over the mask (blue) does not match: is the family, the variant or the view wrong? Answer again from scratch.'
+      ? `Picture ${numeroDi('differenza')}: the silhouette of the model built from your previous answer (red) over the mask (blue) does not match: is the family, the variant or the view wrong? Answer again from scratch.`
       : '',
     `Write \`motivo\`, \`domande.motivo\` and \`note\` in ${contesto.lingua === 'it' ? 'Italian' : 'English'}.`,
   ]
@@ -380,14 +580,15 @@ export type PromptRiconoscimento = { sistema: [string, string]; utente: string; 
  * Il prompt del classificatore per una scheda della parte: regole, schede delle famiglie ammesse, testo dell'utente.
  * @param scheda - La scheda della parte.
  * @param contratto - Catalogo e tabelle dei tipi.
- * @param opzioni - Lingua dei motivi, fattore del ritaglio, rientro dopo la verifica.
+ * @param opzioni - Lingua dei motivi, fattore del ritaglio, rientro dopo la verifica e, dalla v3, il contesto (viste
+ *   generate, proporzioni, visibilità). Il sistema non cambia mai: la cache del prompt resta.
  * @returns Il prompt e le famiglie descritte.
  * @public
  */
 export function promptRiconoscimento(
   scheda: SchedaParteMinima,
   contratto: Pick<ContrattoRiconoscimento, 'famiglie' | 'mappaPartType' | 'mappaLibreria'>,
-  opzioni: { lingua: 'it' | 'en'; fattoreRitaglio?: number; rientro?: boolean },
+  opzioni: OpzioniPrompt,
 ): PromptRiconoscimento {
   const vincolo = risolviFamiglia(scheda.tipo, contratto);
   const famiglie = famiglieDelPrompt(vincolo, contratto);

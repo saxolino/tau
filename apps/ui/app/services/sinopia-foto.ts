@@ -201,7 +201,7 @@ export async function generaFotoCampione(
 }
 
 /** The `credit_costs` rows of SinopiaCAD. */
-export const prezziCad = ['cad_photo', 'cad_photo_fedele', 'cad_recognize'] as const;
+export const prezziCad = ['cad_photo', 'cad_photo_fedele', 'cad_recognize', 'cad_part_view'] as const;
 export type PrezzoCad = (typeof prezziCad)[number];
 
 /* eslint-disable @typescript-eslint/naming-convention -- These validation objects describe Supabase wire column names verbatim. */

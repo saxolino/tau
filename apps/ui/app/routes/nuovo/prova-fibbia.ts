@@ -129,3 +129,64 @@ export async function caricaProvaFibbia(): Promise<ParteCaricata> {
     mascheraPng: await sagoma.convertToBlob({ type: 'image/png' }),
   };
 }
+
+// ─── Viste generate di prova (piano «viste ortogonali») ──────────────────────────────────────────────────────────
+
+/** Pixel per mm delle viste di prova: un'altra inquadratura della foto, come fa il generatore. */
+const pxPerMmVista = 16;
+const mmVista = (valore: number): number => Math.round(valore * pxPerMmVista);
+
+/** Le due viste di prova e la faccia che ciascuna guarda (quelle della tabella della fibbia). */
+export type VisteDiProva = Readonly<{
+  principale: Readonly<{ immagine: Blob; faccia: 'sopra' }>;
+  controllo: Readonly<{ immagine: Blob; faccia: 'fianco_esterno' }>;
+}>;
+
+/**
+ * Le viste piatte della fibbia di prova, disegnate dai suoi parametri registrati come le darebbe il generatore: la
+ * parte sola, in ottone pieno, su fondo bianco uniforme, senza ombra. La principale guarda la faccia (`sopra`: il
+ * telaio con la luce e l'ardiglione), il controllo il bordo (`fianco_esterno`: lo spessore del telaio). `diversa`
+ * disegna la principale con la luce più lunga di 10 mm: una vista che inventa, per vedere «non corrisponde».
+ *
+ * @param opzioni - `diversa`: la vista principale che non combacia con la foto.
+ * @returns Le due viste in PNG.
+ */
+export async function visteProvaFibbia(opzioni: Readonly<{ diversa?: boolean }> = {}): Promise<VisteDiProva> {
+  const ottonePieno = '#a8843a';
+  const principale = new OffscreenCanvas(lato, lato);
+  const contesto = principale.getContext('2d')!;
+  contesto.fillStyle = '#ffffff';
+  contesto.fillRect(0, 0, lato, lato);
+  const altezzaLuce = opzioni.diversa ? 30 : 20;
+  const luce = {
+    x: centro - mmVista(7),
+    y: centro - mmVista(altezzaLuce / 2),
+    w: mmVista(14),
+    h: mmVista(altezzaLuce),
+    r: mmVista(2.5),
+  };
+  const bordo = mmVista(3.4);
+  contesto.fillStyle = ottonePieno;
+  contesto.beginPath();
+  contesto.roundRect(luce.x - bordo, luce.y - bordo, luce.w + 2 * bordo, luce.h + 2 * bordo, luce.r + bordo);
+  contesto.roundRect(luce.x, luce.y, luce.w, luce.h, luce.r);
+  contesto.fill('evenodd');
+  contesto.beginPath();
+  contesto.roundRect(centro - mmVista(8.7), centro - mmVista(1.1), mmVista(8.7 + 9.7), mmVista(2.2), mmVista(1.1));
+  contesto.fill();
+  const controllo = new OffscreenCanvas(lato, lato);
+  const contestoControllo = controllo.getContext('2d')!;
+  contestoControllo.fillStyle = '#ffffff';
+  contestoControllo.fillRect(0, 0, lato, lato);
+  // Di taglio: il telaio è lungo quanto la luce più due sezioni lungo la cinghia, spesso 2,4 mm.
+  const lungo = mmVista(20 + 2 * 3.4);
+  const spesso = mmVista(2.4);
+  contestoControllo.fillStyle = ottonePieno;
+  contestoControllo.beginPath();
+  contestoControllo.roundRect(centro - lungo / 2, centro - spesso / 2, lungo, spesso, spesso / 2);
+  contestoControllo.fill();
+  return {
+    principale: { immagine: await principale.convertToBlob({ type: 'image/png' }), faccia: 'sopra' },
+    controllo: { immagine: await controllo.convertToBlob({ type: 'image/png' }), faccia: 'fianco_esterno' },
+  };
+}

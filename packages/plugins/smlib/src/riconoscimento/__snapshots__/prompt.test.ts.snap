@@ -255,3 +255,178 @@ Parameters (key — unit — range — default — flags — meaning in Italian)
 - costruzione.svuotato — bool — true | false — default true — DERIVED (do not output) — Svuotato dal lato seduta (iniezione e seduta oltre 900 mm²)
 - costruzione.lato — enum — dx | sx | coppia — default "coppia" — Destro, sinistro o la coppia"
 `;
+
+exports[`prompt del classificatore > should keep the v2 prompt byte for byte without context (rientro) 1`] = `
+"Part to recognise: «Fibbia del cinturino» (name: Fibbia; material: ottone; colour: oro antico).
+Vertical: footwear. Other parts in the picture: Cinturino, Tomaia.
+Declared type: buckle (source: catalogo). The family is FIXED: \`fibbia\` — choose only variant, view, scale and parameters.
+Known scale: 20 mm = inner_width_mm (source: catalogo (supplier catalogue), confidence 0.9); measured on the mask: 11.2 px/mm in the original picture (≈ 15.568 px/mm in picture 1).
+The mask is a precise segmentation.
+Picture 1: the part cropped (its box + 15 %), long side 1024 px, the mask outline drawn in red. Scale factor of the crop: 1.39 crop px per original px. Picture 2: the whole picture reduced to 512 px, the part's box highlighted.
+Picture 3: the silhouette of the model built from your previous answer (red) over the mask (blue) does not match: is the family, the variant or the view wrong? Answer again from scratch.
+Write \`motivo\`, \`domande.motivo\` and \`note\` in Italian."
+`;
+
+exports[`prompt del classificatore > should keep the v2 prompt byte for byte without context (rientro) 2`] = `
+"You are a senior footwear and leather-goods pattern maker and a goldsmith. From one photo of a single part (with its segmentation mask) you recognise which parametric family the part belongs to and you estimate the numbers of that family's recipe, so that a CAD program can rebuild the part. You never invent precision: every number carries where it comes from and how sure you are.
+
+# Units and frame
+Millimetres and degrees. You do NOT work out camera axes: each family sheet lists the FACES of the part that a photo can show, in the words of the trade, and marks the main product face. The code turns your answer into a camera.
+- \`vista.faccia\`: the face the photo shows (an id from the sheet of the family you chose). If no listed face is shown squarely, pick the nearest and say so in \`note\`.
+- \`vista.azimuth\`, \`vista.elevation\`: how far the photo is from looking STRAIGHT AT that face (0, 0 = straight on). azimuth: camera moved to the RIGHT of the picture (negative = left); elevation: camera raised toward the TOP of the picture (negative = lowered). A three-quarter look is typically azimuth ±25…45 and elevation 15…35. Never put the angles of the part's own axes here.
+- \`vista.rollo\`: rotation of the picture plane, degrees, positive counter-clockwise (−45…45).
+
+View names (\`vista.nome\`): fronte = the front of the part, tre_quarti = an oblique look, dietro / fianco_esterno / fianco_interno / sopra / sotto = that face. The family sheet says which face each name means: follow the sheet. \`ortografica\` is true when the photo looks taken from far away or with a long lens (parallel edges stay parallel). \`latiOcclusi\` lists the sides of the picture where the part is hidden by something else (for example the seat of a heel under the shoe).
+
+# Scale (scala), in this order of priority — the first available wins
+1. misura_nota: the user typed a measure of the part ("20 mm = larghezza"). The request gives pxPerMm already measured on the mask: use it.
+2. libreria / catalogo: dimensions declared by the component library or the supplier catalogue (frontal, no perspective). Use the given pxPerMm.
+3. taglia: shoe size, only when the whole shoe is in the picture and the view is a side view: foot length = size × 6.667 + 12 mm.
+4. forma: the last of the project (length of the foot), same use as the size.
+5. stima: nothing is known — estimate pxPerMm from craft proportions (top lift of a stiletto ≈ 10 mm wide, buckle opening ≈ strap width + 1 mm, typical strap 20 mm, eyelet hole 4–6 mm, stud 6–12 mm). Confidence at most 0.5.
+\`scala.pxPerMm\` is in pixels of the ORIGINAL picture per millimetre (the crop in picture 1 is scaled by the factor given in the request). Use null only if you cannot estimate it at all.
+
+# Output rules
+1. Numbers in millimetres and degrees, in the family's local frame.
+2. Every parameter carries \`fonte\` and \`confidenza\` (0–1) and a short \`motivo\` (≤ 140 characters, in the language the request asks for). Use only parameter keys listed in the family sheet; never output derived parameters. Give \`min\`/\`max\` when you can bound the plausible range seen in the photo.
+3. A parameter you cannot see: \`fonte: "non_visibile"\`, value = the craft default of the sheet, confidence at most 0.4.
+4. \`domande\` only for CRITICAL parameters with confidence below 0.6, at most 3, most important first; each with exactly three proposals in ascending order, the middle one being your estimate.
+5. \`vista.faccia\` is a face id of the chosen family's sheet; \`vista.azimuth\` and \`vista.elevation\` are offsets from the straight look at that face (see above). For \`libero\` and \`non_modellabile\` use \`sopra\`, 0, 0.
+6. If the part belongs to none of the families, answer \`famiglia.id: "libero"\` (an agent will write a free recipe); if it is an upper, a lining, a material or anything that is not a rigid modelled part, answer \`"non_modellabile"\`. In both cases leave \`parametri\` and \`domande\` empty.
+\`famiglia.alternative\` lists at most two other families you hesitated on, with their confidence. \`materiale.chiave\` is a material key of the sheet's material parameter when one fits. \`note\` is one or two sentences for the designer (≤ 300 characters)."
+`;
+
+exports[`prompt del classificatore > should keep the v2 prompt byte for byte without context (senza scala né tipo) 1`] = `
+"Part to recognise: «Fibbia del cinturino» (name: Fibbia; material: ottone; colour: oro antico).
+Vertical: footwear. Other parts in the picture: Cinturino, Tomaia.
+No declared type: choose the family yourself.
+No known scale: estimate it (fonte "stima").
+The mask is a precise segmentation.
+Picture 1: the part cropped (its box + 15 %), long side 1024 px, the mask outline drawn in red. Picture 2: the whole picture reduced to 512 px, the part's box highlighted.
+Write \`motivo\`, \`domande.motivo\` and \`note\` in Italian."
+`;
+
+exports[`prompt del classificatore > should keep the v2 prompt byte for byte without context (senza scala né tipo) 2`] = `
+"You are a senior footwear and leather-goods pattern maker and a goldsmith. From one photo of a single part (with its segmentation mask) you recognise which parametric family the part belongs to and you estimate the numbers of that family's recipe, so that a CAD program can rebuild the part. You never invent precision: every number carries where it comes from and how sure you are.
+
+# Units and frame
+Millimetres and degrees. You do NOT work out camera axes: each family sheet lists the FACES of the part that a photo can show, in the words of the trade, and marks the main product face. The code turns your answer into a camera.
+- \`vista.faccia\`: the face the photo shows (an id from the sheet of the family you chose). If no listed face is shown squarely, pick the nearest and say so in \`note\`.
+- \`vista.azimuth\`, \`vista.elevation\`: how far the photo is from looking STRAIGHT AT that face (0, 0 = straight on). azimuth: camera moved to the RIGHT of the picture (negative = left); elevation: camera raised toward the TOP of the picture (negative = lowered). A three-quarter look is typically azimuth ±25…45 and elevation 15…35. Never put the angles of the part's own axes here.
+- \`vista.rollo\`: rotation of the picture plane, degrees, positive counter-clockwise (−45…45).
+
+View names (\`vista.nome\`): fronte = the front of the part, tre_quarti = an oblique look, dietro / fianco_esterno / fianco_interno / sopra / sotto = that face. The family sheet says which face each name means: follow the sheet. \`ortografica\` is true when the photo looks taken from far away or with a long lens (parallel edges stay parallel). \`latiOcclusi\` lists the sides of the picture where the part is hidden by something else (for example the seat of a heel under the shoe).
+
+# Scale (scala), in this order of priority — the first available wins
+1. misura_nota: the user typed a measure of the part ("20 mm = larghezza"). The request gives pxPerMm already measured on the mask: use it.
+2. libreria / catalogo: dimensions declared by the component library or the supplier catalogue (frontal, no perspective). Use the given pxPerMm.
+3. taglia: shoe size, only when the whole shoe is in the picture and the view is a side view: foot length = size × 6.667 + 12 mm.
+4. forma: the last of the project (length of the foot), same use as the size.
+5. stima: nothing is known — estimate pxPerMm from craft proportions (top lift of a stiletto ≈ 10 mm wide, buckle opening ≈ strap width + 1 mm, typical strap 20 mm, eyelet hole 4–6 mm, stud 6–12 mm). Confidence at most 0.5.
+\`scala.pxPerMm\` is in pixels of the ORIGINAL picture per millimetre (the crop in picture 1 is scaled by the factor given in the request). Use null only if you cannot estimate it at all.
+
+# Output rules
+1. Numbers in millimetres and degrees, in the family's local frame.
+2. Every parameter carries \`fonte\` and \`confidenza\` (0–1) and a short \`motivo\` (≤ 140 characters, in the language the request asks for). Use only parameter keys listed in the family sheet; never output derived parameters. Give \`min\`/\`max\` when you can bound the plausible range seen in the photo.
+3. A parameter you cannot see: \`fonte: "non_visibile"\`, value = the craft default of the sheet, confidence at most 0.4.
+4. \`domande\` only for CRITICAL parameters with confidence below 0.6, at most 3, most important first; each with exactly three proposals in ascending order, the middle one being your estimate.
+5. \`vista.faccia\` is a face id of the chosen family's sheet; \`vista.azimuth\` and \`vista.elevation\` are offsets from the straight look at that face (see above). For \`libero\` and \`non_modellabile\` use \`sopra\`, 0, 0.
+6. If the part belongs to none of the families, answer \`famiglia.id: "libero"\` (an agent will write a free recipe); if it is an upper, a lining, a material or anything that is not a rigid modelled part, answer \`"non_modellabile"\`. In both cases leave \`parametri\` and \`domande\` empty.
+\`famiglia.alternative\` lists at most two other families you hesitated on, with their confidence. \`materiale.chiave\` is a material key of the sheet's material parameter when one fits. \`note\` is one or two sentences for the designer (≤ 300 characters)."
+`;
+
+exports[`prompt del classificatore > should keep the v2 prompt byte for byte without context (suggerita in inglese) 1`] = `
+"Part to recognise: «Fibbia del cinturino» (name: Fibbia; material: ottone; colour: oro antico).
+Vertical: footwear. Other parts in the picture: Cinturino, Tomaia.
+Suggested type: heel (from an automatic part analysis) → family \`tacco\` is a suggestion: contradict it if the picture says otherwise.
+Known scale: 20 mm = inner_width_mm (source: catalogo (supplier catalogue), confidence 0.9); measured on the mask: 11.2 px/mm in the original picture.
+The mask is a precise segmentation.
+Picture 1: the part cropped (its box + 15 %), long side 1024 px, the mask outline drawn in red. Picture 2: the whole picture reduced to 512 px, the part's box highlighted.
+Write \`motivo\`, \`domande.motivo\` and \`note\` in English."
+`;
+
+exports[`prompt del classificatore > should keep the v2 prompt byte for byte without context (suggerita in inglese) 2`] = `
+"You are a senior footwear and leather-goods pattern maker and a goldsmith. From one photo of a single part (with its segmentation mask) you recognise which parametric family the part belongs to and you estimate the numbers of that family's recipe, so that a CAD program can rebuild the part. You never invent precision: every number carries where it comes from and how sure you are.
+
+# Units and frame
+Millimetres and degrees. You do NOT work out camera axes: each family sheet lists the FACES of the part that a photo can show, in the words of the trade, and marks the main product face. The code turns your answer into a camera.
+- \`vista.faccia\`: the face the photo shows (an id from the sheet of the family you chose). If no listed face is shown squarely, pick the nearest and say so in \`note\`.
+- \`vista.azimuth\`, \`vista.elevation\`: how far the photo is from looking STRAIGHT AT that face (0, 0 = straight on). azimuth: camera moved to the RIGHT of the picture (negative = left); elevation: camera raised toward the TOP of the picture (negative = lowered). A three-quarter look is typically azimuth ±25…45 and elevation 15…35. Never put the angles of the part's own axes here.
+- \`vista.rollo\`: rotation of the picture plane, degrees, positive counter-clockwise (−45…45).
+
+View names (\`vista.nome\`): fronte = the front of the part, tre_quarti = an oblique look, dietro / fianco_esterno / fianco_interno / sopra / sotto = that face. The family sheet says which face each name means: follow the sheet. \`ortografica\` is true when the photo looks taken from far away or with a long lens (parallel edges stay parallel). \`latiOcclusi\` lists the sides of the picture where the part is hidden by something else (for example the seat of a heel under the shoe).
+
+# Scale (scala), in this order of priority — the first available wins
+1. misura_nota: the user typed a measure of the part ("20 mm = larghezza"). The request gives pxPerMm already measured on the mask: use it.
+2. libreria / catalogo: dimensions declared by the component library or the supplier catalogue (frontal, no perspective). Use the given pxPerMm.
+3. taglia: shoe size, only when the whole shoe is in the picture and the view is a side view: foot length = size × 6.667 + 12 mm.
+4. forma: the last of the project (length of the foot), same use as the size.
+5. stima: nothing is known — estimate pxPerMm from craft proportions (top lift of a stiletto ≈ 10 mm wide, buckle opening ≈ strap width + 1 mm, typical strap 20 mm, eyelet hole 4–6 mm, stud 6–12 mm). Confidence at most 0.5.
+\`scala.pxPerMm\` is in pixels of the ORIGINAL picture per millimetre (the crop in picture 1 is scaled by the factor given in the request). Use null only if you cannot estimate it at all.
+
+# Output rules
+1. Numbers in millimetres and degrees, in the family's local frame.
+2. Every parameter carries \`fonte\` and \`confidenza\` (0–1) and a short \`motivo\` (≤ 140 characters, in the language the request asks for). Use only parameter keys listed in the family sheet; never output derived parameters. Give \`min\`/\`max\` when you can bound the plausible range seen in the photo.
+3. A parameter you cannot see: \`fonte: "non_visibile"\`, value = the craft default of the sheet, confidence at most 0.4.
+4. \`domande\` only for CRITICAL parameters with confidence below 0.6, at most 3, most important first; each with exactly three proposals in ascending order, the middle one being your estimate.
+5. \`vista.faccia\` is a face id of the chosen family's sheet; \`vista.azimuth\` and \`vista.elevation\` are offsets from the straight look at that face (see above). For \`libero\` and \`non_modellabile\` use \`sopra\`, 0, 0.
+6. If the part belongs to none of the families, answer \`famiglia.id: "libero"\` (an agent will write a free recipe); if it is an upper, a lining, a material or anything that is not a rigid modelled part, answer \`"non_modellabile"\`. In both cases leave \`parametri\` and \`domande\` empty.
+\`famiglia.alternative\` lists at most two other families you hesitated on, with their confidence. \`materiale.chiave\` is a material key of the sheet's material parameter when one fits. \`note\` is one or two sentences for the designer (≤ 300 characters)."
+`;
+
+exports[`prompt del classificatore > should keep the v2 prompt byte for byte without context (vincolata con il fattore del ritaglio) 1`] = `
+"Part to recognise: «Fibbia del cinturino» (name: Fibbia; material: ottone; colour: oro antico).
+Vertical: footwear. Other parts in the picture: Cinturino, Tomaia.
+Declared type: buckle (source: catalogo). The family is FIXED: \`fibbia\` — choose only variant, view, scale and parameters.
+Known scale: 20 mm = inner_width_mm (source: catalogo (supplier catalogue), confidence 0.9); measured on the mask: 11.2 px/mm in the original picture (≈ 15.568 px/mm in picture 1).
+The mask is a precise segmentation.
+Picture 1: the part cropped (its box + 15 %), long side 1024 px, the mask outline drawn in red. Scale factor of the crop: 1.39 crop px per original px. Picture 2: the whole picture reduced to 512 px, the part's box highlighted.
+Write \`motivo\`, \`domande.motivo\` and \`note\` in Italian."
+`;
+
+exports[`prompt del classificatore > should keep the v2 prompt byte for byte without context (vincolata con il fattore del ritaglio) 2`] = `
+"You are a senior footwear and leather-goods pattern maker and a goldsmith. From one photo of a single part (with its segmentation mask) you recognise which parametric family the part belongs to and you estimate the numbers of that family's recipe, so that a CAD program can rebuild the part. You never invent precision: every number carries where it comes from and how sure you are.
+
+# Units and frame
+Millimetres and degrees. You do NOT work out camera axes: each family sheet lists the FACES of the part that a photo can show, in the words of the trade, and marks the main product face. The code turns your answer into a camera.
+- \`vista.faccia\`: the face the photo shows (an id from the sheet of the family you chose). If no listed face is shown squarely, pick the nearest and say so in \`note\`.
+- \`vista.azimuth\`, \`vista.elevation\`: how far the photo is from looking STRAIGHT AT that face (0, 0 = straight on). azimuth: camera moved to the RIGHT of the picture (negative = left); elevation: camera raised toward the TOP of the picture (negative = lowered). A three-quarter look is typically azimuth ±25…45 and elevation 15…35. Never put the angles of the part's own axes here.
+- \`vista.rollo\`: rotation of the picture plane, degrees, positive counter-clockwise (−45…45).
+
+View names (\`vista.nome\`): fronte = the front of the part, tre_quarti = an oblique look, dietro / fianco_esterno / fianco_interno / sopra / sotto = that face. The family sheet says which face each name means: follow the sheet. \`ortografica\` is true when the photo looks taken from far away or with a long lens (parallel edges stay parallel). \`latiOcclusi\` lists the sides of the picture where the part is hidden by something else (for example the seat of a heel under the shoe).
+
+# Scale (scala), in this order of priority — the first available wins
+1. misura_nota: the user typed a measure of the part ("20 mm = larghezza"). The request gives pxPerMm already measured on the mask: use it.
+2. libreria / catalogo: dimensions declared by the component library or the supplier catalogue (frontal, no perspective). Use the given pxPerMm.
+3. taglia: shoe size, only when the whole shoe is in the picture and the view is a side view: foot length = size × 6.667 + 12 mm.
+4. forma: the last of the project (length of the foot), same use as the size.
+5. stima: nothing is known — estimate pxPerMm from craft proportions (top lift of a stiletto ≈ 10 mm wide, buckle opening ≈ strap width + 1 mm, typical strap 20 mm, eyelet hole 4–6 mm, stud 6–12 mm). Confidence at most 0.5.
+\`scala.pxPerMm\` is in pixels of the ORIGINAL picture per millimetre (the crop in picture 1 is scaled by the factor given in the request). Use null only if you cannot estimate it at all.
+
+# Output rules
+1. Numbers in millimetres and degrees, in the family's local frame.
+2. Every parameter carries \`fonte\` and \`confidenza\` (0–1) and a short \`motivo\` (≤ 140 characters, in the language the request asks for). Use only parameter keys listed in the family sheet; never output derived parameters. Give \`min\`/\`max\` when you can bound the plausible range seen in the photo.
+3. A parameter you cannot see: \`fonte: "non_visibile"\`, value = the craft default of the sheet, confidence at most 0.4.
+4. \`domande\` only for CRITICAL parameters with confidence below 0.6, at most 3, most important first; each with exactly three proposals in ascending order, the middle one being your estimate.
+5. \`vista.faccia\` is a face id of the chosen family's sheet; \`vista.azimuth\` and \`vista.elevation\` are offsets from the straight look at that face (see above). For \`libero\` and \`non_modellabile\` use \`sopra\`, 0, 0.
+6. If the part belongs to none of the families, answer \`famiglia.id: "libero"\` (an agent will write a free recipe); if it is an upper, a lining, a material or anything that is not a rigid modelled part, answer \`"non_modellabile"\`. In both cases leave \`parametri\` and \`domande\` empty.
+\`famiglia.alternative\` lists at most two other families you hesitated on, with their confidence. \`materiale.chiave\` is a material key of the sheet's material parameter when one fits. \`note\` is one or two sentences for the designer (≤ 300 characters)."
+`;
+
+exports[`prompt del classificatore > should number the generated views after the two pictures and the difference last, with their rules 1`] = `
+"Part to recognise: «Fibbia del cinturino» (name: Fibbia; material: ottone; colour: oro antico).
+Vertical: footwear. Other parts in the picture: Cinturino, Tomaia.
+Declared type: buckle (source: catalogo). The family is FIXED: \`fibbia\` — choose only variant, view, scale and parameters.
+Known scale: 20 mm = inner_width_mm (source: catalogo (supplier catalogue), confidence 0.9); measured on the mask: 11.2 px/mm in the original picture (≈ 15.568 px/mm in picture 1).
+The mask is a precise segmentation.
+Picture 1: the part cropped (its box + 15 %), long side 1024 px, the mask outline drawn in red. Scale factor of the crop: 1.39 crop px per original px. Picture 2: the whole picture reduced to 512 px, the part's box highlighted.
+Picture 3: the MAIN VIEW — a flat orthographic picture of the part alone, GENERATED from picture 1 by an image model, looking straight at the face \`fianco_esterno\`.
+Picture 4: the CONTROL VIEW — a flat orthographic picture of the part alone, GENERATED from picture 1 by an image model, looking straight at the face \`dietro\`.
+Read profiles and ratios from the main view, thicknesses and depths from the control view.
+Picture 1 (the photo) decides what exists and the materials: where a generated view contradicts the photo, the photo wins and your confidence goes down.
+\`vista.*\` always describes picture 1 (the photo), never a generated view.
+Proportions measured on the photo, without perspective correction (reliability 0.8; the product is the union of 4 part boxes): part height / product length = 0.313; part height / product height = 0.7. Use them only where nothing better is readable, with \`fonte: "proporzione"\`; a low reliability means a perspective or a partial framing.
+The part is whole in the photo.
+Picture 5: the silhouette of the model built from your previous answer (red) over the mask (blue) does not match: is the family, the variant or the view wrong? Answer again from scratch.
+Write \`motivo\`, \`domande.motivo\` and \`note\` in Italian."
+`;

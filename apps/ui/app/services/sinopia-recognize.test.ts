@@ -1,7 +1,11 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
+import { base64ToUint8Array } from 'uint8array-extras';
 import { schedaParteDiProva, schedaRiconoscimentoDiProva } from '@taucad/smlib/riconoscimento';
+import type { MisureFoto } from '@taucad/smlib/riconoscimento';
 import { ErroreRiconoscimento, riconosciParte, riconoscimentoRegistrato } from '#services/sinopia-recognize.js';
+import type { VistaPerRiconoscimento } from '#services/sinopia-recognize.js';
+import { mascheraDellaVista, svuotaFori, vistaPerRiconoscimento } from '#services/riconoscimento-immagini.js';
 import type { ImmaginiRiconoscimento } from '#services/riconoscimento-immagini.js';
 
 vi.mock('#environment.config.js', () => ({
@@ -11,6 +15,7 @@ vi.mock('#lib/sinopia-data-client.js', () => ({
   requireSinopiaUser: async () => ({ userId: 'u', token: 'jwt-of-the-user' }),
 }));
 vi.mock('#services/sinopia-foto.js', () => ({ leggiPrezziCad: async () => ({ cad_recognize: 2 }) }));
+vi.mock('#lib/sinopia-session.js', () => ({ readSinopiaConfig: () => undefined }));
 
 const immagini: ImmaginiRiconoscimento = {
   ritaglio: { mediaType: 'image/jpeg', data: '/9j/4AAQ' },
@@ -93,6 +98,14 @@ describe('client of /v1/recognize', () => {
         ),
       }),
     ).rejects.toMatchObject({ codice: 'BILLING_ACCOUNT_RESTRICTED' });
+    // The body with the views can be too large: the page offers the photo alone instead of a dead end.
+    await expect(
+      riconosciParte(richiesta, {
+        fetch: risponde(
+          Response.json({ error: { type: 'REQUEST_TOO_LARGE', message: 'troppo grande' } }, { status: 413 }),
+        ),
+      }),
+    ).rejects.toMatchObject({ codice: 'REQUEST_TOO_LARGE', stato: 413 });
     const rotta = {
       ...riconoscimentoRegistrato(),
       scheda: { ...schedaRiconoscimentoDiProva, famiglia: { id: 'scarpa' } },
@@ -130,5 +143,166 @@ describe('client of /v1/recognize', () => {
     await riconosciParte(richiesta, { fetch: legge });
     expect(corpo['maxCreditCost']).toBe(2);
     expect(corpo['requestId']).toMatch(/^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/u);
+  });
+});
+
+describe('recognition with the generated views (contract v3)', () => {
+  const principale: VistaPerRiconoscimento = {
+    ruolo: 'principale',
+    faccia: 'sopra',
+    mediaType: 'image/png',
+    data: 'iVBORw0KGgo=',
+  };
+  const controllo: VistaPerRiconoscimento = {
+    ruolo: 'controllo',
+    faccia: 'fianco_esterno',
+    mediaType: 'image/webp',
+    data: 'UklGRg==',
+  };
+  const misure: MisureFoto = {
+    proporzioni: {
+      rapporti: [{ chiave: 'altezza_su_lunghezza', valore: 0.2 }],
+      affidabilita: 0.8,
+      parti: 3,
+    },
+    visibilita: { stato: 'intera', motivi: [] },
+  };
+  const leggiCorpo = (risposta: unknown) => {
+    const corpi: Array<Record<string, unknown>> = [];
+    const fetch = vi.fn(async (_url: string, init?: RequestInit) => {
+      corpi.push(JSON.parse(init!.body as string) as Record<string, unknown>);
+      return Response.json(risposta);
+    }) as unknown as typeof globalThis.fetch;
+    return { corpi, fetch };
+  };
+
+  it('should send both views after the two pictures, with their roles in the context and version 3', async () => {
+    const { corpi, fetch } = leggiCorpo({ ...riconoscimentoRegistrato(), versione: 3 });
+    const esito = await riconosciParte(
+      { schedaParte: schedaParteDiProva, immagini, lingua: 'it', viste: [controllo, principale], misure },
+      { fetch, prezzo: async () => 2, requestId: '77777777-7777-4777-8777-777777777777' },
+    );
+    expect(corpi[0]).toStrictEqual({
+      requestId: '77777777-7777-4777-8777-777777777777',
+      maxCreditCost: 2,
+      schedaParte: schedaParteDiProva,
+      immagini: {
+        ritaglio: immagini.ritaglio,
+        intera: immagini.intera,
+        principale: { mediaType: 'image/png', data: 'iVBORw0KGgo=' },
+        controllo: { mediaType: 'image/webp', data: 'UklGRg==' },
+      },
+      fattoreRitaglio: 1.39,
+      lingua: 'it',
+      versioneContratto: 3,
+      contesto: {
+        versione: 1,
+        proporzioni: misure.proporzioni,
+        visibilita: misure.visibilita,
+        viste: [
+          { ruolo: 'controllo', faccia: 'fianco_esterno' },
+          { ruolo: 'principale', faccia: 'sopra' },
+        ],
+      },
+    });
+    expect(esito.versione).toBe(3);
+    expect(esito.visteUsate).toBe(true);
+  });
+
+  it('should accept the v2 answer of a function not yet updated and mark the views as not used', async () => {
+    const { fetch } = leggiCorpo(riconoscimentoRegistrato());
+    const esito = await riconosciParte(
+      { schedaParte: schedaParteDiProva, immagini, lingua: 'it', viste: [principale] },
+      { fetch, prezzo: async () => 2 },
+    );
+    expect(esito.versione).toBe(2);
+    expect(esito.visteUsate).toBe(false);
+  });
+
+  it('should keep today’s v2 body without views and measures', async () => {
+    const { corpi, fetch } = leggiCorpo(riconoscimentoRegistrato());
+    const esito = await riconosciParte(
+      { schedaParte: schedaParteDiProva, immagini, lingua: 'en', viste: [] },
+      { fetch, prezzo: async () => 2, requestId: '88888888-8888-4888-8888-888888888888' },
+    );
+    expect(Object.keys(corpi[0]!).toSorted()).toStrictEqual(
+      ['fattoreRitaglio', 'immagini', 'lingua', 'maxCreditCost', 'requestId', 'schedaParte'].toSorted(),
+    );
+    expect(esito).not.toHaveProperty('visteUsate');
+  });
+
+  it('should send the bytes of a view exactly as they were downloaded', async () => {
+    const byte = Uint8Array.from({ length: 300 }, (_valore, indice) => (indice * 37) % 256);
+    const vista = await vistaPerRiconoscimento(new Blob([byte], { type: 'image/png' }), 'principale', 'sopra');
+    expect(vista.mediaType).toBe('image/png');
+    expect(base64ToUint8Array(vista.data)).toStrictEqual(byte);
+  });
+});
+
+describe('mask of a generated view', () => {
+  /** Un riquadro scuro al centro di un fondo bianco uniforme, 40 × 40 px. */
+  const pixelVista = (): Uint8ClampedArray => {
+    const rgba = new Uint8ClampedArray(40 * 40 * 4).fill(255);
+    for (let y = 12; y < 28; y++) {
+      for (let x = 8; x < 32; x++) {
+        rgba.set([40, 30, 20, 255], (y * 40 + x) * 4);
+      }
+    }
+    return rgba;
+  };
+
+  it('should cut the part out of the plain background for free, without asking SAM', async () => {
+    const segmenta = vi.fn(async () => new Blob([Uint8Array.of(9)]));
+    let accese = 0;
+    const maschera = await mascheraDellaVista(
+      new Blob([Uint8Array.of(1)], { type: 'image/png' }),
+      {
+        pixel: async () => ({ larghezza: 40, altezza: 40, rgba: pixelVista() }),
+        codificaMaschera: async (binaria) => {
+          accese = binaria.dati.reduce((somma, valore) => somma + valore, 0);
+          return new Blob([Uint8Array.of(0x89, 0x50)]);
+        },
+        segmenta,
+      },
+      'tacco',
+    );
+    expect(maschera?.origine).toBe('sfondo');
+    expect(maschera?.png).toStrictEqual(Uint8Array.of(0x89, 0x50));
+    expect(accese).toBe(16 * 24);
+    expect(segmenta).not.toHaveBeenCalled();
+  });
+
+  it('should open the hole of a buckle frame that shows the same plain background', () => {
+    // A 20 × 20 frame (x, y 10–29) on white with a 10 × 10 opening (x, y 15–24) of the same white.
+    const rgba = new Uint8ClampedArray(40 * 40 * 4).fill(255);
+    const dati = new Uint8Array(40 * 40);
+    for (let y = 10; y < 30; y++) {
+      for (let x = 10; x < 30; x++) {
+        dati[y * 40 + x] = 1;
+        if (!(x >= 15 && x < 25 && y >= 15 && y < 25)) {
+          rgba.set([120, 90, 40, 255], (y * 40 + x) * 4);
+        }
+      }
+    }
+    const maschera = svuotaFori({ larghezza: 40, altezza: 40, dati }, rgba);
+    expect(maschera.dati[20 * 40 + 20]).toBe(0);
+    expect(maschera.dati[12 * 40 + 12]).toBe(1);
+    expect(maschera.dati.reduce((somma, valore) => somma + valore, 0)).toBe(400 - 100);
+  });
+
+  it('should fall back on SAM when the background is not plain', async () => {
+    const rumore = Uint8ClampedArray.from({ length: 40 * 40 * 4 }, (_valore, indice) => (indice * 97) % 256);
+    const segmenta = vi.fn(async () => new Blob([Uint8Array.of(7, 7)]));
+    const maschera = await mascheraDellaVista(
+      new Blob([Uint8Array.of(1)]),
+      {
+        pixel: async () => ({ larghezza: 40, altezza: 40, rgba: rumore }),
+        codificaMaschera: async () => new Blob([]),
+        segmenta,
+      },
+      'tacco nero',
+    );
+    expect(segmenta).toHaveBeenCalledWith(expect.any(Blob), 'tacco nero');
+    expect(maschera).toStrictEqual({ png: Uint8Array.of(7, 7), origine: 'sam' });
   });
 });

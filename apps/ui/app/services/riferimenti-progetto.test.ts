@@ -63,6 +63,40 @@ describe('riferimentiDaFile', () => {
     ]);
   });
 
+  it('should put the generated views after the photo, main before control, with their role and face', () => {
+    const riferimenti = riferimentiDaFile(
+      [
+        'caricata.png',
+        'tacco.vista-controllo.webp',
+        'sinopia-3f2a9c1e.jpg',
+        'tacco.vista-principale.png',
+        'tacco.maschera.png',
+        'tacco.png',
+      ],
+      {
+        parte: { id: 'tacco', etichetta: 'Tacco' },
+        facceViste: { 'tacco.vista-principale.png': 'fianco_esterno', 'tacco.vista-controllo.webp': 'dietro' },
+        famiglia: 'tacco',
+      },
+    );
+    expect(riferimenti.map((riferimento) => [riferimento.percorso, riferimento.origine])).toStrictEqual([
+      ['riferimenti/tacco.png', 'foto'],
+      ['riferimenti/tacco.vista-principale.png', 'vista'],
+      ['riferimenti/tacco.vista-controllo.webp', 'vista'],
+      ['riferimenti/sinopia-3f2a9c1e.jpg', 'sinopia'],
+      ['riferimenti/caricata.png', 'caricata'],
+    ]);
+    expect(riferimenti[1]).toStrictEqual({
+      percorso: 'riferimenti/tacco.vista-principale.png',
+      tipo: 'image/png',
+      origine: 'vista',
+      vista: { ruolo: 'principale', faccia: 'fianco_esterno', famiglia: 'tacco' },
+    });
+    expect(riferimenti[2]?.vista).toStrictEqual({ ruolo: 'controllo', faccia: 'dietro', famiglia: 'tacco' });
+    // A view is never mistaken for the photo, and the mask is never a reference.
+    expect(riferimenti.some((riferimento) => riferimento.percorso.endsWith('.maschera.png'))).toBe(false);
+  });
+
   it('should return nothing for a folder without pictures', () => {
     expect(riferimentiDaFile(['misure.json', 'parte.maschera.png'])).toEqual([]);
   });

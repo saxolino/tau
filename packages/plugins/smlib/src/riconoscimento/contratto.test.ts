@@ -16,12 +16,13 @@ const impronta = (percorso: string): string => createHash('sha256').update(readF
  * condiviso.ts}`): lo stesso valore è scritto in `recognize.test.ts` di Sinopia. Se cambi uno dei due file, copia
  * entrambi in Sinopia e aggiorna le impronte nei DUE test.
  *
- * 29 ottobre 2026: tacco ricetta v2 (scheda della famiglia: descrizioni, seduta.inclinazione fino a 35°, predefiniti di
- * forma della seduta, vita e bombature). La copia in Sinopia va aggiornata con la funzione `sinopiacad`.
+ * 29 ottobre 2026: contratto v3 (viste ortogonali): `contesto` della richiesta (`schemaContesto`, `limitiContesto`),
+ * viste generate numerate da `ordineImmagini`, `famiglie[].viste.ortogonali`. L'uscita non cambia; senza contesto il
+ * prompt è quello della v2. La copia in Sinopia va aggiornata con la funzione `sinopiacad`.
  */
 const impronteGemelle = {
-  contratto: '2574d9b3aa6d43dc29f15df03b29ec5fcd3ec81bd8a7d230d571cbc9bb90e2c0',
-  condiviso: 'afd4b290524950152adc7ada94e872d35ada0b142f979d380ba1d6c37a58660e',
+  contratto: 'd7b4eb65c416181c459f3240f2d0bb8597fea59e6717f7f61c6bc9fb872802d5',
+  condiviso: '8acc38bed4fd76c2ce3c2091330cd3ed85620c8f9c2b5571966f9d50810972f5',
 };
 
 const vietate = [
@@ -104,6 +105,34 @@ describe('contratto del riconoscimento con la funzione di Sinopia', () => {
         expect(destino.famiglia === 'non_modellabile' || ricette.has(destino.famiglia), tipo).toBe(true);
       }
     }
+  });
+
+  it('should be version 3, with the context schema and the orthographic views of every family', () => {
+    const contratto = generaContratto();
+    expect(contratto.versione).toBe(3);
+    expect(contratto.schemaContesto.additionalProperties).toBe(false);
+    expect(Object.keys(contratto.schemaContesto.properties ?? {}).toSorted()).toStrictEqual([
+      'proporzioni',
+      'versione',
+      'visibilita',
+      'viste',
+    ]);
+    expect(contratto.limitiContesto).toContainEqual({
+      percorso: '/proporzioni/rapporti/*/valore',
+      exclusiveMinimum: 0,
+      maximum: 5,
+    });
+    for (const famiglia of contratto.famiglie) {
+      const facce = famiglia.viste.facce.map((faccia) => faccia.id);
+      expect(famiglia.viste.ortogonali, famiglia.id).toBeDefined();
+      expect(facce).toContain(famiglia.viste.ortogonali!.principale);
+    }
+    const fondo = contratto.famiglie.find((famiglia) => famiglia.id === 'fondo_semplice')!;
+    expect(fondo.viste.ortogonali).toStrictEqual({
+      principale: 'sotto',
+      controllo: ['fianco_esterno'],
+      varianti: { zeppa: { principale: 'fianco_esterno', controllo: ['sotto'] } },
+    });
   });
 
   it('should carry every family of the registry in the catalogue, derived parameters flagged', () => {

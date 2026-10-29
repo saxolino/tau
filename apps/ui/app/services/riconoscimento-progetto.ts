@@ -5,6 +5,7 @@ import type { PianoCostruzione, SchedaParte, SchedaRiconoscimento } from '@tauca
 import {
   percorsoMaschera,
   percorsoRiconoscimento,
+  percorsoVista,
   serializzaRecordRiconoscimento,
 } from '#services/riconoscimento-record.js';
 import type { RecordRiconoscimento } from '#services/riconoscimento-record.js';
@@ -28,6 +29,17 @@ const estensioni: Record<string, string> = {
 };
 
 const testo = (valore: string): Uint8Array<ArrayBuffer> => new TextEncoder().encode(valore);
+
+/** Una vista generata da tenere nel progetto: i suoi byte, il ruolo, la faccia, l'asset di Sinopia e l'IoU. */
+export type VistaDelProgetto = Readonly<{
+  ruolo: 'principale' | 'controllo';
+  faccia: string;
+  assetId: string;
+  bytes: Uint8Array<ArrayBuffer>;
+  tipo: string;
+  iou?: number;
+  riusata?: boolean;
+}>;
 
 /** The files, the record and the plan of a recognised piece. */
 export type ProgettoRiconosciuto = Readonly<{
@@ -54,6 +66,10 @@ export function progettoRiconosciuto(
     famigliaScelta?: string;
     /** The D3 check: its result, or why there is none (`saltata` stopped by the designer, `errore` failed). */
     verifica?: RecordRiconoscimento['verifica'];
+    /** Le viste generate usate: in `riferimenti/` con il loro ruolo, e nel record. */
+    viste?: readonly VistaDelProgetto[];
+    /** Il verdetto dei confronti sulle tre immagini. */
+    confronti?: RecordRiconoscimento['confronti'];
     adesso?: Date;
   }>,
 ): ProgettoRiconosciuto | undefined {
@@ -65,6 +81,8 @@ export function progettoRiconosciuto(
     return undefined;
   }
   const creato = (ingresso.adesso ?? new Date()).toISOString();
+  const idParte = ingresso.schedaParte.parte.id;
+  const viste = ingresso.viste ?? [];
   const record: RecordRiconoscimento = {
     version: 1,
     creato,
@@ -75,6 +93,19 @@ export function progettoRiconosciuto(
     scalaData: ingresso.scheda.scala.fonte !== 'stima',
     mainScritto: piano.main,
     verifica: ingresso.verifica ?? { stato: 'non_disponibile', motivo: 'non_eseguita' },
+    ...(viste.length > 0
+      ? {
+          viste: viste.map((vista) => ({
+            ruolo: vista.ruolo,
+            faccia: vista.faccia,
+            assetId: vista.assetId,
+            file: percorsoVista(idParte, vista.ruolo, vista.tipo),
+            ...(vista.iou === undefined ? {} : { iou: vista.iou }),
+            ...(vista.riusata ? { riusata: true } : {}),
+          })),
+        }
+      : {}),
+    ...(ingresso.confronti ? { confronti: ingresso.confronti } : {}),
     cronologia:
       ingresso.verifica?.stato === 'fatta' ? [{ quando: creato, iou: ingresso.verifica.iou, parametri: {} }] : [],
   };
@@ -87,6 +118,9 @@ export function progettoRiconosciuto(
     [percorsoRiconoscimento]: { content: testo(serializzaRecordRiconoscimento(record)) },
     [`${base}.${estensioni[ingresso.immagine.tipo] ?? 'png'}`]: { content: ingresso.immagine.bytes },
     ...(ingresso.maschera ? { [percorsoMaschera(ingresso.schedaParte.parte.id)]: { content: ingresso.maschera } } : {}),
+    ...Object.fromEntries(
+      viste.map((vista) => [percorsoVista(idParte, vista.ruolo, vista.tipo), { content: vista.bytes }]),
+    ),
     ...(materiali.length > 0
       ? {
           [workbenchPaths.entries]: {

@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { famiglie } from '#famiglie/registro.js';
 import { facceVista } from '#famiglie/viste.js';
+import { visteOrtogonali, visteOrtogonaliDi } from '#famiglie/viste-ortogonali.js';
 import { assiCamera } from '#verifica/camera.js';
 import type { Vettore3 } from '#verifica/camera.js';
 
@@ -67,6 +68,36 @@ describe('viste delle famiglie', () => {
     // La testa dell'anello è +Z: la camera sta sopra (guarda in giù) e +Z resta in alto nell'immagine.
     expect(direzione[2]).toBeLessThan(-0.4);
     expect(su[2]).toBeGreaterThan(0.5);
+  });
+
+  it.each(Object.keys(famiglie))('should generate for %s only views of faces the family has', (id) => {
+    const { viste } = famiglie[id as keyof typeof famiglie]!;
+    const facce = new Set(viste.facce.map((faccia) => faccia.id));
+    const voce = visteOrtogonali[id as keyof typeof visteOrtogonali];
+    expect(voce, id).toBeDefined();
+    for (const tabella of [voce, ...Object.values(voce.varianti ?? {})]) {
+      expect(facce, id).toContain(tabella.principale);
+      expect(tabella.controllo.length, id).toBeGreaterThanOrEqual(1);
+      for (const controllo of tabella.controllo) {
+        expect(facce, id).toContain(controllo);
+        expect(controllo, id).not.toBe(tabella.principale);
+      }
+    }
+  });
+
+  it('should look at the sole from below, the wedge from the side, and the heel seat from above only on request', () => {
+    expect(visteOrtogonaliDi('fondo_semplice')).toStrictEqual({ principale: 'sotto', controllo: ['fianco_esterno'] });
+    expect(visteOrtogonaliDi('fondo_semplice', 'zeppa')).toStrictEqual({
+      principale: 'fianco_esterno',
+      controllo: ['sotto'],
+    });
+    expect(visteOrtogonaliDi('fondo_semplice', 'platform')?.principale).toBe('sotto');
+    expect(visteOrtogonaliDi('tacco')).toStrictEqual({ principale: 'fianco_esterno', controllo: ['dietro', 'sopra'] });
+    expect(visteOrtogonaliDi('fibbia')).toStrictEqual({ principale: 'sopra', controllo: ['fianco_esterno'] });
+    expect(visteOrtogonaliDi('anello')?.principale).toBe('asse_dito');
+    expect(visteOrtogonaliDi('libero')).toBeUndefined();
+    expect(visteOrtogonaliDi('constructor')).toBeUndefined();
+    expect(visteOrtogonaliDi('fondo_semplice', 'constructor')?.principale).toBe('sotto');
   });
 
   it('should map fronte to the face the trade calls the front of each part', () => {
