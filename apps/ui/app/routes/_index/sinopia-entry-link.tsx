@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router';
 import { searchParameterName } from '#constants/search-parameter.constants.js';
 import { useCloudProjects } from '#hooks/use-cloud-projects.js';
-import { useOpenCloudProject } from '#hooks/use-open-cloud-project.js';
+import { sinopiaOpenErrorMessage, useOpenCloudProject } from '#hooks/use-open-cloud-project.js';
+import { useProjects } from '#hooks/use-projects.js';
 import { useTranslation } from '#i18n/translate.js';
 import { toast } from '#components/ui/sonner.js';
 
@@ -11,37 +12,49 @@ const uuidPattern = /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i
 const readId = (value: string | null): string | undefined =>
   value !== null && uuidPattern.test(value) ? value : undefined;
 
+/** Every parameter an «Apri nel CAD» link brings: they leave the address together, never one at a time. */
+const entryParameters = [
+  searchParameterName.sinopiaProject,
+  searchParameterName.sinopiaModel,
+  searchParameterName.sinopiaSection,
+] as const;
+
 /**
- * The entry parameters Sinopia's «Apri nel CAD» links carry: `?project=<id>` (the Sinopia project to start from) and
- * `?model=<id>` (a CAD model of the account). Only UUIDs are read; each parameter is consumed once with `consume`, so a
- * reload or Back does not start the same thing twice.
+ * The entry parameters Sinopia's «Apri nel CAD» links carry: `?project=<id>` (the Sinopia project to start from),
+ * `?model=<id>` (a CAD model of the account) and, with it, `?sezione=foto`. Only UUIDs are read. `consume` takes all
+ * of them off the address at once, so a reload or Back does not start the same thing twice.
  *
- * @returns The ids found in the address and how to take a parameter off it.
+ * `consume` reads the address as it is when it runs, not as it was when the callback was made: react-router's
+ * `setSearchParams(fn)` hands `fn` the parameters of the render that created the setter, so a callback held across an
+ * await (the model opener's `onSpent`) used to write back a `?project=` another consumer had already removed, and the
+ * project's image sheet opened again over the model (29 Oct).
+ *
+ * @returns The ids found in the address and how to take them off it.
  */
 export function useSinopiaEntryLink(): Readonly<{
   projectId: string | undefined;
   modelId: string | undefined;
   /** With `model`: the section to open it on (`foto` from Sinopia's «Fai lo shooting» with no photo yet). */
   section: 'foto' | undefined;
-  consume: (name: 'project' | 'model') => void;
+  consume: () => void;
 }> {
   const [parameters, setParameters] = useSearchParams();
-  const consume = useCallback(
-    (name: 'project' | 'model'): void => {
-      setParameters(
-        (previous) => {
-          const next = new URLSearchParams(previous);
-          next.delete(searchParameterName[name === 'project' ? 'sinopiaProject' : 'sinopiaModel']);
-          if (name === 'model') {
-            next.delete(searchParameterName.sinopiaSection);
-          }
-          return next;
-        },
-        { replace: true },
-      );
-    },
-    [setParameters],
-  );
+  // The committed address, for callbacks made by an earlier render.
+  const current = useRef(parameters);
+  useLayoutEffect(() => {
+    current.current = parameters;
+  }, [parameters]);
+  const consume = useCallback((): void => {
+    const next = new URLSearchParams(current.current);
+    if (entryParameters.every((name) => !next.has(name))) {
+      return;
+    }
+    for (const name of entryParameters) {
+      next.delete(name);
+    }
+    current.current = next;
+    setParameters(next, { replace: true });
+  }, [setParameters]);
   return {
     projectId: readId(parameters.get(searchParameterName.sinopiaProject)),
     modelId: readId(parameters.get(searchParameterName.sinopiaModel)),
@@ -55,6 +68,10 @@ export function useSinopiaEntryLink(): Readonly<{
  * when this device has it, otherwise the saved snapshot from `cad_models`). Rendered only while the parameter is
  * present. A model the account does not have (or that was deleted) says so and clears the parameter.
  *
+ * It starts only once both listings have answered: the account's models on Sinopia and the projects of this device. In
+ * a tab opened cold the device's listing arrives after Sinopia's, and opening before it took a held model for a missing
+ * one (its link record unreadable yet: `SINOPIA_MODEL_IDENTITY_MISMATCH`). A failure says what went wrong.
+ *
  * @param properties - The model id and what to do once the link is spent.
  * @returns Nothing visible.
  */
@@ -64,6 +81,8 @@ export function OpenSinopiaModelFromLink({
 }: Readonly<{ modelId: string; onSpent: () => void }>): undefined {
   const { t } = useTranslation();
   const cloud = useCloudProjects();
+  // Same listing (and cache key) as the open verb's own: once it has answered, the verb sees this device's projects.
+  const local = useProjects({ includeDeleted: true });
   const openCloudProject = useOpenCloudProject();
   const started = useRef(false);
   useEffect(() => {
@@ -76,7 +95,7 @@ export function OpenSinopiaModelFromLink({
       onSpent();
       return;
     }
-    if (!cloud.isSettled || cloud.isFetching) {
+    if (!cloud.isSettled || cloud.isFetching || local.isLoading) {
       return;
     }
     started.current = true;
@@ -90,12 +109,23 @@ export function OpenSinopiaModelFromLink({
     void (async (): Promise<void> => {
       try {
         await openCloudProject(entry);
-      } catch {
-        toast.error(t('sinopiaImages.openError'));
+      } catch (error) {
+        console.error('[sinopia] model link did not open', error);
+        toast.error(t(sinopiaOpenErrorMessage(error)));
       } finally {
         onSpent();
       }
     })();
-  }, [cloud.isFailed, cloud.isFetching, cloud.isSettled, cloud.projects, modelId, onSpent, openCloudProject, t]);
+  }, [
+    cloud.isFailed,
+    cloud.isFetching,
+    cloud.isSettled,
+    cloud.projects,
+    local.isLoading,
+    modelId,
+    onSpent,
+    openCloudProject,
+    t,
+  ]);
   return undefined;
 }

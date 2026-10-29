@@ -8,6 +8,7 @@ import { resetLanguageForTests, setLanguage } from '#i18n/language.js';
 import { KeyboardProvider } from '@taucad/ui/components/keyboard';
 import { TooltipProvider } from '@taucad/ui/components/tooltip';
 import type { SinopiaReferenceSelection } from '#services/sinopia-references.js';
+import type * as EntryLinkModule from '#routes/_index/sinopia-entry-link.js';
 import type { ChatTextareaHandle } from '#components/chat/chat-textarea-types.js';
 import type { ModelSupport } from '@taucad/chat';
 
@@ -54,12 +55,16 @@ const submitEditor = vi.hoisted(() => vi.fn(async () => undefined));
 const submitProject = vi.hoisted(() => vi.fn(async () => undefined));
 const removeDraftAttachment = vi.hoisted(() => vi.fn());
 const setDraftText = vi.hoisted(() => vi.fn());
+const submitOrigin = vi.hoisted(() => vi.fn<(origin: string | undefined) => void>());
 vi.mock('#components/chat/use-new-project-submit.js', () => ({
-  useNewProjectSubmit: () => ({
-    onSubmit: submitProject,
-    isSubmitting: false,
-    rememberReferences,
-  }),
+  useNewProjectSubmit: (_location: boolean, _references: unknown, origin: string | undefined) => {
+    submitOrigin(origin);
+    return {
+      onSubmit: submitProject,
+      isSubmitting: false,
+      rememberReferences,
+    };
+  },
 }));
 
 const addDraftAttachment = vi.hoisted(() =>
@@ -67,11 +72,17 @@ const addDraftAttachment = vi.hoisted(() =>
 );
 const focusComposer = vi.hoisted(() => vi.fn());
 const toastError = vi.hoisted(() => vi.fn());
+const toastWarning = vi.hoisted(() => vi.fn());
 
 vi.mock('@taucad/ui/hooks/use-mobile', () => ({
   useIsMobile: () => state.isMobile,
 }));
-vi.mock('#components/ui/sonner.js', () => ({ toast: { error: toastError } }));
+vi.mock('#components/ui/sonner.js', () => ({ toast: { error: toastError, warning: toastWarning } }));
+// The model opener is the entry link's own (tested there); here it only shows it was asked to open.
+vi.mock('#routes/_index/sinopia-entry-link.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof EntryLinkModule>()),
+  OpenSinopiaModelFromLink: ({ modelId }: { readonly modelId: string }) => <p>Apro il modello {modelId}</p>,
+}));
 vi.mock('#hooks/active-chat-provider.js', () => ({
   HomeNewProjectComposerProvider: ({ children }: { readonly children: React.ReactNode }) => (
     <div data-testid='home-composer-provider'>{children}</div>
@@ -133,12 +144,12 @@ vi.mock('#routes/_index/home-recent-projects.js', () => ({
 const { SinopiaHome } = await import('#routes/_index/sinopia-home.js');
 const { rememberAgentLaneOpen } = await import('#hooks/use-agent-lane-open.js');
 
-const renderHome = (): ReturnType<typeof render> =>
+const renderHome = (path = '/'): ReturnType<typeof render> =>
   render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
       <KeyboardProvider>
         <TooltipProvider>
-          <MemoryRouter>
+          <MemoryRouter initialEntries={[path]}>
             <SinopiaHome />
           </MemoryRouter>
         </TooltipProvider>
@@ -538,6 +549,68 @@ describe('SinopiaHome', () => {
     expect(selection.userId).toBe('user-a');
     expect(selection.projectId).toBe('project-a');
     expect(selection.files).toHaveLength(1);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  const linkedProject = '0b6f2a40-1111-4000-8000-00000000000a';
+  const linkedModel = '70d7a84c-2222-4000-8000-00000000000b';
+
+  it('should open the model of a link that also names its project, never the project’s image sheet', async () => {
+    state.isSinopiaSignedIn = true;
+    sinopiaProjects.mockResolvedValue([
+      { id: linkedProject, userId: 'user-a', name: 'Nuovo Progetto', updatedAt: null, thumbnail: undefined },
+    ]);
+    renderHome(`/?project=${linkedProject}&model=${linkedModel}&sezione=foto`);
+    expect(screen.getByText(`Apro il modello ${linkedModel}`)).toBeInTheDocument();
+    await waitFor(() => {
+      expect(sinopiaProjects).toHaveBeenCalled();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(sinopiaImages).not.toHaveBeenCalled();
+    // The project is the account's: a model started from the chat still belongs to it.
+    await waitFor(() => {
+      expect(submitOrigin).toHaveBeenLastCalledWith(linkedProject);
+    });
+    expect(toastWarning).not.toHaveBeenCalled();
+  });
+
+  it('should open the images of a linked project of the account and keep it as the origin of new models', async () => {
+    state.isSinopiaSignedIn = true;
+    sinopiaProjects.mockResolvedValue([
+      { id: linkedProject, userId: 'user-a', name: 'Spring necklace', updatedAt: null, thumbnail: undefined },
+    ]);
+    renderHome(`/?project=${linkedProject}`);
+    expect(await screen.findByRole('dialog', { name: 'Immagini di «Spring necklace»' })).toBeInTheDocument();
+    expect(submitOrigin).toHaveBeenLastCalledWith(linkedProject);
+  });
+
+  it.each([
+    {
+      outcome: 'not one of the account’s projects',
+      list: async () => [],
+      sentence:
+        'Il progetto del collegamento non è tra i tuoi progetti su Sinopia: i modelli che crei qui andranno in un progetto nuovo.',
+    },
+    {
+      outcome: 'unreadable',
+      list: async () => {
+        throw new Error('offline');
+      },
+      sentence:
+        'Non riesco a leggere i tuoi progetti su Sinopia: i modelli che crei qui andranno in un progetto nuovo.',
+    },
+  ])('should drop a linked project that is $outcome as the origin and say so', async ({ list, sentence }) => {
+    state.isSinopiaSignedIn = true;
+    sinopiaProjects.mockImplementation(list);
+    renderHome(`/?project=${linkedProject}`);
+    await waitFor(() => {
+      expect(toastWarning).toHaveBeenCalledWith(sentence);
+    });
+    expect(submitOrigin).toHaveBeenLastCalledWith(undefined);
+    expect(submitOrigin).not.toHaveBeenCalledWith(linkedProject);
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 

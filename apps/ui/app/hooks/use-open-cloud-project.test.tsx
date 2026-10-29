@@ -60,7 +60,8 @@ const remoteTransport = vi.hoisted(() => ({
   readLink: vi.fn(),
   admit: vi.fn(async () => undefined),
 }));
-vi.mock('#hooks/use-file-manager.js', () => ({ useFileManager: () => ({ recordFiles: {} }) }));
+const whenServicesReady = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock('#hooks/use-file-manager.js', () => ({ useFileManager: () => ({ recordFiles: {}, whenServicesReady }) }));
 vi.mock('#lib/sinopia-data-client.js', () => ({ requireSinopiaUser: remoteTransport.admit }));
 vi.mock('#services/sinopia-cad.js', async (importOriginal) => ({
   ...(await importOriginal<typeof SinopiaCadModule>()),
@@ -85,6 +86,7 @@ describe('useOpenCloudProject', () => {
     remoteTransport.admit.mockResolvedValue(undefined);
     mockGetConfig.mockReset();
     mockToastInfo.mockReset();
+    whenServicesReady.mockClear();
     mockCreateProject.mockResolvedValue({
       id: 'proj_bbbbbbbbbbbbbbbbbbbbb',
       slugs: { workspaceSlug: 'home', projectSlug: 'bracket-beta' },
@@ -185,6 +187,29 @@ describe('useOpenCloudProject', () => {
     expect(mockCreateProject).not.toHaveBeenCalled();
     expect(remoteTransport.download).not.toHaveBeenCalled();
     expect(result.current.location.pathname).toBe('/projects');
+  });
+
+  it('reads a held model’s link record again once the file services are up before refusing it (a cold tab)', async () => {
+    const sinopia: SinopiaCadModule.SinopiaCadModel = {
+      id: '00000000-0000-4000-8000-000000000001',
+      project_id: '00000000-0000-4000-8000-000000000002',
+      user_id: '00000000-0000-4000-8000-000000000003',
+      name: 'Ring',
+      engine: 'smlib',
+      head_revision_id: 'a'.repeat(40),
+      snapshot_path: 'immutable',
+      thumbnail_path: null,
+      snapshot_bytes: 1,
+      updated_at: '2026-10-23T10:00:00Z',
+    };
+    remoteTransport.readLink
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({ modelId: sinopia.id, userId: sinopia.user_id });
+    const { result } = renderOpen();
+    await act(async () => result.current.open({ id: held.id, name: 'Ring', role: 'owner', sinopia }));
+    expect(whenServicesReady).toHaveBeenCalledOnce();
+    expect(remoteTransport.download).not.toHaveBeenCalled();
+    expect(result.current.location.pathname).toBe('/w/home/gearbox-alpha');
   });
 
   it('should say a project in this device’s Trash is there, offering the Trash, rather than failing', async () => {

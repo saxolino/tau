@@ -26,6 +26,7 @@ import { HomeRecentProjects } from '#routes/_index/home-recent-projects.js';
 import { useHomeImageIntake } from '#routes/_index/use-home-image-intake.js';
 
 import { SinopiaProjectStrip } from '#routes/_index/sinopia-project-strip.js';
+import type { SinopiaPreselectOutcome } from '#routes/_index/sinopia-project-strip.js';
 import { OpenSinopiaModelFromLink, useSinopiaEntryLink } from '#routes/_index/sinopia-entry-link.js';
 import { rememberSampleSectionRequest } from '#lib/sinopia-section-request.js';
 import type { SinopiaReferenceSelection } from '#services/sinopia-references.js';
@@ -36,6 +37,61 @@ const hasFiles = (dataTransfer: DataTransfer): boolean => dataTransfer.types.inc
 const isEditableTarget = (target: unknown): boolean =>
   target instanceof Element &&
   target.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]') !== null;
+
+/**
+ * Sinopia's «Apri nel CAD» link on the home, and the project it names. That project outlives its address parameter (the
+ * link is spent as soon as it is handled): a model started here from the chat belongs to it, not to a new one. It
+ * counts only once the strip has found it among the account's projects; a project of someone else, deleted or
+ * unreadable is dropped with a word, so it never becomes the origin of a model whose registration would fail later.
+ *
+ * @returns The link, the project waiting for the strip's answer, the confirmed origin and the strip's callback.
+ */
+function useSinopiaLinkOrigin(): Readonly<{
+  entry: ReturnType<typeof useSinopiaEntryLink>;
+  pendingOrigin: Readonly<{ projectId: string; withModel: boolean }> | undefined;
+  originProjectId: string | undefined;
+  handlePreselect: (outcome: SinopiaPreselectOutcome) => void;
+}> {
+  const { t } = useTranslation();
+  const entry = useSinopiaEntryLink();
+  const { consume } = entry;
+  const linkedProject = entry.projectId?.toLowerCase();
+  const [seenLinkedProject, setSeenLinkedProject] = useState<string>();
+  const [pendingOrigin, setPendingOrigin] = useState<Readonly<{ projectId: string; withModel: boolean }>>();
+  const [originProjectId, setOriginProjectId] = useState<string>();
+  if (linkedProject !== seenLinkedProject) {
+    setSeenLinkedProject(linkedProject);
+    if (linkedProject !== undefined) {
+      setPendingOrigin({ projectId: linkedProject, withModel: entry.modelId !== undefined });
+    }
+  }
+  // «Fai lo shooting» without a sample photo: the model opens on its photo section.
+  useEffect(() => {
+    if (entry.modelId !== undefined && entry.section === 'foto') {
+      rememberSampleSectionRequest(entry.modelId.toLowerCase());
+    }
+  }, [entry.modelId, entry.section]);
+  const handlePreselect = useCallback(
+    (outcome: SinopiaPreselectOutcome): void => {
+      if (pendingOrigin === undefined) {
+        return;
+      }
+      setPendingOrigin(undefined);
+      if (outcome === 'found') {
+        setOriginProjectId(pendingOrigin.projectId);
+      } else {
+        setOriginProjectId(undefined);
+        toast.warning(t(outcome === 'missing' ? 'sinopiaImages.originMissing' : 'sinopiaImages.originUnverified'));
+      }
+      // With a model the model opener spends the link (all of it) once the model is open or has failed.
+      if (!pendingOrigin.withModel) {
+        consume();
+      }
+    },
+    [consume, pendingOrigin, t],
+  );
+  return { entry, pendingOrigin, originProjectId, handlePreselect };
+}
 
 /**
  * The home inside its composer provider: the main area (the «Dall'immagine al CAD» drop zone and «I tuoi progetti»)
@@ -54,26 +110,7 @@ function HomeSurface(): React.JSX.Element {
   const [references, setReferences] = useState<SinopiaReferenceSelection>();
   const [isSinopiaPickerOpen, setSinopiaPickerOpen] = useState(false);
   // Sinopia's «Apri nel CAD» links: `?project=<id>` and `?model=<id>`.
-  const entry = useSinopiaEntryLink();
-  const { consume } = entry;
-  /* The project of Sinopia's «Apri nel CAD» outlives its address parameter (the strip consumes it): a model started
-     here from the chat belongs to that project, not to a new one. */
-  const [originProjectId, setOriginProjectId] = useState<string>();
-  if (entry.projectId !== undefined && entry.projectId.toLowerCase() !== originProjectId) {
-    setOriginProjectId(entry.projectId.toLowerCase());
-  }
-  // «Fai lo shooting» without a sample photo: the model opens on its photo section.
-  useEffect(() => {
-    if (entry.modelId !== undefined && entry.section === 'foto') {
-      rememberSampleSectionRequest(entry.modelId.toLowerCase());
-    }
-  }, [entry.modelId, entry.section]);
-  const spendProjectLink = useCallback((): void => {
-    consume('project');
-  }, [consume]);
-  const spendModelLink = useCallback((): void => {
-    consume('model');
-  }, [consume]);
+  const { entry, pendingOrigin, originProjectId, handlePreselect } = useSinopiaLinkOrigin();
   const { onSubmit, isSubmitting, rememberReferences } = useNewProjectSubmit(false, references, originProjectId);
   const {
     model: { model },
@@ -290,11 +327,12 @@ function HomeSurface(): React.JSX.Element {
           ) : null}
           <HomeRecentProjects />
           {entry.modelId === undefined ? null : (
-            <OpenSinopiaModelFromLink modelId={entry.modelId} onSpent={spendModelLink} />
+            <OpenSinopiaModelFromLink modelId={entry.modelId} onSpent={entry.consume} />
           )}
           <SinopiaProjectStrip
-            preselectProjectId={entry.projectId}
-            onPreselectHandled={spendProjectLink}
+            preselectProjectId={pendingOrigin?.projectId}
+            openPreselected={pendingOrigin?.withModel !== true}
+            onPreselectHandled={handlePreselect}
             onChoose={takeSinopiaImages}
             isPickerOpen={isSinopiaPickerOpen}
             onPickerOpenChange={setSinopiaPickerOpen}
